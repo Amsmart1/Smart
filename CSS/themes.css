@@ -1,0 +1,56 @@
+/* Role-specific color themes and unique sidebar styles */
+
+/* Admin Theme (Purple Gradient Sidebar) */
+body.admin-dashboard .sidebar {
+    background: linear-gradient(180deg, var(--purple), var(--purple-light));
+    color: #fff;
+    border-right: none;
+}
+
+body.admin-dashboard .brand {
+    color: #fff;
+}
+
+body.admin-dashboard .brand .logo {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+body.admin-dashboard nav button {
+    color: #fff;
+}
+
+body.admin-dashboard nav button.active,
+body.admin-dashboard nav button:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+body.admin-dashboard header {
+    background: linear-gradient(135deg, var(--purple) 0%, var(--purple-light) 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .1);
+}
+
+body.admin-dashboard header button#logoutBtn {
+    background: #fff;
+    color: var(--text);
+    width: auto;
+}
+
+/* Teacher and Student Theme (White Sidebar, standard colors) */
+body.teacher-dashboard .sidebar,
+body.student-dashboard .sidebar {
+    background: #fff;
+    color: var(--text);
+}
+
+body.teacher-dashboard header,
+body.student-dashboard header {
+    background: #fff;
+}

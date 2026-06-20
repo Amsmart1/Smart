@@ -1,0 +1,240 @@
+/* App Wrapper */
+.app {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* Sidebar Styling */
+.sidebar {
+    width: 260px;
+    background: #fff;
+    border-right: 1px solid var(--border);
+    padding: 18px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100vh;
+    z-index: var(--z-sidebar);
+    transition: width 0.3s ease, left 0.3s ease;
+}
+
+.brand {
+    font-weight: 800;
+    color: var(--purple);
+    font-size: 20px;
+    margin-bottom: 30px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand .logo {
+    font-size: 24px;
+}
+
+.nav-group-label {
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--muted);
+    letter-spacing: 1px;
+    margin: 25px 0 10px 15px;
+    text-transform: uppercase;
+}
+
+body.sidebar-collapsed .nav-group-label {
+    display: none;
+}
+
+/* Navigation inside Sidebar */
+nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    flex: 1;
+    scrollbar-width: thin;
+    padding-bottom: 20px;
+}
+
+nav::-webkit-scrollbar {
+    width: 4px;
+}
+nav::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 10px;
+}
+
+nav button {
+    all: unset;
+    display: flex;
+    align-items: center;
+    padding: 12px 15px;
+    border-radius: 8px;
+    color: var(--text);
+    cursor: pointer;
+    box-sizing: border-box;
+    width: 100%;
+    transition: all 0.2s ease;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+nav button span {
+    margin-left: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+nav button.active {
+    background: var(--p);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2);
+}
+
+nav button:hover:not(.active) {
+    background: var(--muted-bg);
+}
+
+/* Main Content Layout */
+.main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    height: 100vh;
+    overflow: hidden;
+    margin-left: 260px;
+    transition: margin-left 0.3s ease;
+}
+
+/* Header within Dashboard */
+.dashboard-header {
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+    min-height: 70px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 25px;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-header);
+}
+
+.content-area {
+    padding: 25px;
+    max-width: 1600px;
+    margin: 0 auto;
+    width: 100%;
+    box-sizing: border-box;
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* Dashboard Header Stats */
+.header-stats {
+    display: flex;
+    gap: 25px;
+    align-items: center;
+}
+
+.stat-item {
+    text-align: center;
+}
+
+.stat-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+}
+
+.stat-val {
+    font-weight: 800;
+    color: var(--purple);
+    font-size: 16px;
+}
+
+/* Sidebar Toggle Button */
+#sidebarToggle {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    border-radius: 8px;
+    transition: background 0.2s;
+}
+
+#sidebarToggle:hover {
+    background: var(--muted-bg);
+}
+
+/* Responsive Logic */
+
+/* Desktop Collapsed View */
+@media (min-width: 1025px) {
+    body.sidebar-collapsed .sidebar {
+        width: 80px;
+        padding: 18px 10px;
+    }
+    body.sidebar-collapsed .main {
+        margin-left: 80px;
+    }
+    body.sidebar-collapsed .brand span,
+    body.sidebar-collapsed nav button span {
+        display: none;
+    }
+    body.sidebar-collapsed .brand,
+    body.sidebar-collapsed nav button {
+        justify-content: center;
+        padding: 12px 0;
+    }
+}
+
+/* Tablet/Mobile View */
+@media (max-width: 1024px) {
+    .sidebar {
+        left: -260px;
+        box-shadow: 10px 0 15px -3px rgba(0, 0, 0, 0.1);
+    }
+    body.sidebar-open .sidebar {
+        left: 0;
+    }
+    body.sidebar-open {
+        overflow: hidden;
+    }
+    .main {
+        margin-left: 0;
+        width: 100%;
+    }
+    .header-stats {
+        display: none !important;
+    }
+    .dashboard-header {
+        padding: 0 15px;
+    }
+}
+
+/* Phone Specifics */
+@media (max-width: 480px) {
+    .content-area {
+        padding: 15px;
+    }
+    .dashboard-header h1 {
+        font-size: 1rem !important;
+    }
+    .button.w-auto {
+        width: 100% !important;
+    }
+}
