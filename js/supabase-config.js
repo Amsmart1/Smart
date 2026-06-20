@@ -328,11 +328,13 @@ class SupabaseDB {
                 query = query.or(`full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`, { foreignTable: 'users' });
             }
 
-            const { data, count, error } = await query
-                .order('enrolled_at', { ascending: false });
+            query = query.order('enrolled_at', { ascending: false });
 
-            if (error) throw error;
-            return { data: data || [], total: count || 0 };
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -495,7 +497,13 @@ class SupabaseDB {
             if (courseIds && courseIds.length > 0) query = query.in('course_id', courseIds);
             if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);
 
-            return this._getPaginated(query.order('due_date', { ascending: false }), options);
+            query = query.order('due_date', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -652,7 +660,13 @@ class SupabaseDB {
                 query = query.eq('status', status);
             }
 
-            return this._getPaginated(query.order('submitted_at', { ascending: false }), options);
+            query = query.order('submitted_at', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -900,7 +914,13 @@ class SupabaseDB {
             if (status) query = query.eq('status', status);
             if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);
 
-            return this._getPaginated(query.order('title', { ascending: true }), options);
+            query = query.order('title', { ascending: true });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -1073,7 +1093,13 @@ class SupabaseDB {
             if (courseIds && courseIds.length > 0) query = query.in('course_id', courseIds);
             if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);
 
-            return this._getPaginated(query.order('created_at', { ascending: false }), options);
+            query = query.order('created_at', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -1113,7 +1139,13 @@ class SupabaseDB {
             if (teacherEmail) query = query.eq('quizzes.teacher_email', teacherEmail);
             if (status) query = query.eq('status', status);
 
-            return this._getPaginated(query.order('started_at', { ascending: false }), options);
+            query = query.order('started_at', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
