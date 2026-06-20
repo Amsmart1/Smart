@@ -1,0 +1,126 @@
+:root {
+    /* Main Theme Colors */
+    --p: #6366f1;
+    --p-dark: #4f46e5;
+    --purple: #5b2ea6;
+    --purple-light: #667eea;
+
+    /* Backgrounds and Cards */
+    --bg: #f5f7fa;
+    --light: #f3f4f6;
+    --card: #fff;
+    --muted-bg: #f3f3f6;
+
+    /* Text Colors */
+    --text: #2d3748;
+    --text-dark: #1f2937;
+    --muted: #718096;
+
+    /* Functional Colors */
+    --danger: #ef4444;
+    --ok: #10b981;
+    --warn: #f59e0b;
+    --border: #e2e8f0;
+
+    /* Z-indices */
+    --z-header: 1001;
+    --z-sidebar: 1000;
+    --z-modal: 1100;
+    --z-notif: 1200;
+    --z-toast: 9999;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    padding: 0;
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.5;
+}
+
+/* Typography Helpers */
+.small { font-size: 13px; color: var(--muted); }
+.tiny { font-size: 11px; }
+.danger-text { color: var(--danger) !important; }
+.success-text { color: var(--ok) !important; }
+.warning-text { color: var(--warn) !important; }
+.bold { font-weight: 700; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.text-muted { color: var(--muted); }
+
+/* Common Display Helpers */
+.flex { display: flex; }
+.flex-column { display: flex; flex-direction: column; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.flex-center { display: flex; justify-content: center; align-items: center; }
+.flex-center-y { display: flex; align-items: center; }
+.flex-wrap { flex-wrap: wrap; }
+.gap-5 { gap: 5px; }
+.gap-10 { gap: 10px; }
+.gap-20 { gap: 20px; }
+.hidden { display: none !important; }
+.relative { position: relative; }
+.absolute { position: absolute; }
+.w-auto { width: auto !important; }
+.w-100 { width: 100% !important; }
+.inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+
+/* Margin/Padding Helpers */
+.m-0 { margin: 0 !important; }
+.mb-0 { margin-bottom: 0 !important; }
+.mb-5 { margin-bottom: 5px; }
+.mb-10 { margin-bottom: 10px; }
+.mb-15 { margin-bottom: 15px; }
+.mb-20 { margin-bottom: 20px; }
+.mb-30 { margin-bottom: 30px; }
+.mt-0 { margin-top: 0 !important; }
+.mt-4 { margin-top: 4px; }
+.mt-5 { margin-top: 5px; }
+.mt-8 { margin-top: 8px; }
+.mt-10 { margin-top: 10px; }
+.mt-15 { margin-top: 15px; }
+.mt-20 { margin-top: 20px; }
+.mt-30 { margin-top: 30px; }
+.ml-auto { margin-left: auto; }
+.p-0 { padding: 0 !important; }
+.p-5 { padding: 5px; }
+.p-10 { padding: 10px; }
+.p-15 { padding: 15px; }
+.p-20 { padding: 20px; }
+.p-40 { padding: 40px; }
+.px-15 { padding-left: 15px !important; padding-right: 15px !important; }
+.px-20 { padding-left: 20px !important; padding-right: 20px !important; }
+.px-30 { padding-left: 30px !important; padding-right: 30px !important; }
+.px-40 { padding-left: 40px !important; padding-right: 40px !important; }
+
+/* Scrollbar reset */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* Layout Grid */
+.grid { display: grid; gap: 16px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+
+@media (max-width: 768px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* Common Animation */
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+.animate-pulse { animation: pulse 1.5s infinite; }
+
+.border-radius-sm { border-radius: 4px; }
+.border-radius-md { border-radius: 8px; }
+.border-light { border: 1px solid var(--border); }
+.bg-light { background: var(--light); }
