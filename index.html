@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartLMS - Modern Learning Platform</title>
+
+  <!-- Modular CSS -->
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/landing.css">
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabase-config.js"></script>
+  <script src="js/countdown.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/landing.js"></script>
+  <link rel="manifest" href="manifest.json">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+</head>
+<body class="landing-page">
+  <header class="landing-header">
+    <a href="#" class="logo"><span>🎓</span> SmartLMS</a>
+    <nav class="nav-links">
+      <a href="#" onclick="LandingUI.showInfoModal('about')">About Us</a>
+      <a href="#" onclick="LandingUI.showContactUs()">Contact Us</a>
+      <a href="#" id="navSignIn" onclick="showLogin()">Sign In</a>
+      <button class="button primary small w-auto" style="margin-left: 1rem" onclick="showSignup()">Get Started</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div id="maintBanner" class="badge-warn" style="display:none; border-radius:1rem; padding:0.75rem 1.5rem; margin-bottom:2rem; text-align:center; font-size:0.875rem"></div>
+      <h1>Modern Learning for Everyone</h1>
+      <p>Empower your education with our all-in-one learning management system. Collaborative, interactive, and built for results.</p>
+
+      <div class="role-grid">
+        <div class="role-btn" id="heroStudent" onclick="showRoleAuth('student')">
+          <div class="icon">🧑‍🎓</div>
+          <span>Student</span>
+        </div>
+        <div class="role-btn" id="heroTeacher" onclick="showRoleAuth('teacher')">
+          <div class="icon">🧑‍🏫</div>
+          <span>Teacher</span>
+        </div>
+        <div class="role-btn" id="heroAdmin" onclick="showRoleAuth('admin')">
+          <div class="icon">⚙️</div>
+          <span>Admin</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="features-section">
+      <div class="container-inner">
+        <div class="section-header text-center">
+          <span class="badge-active" style="padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Platform Features</span>
+          <h2 class="mt-10">Everything you need to succeed</h2>
+          <p class="text-muted mx-auto" style="max-width: 600px;">Our platform is packed with powerful tools designed to enhance the learning experience for both students and educators.</p>
+        </div>
+        <div class="features">
+          <div class="feat-card">
+            <div class="icon">🛡️</div>
+            <h3>Proctored Assessments</h3>
+            <p>Maintain academic integrity with advanced anti-cheat monitoring and real-time integrity alerts and violation reports.</p>
+          </div>
+          <div class="feat-card">
+            <div class="icon">🎥</div>
+            <h3>Live Virtual Classes</h3>
+            <p>Engage students with integrated live meeting tools and automated attendance tracking.</p>
+          </div>
+          <div class="feat-card">
+            <div class="icon">📜</div>
+            <h3>Verified Certification</h3>
+            <p>Issue and manage secure, verifiable certificates of completion for your students.</p>
+          </div>
+          <div class="feat-card">
+            <div class="icon">📊</div>
+            <h3>Advanced Analytics</h3>
+            <p>Track student progress and performance with detailed visual reports and automated grading.</p>
+          </div>
+          <div class="feat-card">
+            <div class="icon">💬</div>
+            <h3>Interactive Discussions</h3>
+            <p>Engage with peers and teachers in real-time through course-specific discussion boards.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="how-it-works" class="how-it-works">
+      <div class="container-inner">
+        <div class="section-header text-center mb-40">
+          <h2 class="m-0">How It Works</h2>
+          <p class="text-muted">A simple 3-step process to get you started on your learning journey.</p>
+        </div>
+        <div class="steps-grid">
+          <div class="step-card">
+            <div class="step-number">01</div>
+            <div class="icon">🎯</div>
+            <h3>Choose Your Role</h3>
+            <p>Sign up as a Student, Teacher, or Admin to access specialized tools and features tailored to your needs.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-number">02</div>
+            <div class="icon">💻</div>
+            <h3>Access Your Dashboard</h3>
+            <p>Manage courses, assignments, and real-time interactions from a unified and intuitive interface.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-number">03</div>
+            <div class="icon">🚀</div>
+            <h3>Achieve Your Goals</h3>
+            <p>Track progress with advanced analytics and earn verified certificates of completion to showcase your success.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="bottom-cta">
+      <div class="container-inner text-center">
+        <h2>Ready to Transform Your Learning Experience?</h2>
+        <p>Join thousands of students and educators today. No credit card required.</p>
+        <button class="button primary" onclick="showLogin()">Get Started Now — It's Free</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="landing-footer">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <h4>SmartLMS</h4>
+        <p>Making education accessible and interactive for everyone, everywhere.</p>
+        <p class="small mt-10">📧 <strong>eduquizlms@gmail.com</strong></p>
+        <p class="small">📞 <strong>+233 50 596 5310</strong></p>
+        <div class="social-links">
+          <a href="https://x.com" target="_blank" title="X (Twitter)">𝕏</a>
+          <a href="https://www.facebook.com" target="_blank" title="Facebook">𝑓</a>
+          <a href="https://www.instagram.com" target="_blank" title="Instagram">📷</a>
+          <a href="https://www.linkedin.com" target="_blank" title="LinkedIn">💼</a>
+        </div>
+      </div>
+      <div class="footer-links">
+        <h5>Platform</h5>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#" onclick="LandingUI.showHelpCenter()">FAQ</a></li>
+          <li><a href="#" onclick="LandingUI.showContactUs()">Contact Us</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h5>Explore</h5>
+        <ul>
+          <li><a href="#" onclick="showRoleAuth('student')">Students</a></li>
+          <li><a href="#" onclick="showRoleAuth('teacher')">Teachers</a></li>
+          <li><a href="#" onclick="showRoleAuth('admin')">Admins</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h5>Company</h5>
+        <ul>
+          <li><a href="#" onclick="LandingUI.showInfoModal('about')">About Us</a></li>
+          <li><a href="#" onclick="LandingUI.showInfoModal('privacy')">Privacy Policy</a></li>
+          <li><a href="#" onclick="LandingUI.showInfoModal('terms')">Terms of Service</a></li>
+          <li><a href="#" onclick="LandingUI.showHelpCenter()">Support</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h5>Quick Resources</h5>
+        <ul>
+          <li><a href="#" onclick="LandingUI.showInfoModal('standards')">📘 Teaching Standards</a></li>
+          <li><a href="#" onclick="LandingUI.showInfoModal('privacy')">🛡️ Privacy Policy</a></li>
+          <li><a href="#" onclick="UI.showNotification('Community Forum coming soon!', 'info')">💬 Community Forum</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      &copy; 2024 SmartLMS Platform. All rights reserved.
+    </div>
+  </footer>
+
+  <!-- Auth Overlays -->
+  <div id="authOverlay" class="overlay" onclick="if(event.target===this)closeAuth()">
+    <!-- Signup -->
+    <div id="signup" class="container" onclick="event.stopPropagation()">
+      <button class="close-btn" onclick="closeAuth()">×</button>
+      <div id="maintBannerSignup" class="badge-warn" style="display:none; border-radius:6px; padding:6px 10px; margin-bottom:8px; text-align:center; font-size:13px"></div>
+      <h2 id="signup-title">Sign Up</h2>
+      <form id="signupForm" novalidate>
+        <input type="text" id="fullName" placeholder="Full Name" required>
+        <input type="email" id="email" placeholder="Email" required>
+        <input type="tel" id="phone" placeholder="Phone (optional)">
+        <div class="password-wrapper">
+          <input type="password" id="password" placeholder="Password" required>
+          <span class="password-toggle" onclick="togglePasswordVisibility('password')">👁️</span>
+        </div>
+        <div id="passwordStrengthContainer" class="strength-meter">
+          <div id="passwordStrength" class="strength-meter-fill"></div>
+        </div>
+        <div class="password-wrapper">
+          <input type="password" id="confirmPassword" placeholder="Confirm Password" required>
+          <span class="password-toggle" onclick="togglePasswordVisibility('confirmPassword')">👁️</span>
+        </div>
+        <input type="hidden" id="role" value="student">
+        <button type="submit" class="button">Create Account</button>
+        <p class="note">Already have an account? <a href="#" onclick="showLogin()">Sign in</a></p>
+      </form>
+      <p class="error" id="signupError"></p>
+    </div>
+
+    <!-- Login -->
+    <div id="login" class="container" onclick="event.stopPropagation()">
+      <button class="close-btn" onclick="closeAuth()">×</button>
+      <div id="maintBannerLogin" class="badge-warn" style="display:none; border-radius:6px; padding:6px 10px; margin-bottom:8px; text-align:center; font-size:13px"></div>
+      <h2>Login</h2>
+      <form id="loginForm" novalidate>
+        <input type="email" id="loginEmail" placeholder="Email" required>
+        <p class="error" id="loginEmailError"></p>
+        <div class="password-wrapper">
+          <input type="password" id="loginPassword" placeholder="Password" required>
+          <span class="password-toggle" onclick="togglePasswordVisibility('loginPassword')">👁️</span>
+        </div>
+        <p class="error" id="loginPasswordError"></p>
+        <button type="submit" class="button">Login</button>
+      </form>
+      <p class="note"><a href="#" onclick="showReset()">Forgot Password?</a></p>
+      <p class="note">No account? <a href="#" onclick="showSignup()">Create one</a></p>
+    </div>
+
+    <!-- Reset Request -->
+    <div id="reset" class="container" onclick="event.stopPropagation()">
+      <button class="close-btn" onclick="closeAuth()">×</button>
+      <div id="maintBannerReset" class="badge-warn" style="display:none; border-radius:6px; padding:6px 10px; margin-bottom:8px; text-align:center; font-size:13px"></div>
+      <h2>Reset Password</h2>
+      <form id="resetForm" novalidate>
+        <input type="email" id="resetEmail" placeholder="Enter your email" required>
+
+        <label class="tiny">Reason for Reset</label>
+        <select id="resetReason" class="mb-10" required>
+          <option value="">Select Reason...</option>
+        </select>
+
+        <label class="tiny">Additional Details (Optional)</label>
+        <textarea id="resetCustomReason" rows="2" placeholder="Provide any additional context..." class="mb-10"></textarea>
+
+        <div id="resetTipsContainer" style="display:none; background: #f8fafc; border-radius: 8px; padding: 12px; margin-bottom: 15px; border: 1px solid #e2e8f0;">
+          <p class="tiny bold mb-5" style="color: var(--purple)">Troubleshooting Tips:</p>
+          <div id="resetTips" class="tiny text-muted" style="white-space: pre-line; line-height: 1.5;"></div>
+        </div>
+
+        <button type="submit" class="button">Request Reset</button>
+      </form>
+      <p class="note"><a href="#" onclick="showLogin()">Back to login</a></p>
+      <p class="error" id="resetError"></p>
+    </div>
+
+    <!-- Set New Password (after temp login) -->
+    <div id="newPassword" class="container" onclick="event.stopPropagation()">
+      <button class="close-btn" onclick="closeAuth()">×</button>
+      <h2>Set New Password</h2>
+      <form id="newPasswordForm" novalidate>
+        <div class="password-wrapper">
+          <input type="password" id="newPass" placeholder="New Password" required>
+          <span class="password-toggle" onclick="togglePasswordVisibility('newPass')">👁️</span>
+        </div>
+        <div id="newPasswordStrengthContainer" class="strength-meter">
+          <div id="newPasswordStrength" class="strength-meter-fill"></div>
+        </div>
+        <div class="password-wrapper">
+          <input type="password" id="confirmNewPass" placeholder="Confirm New Password" required>
+          <span class="password-toggle" onclick="togglePasswordVisibility('confirmNewPass')">👁️</span>
+        </div>
+        <button type="submit" class="button">Update Password</button>
+      </form>
+      <p class="error" id="newPasswordError"></p>
+    </div>
+  </div>
+
+  <!-- Info Modals -->
+  <div id="infoOverlay" class="overlay" onclick="if(event.target===this)LandingUI.closeInfoModal()">
+      <div class="modal" style="max-width: 800px; padding: 40px; border-radius: 20px; position: relative;">
+          <button class="close-btn" onclick="LandingUI.closeInfoModal()">×</button>
+          <div id="infoModalContent"></div>
+      </div>
+  </div>
+
+  <!-- Help Center Modal -->
+  <div id="helpCenterOverlay" class="overlay" onclick="if(event.target===this)LandingUI.closeHelpCenter()">
+      <div class="modal help-center-modal" style="width: 95%; max-width: 1200px; height: 90vh; padding: 0; overflow: hidden; border-radius: 20px;">
+          <button class="close-btn" style="top: 20px; right: 20px; z-index: 10;" onclick="LandingUI.closeHelpCenter()">×</button>
+          <div id="helpCenterContent" style="height: 100%; display: flex; flex-direction: column;">
+              <!-- Dynamic Content -->
+          </div>
+      </div>
+  </div>
+
+</body>
+</html>

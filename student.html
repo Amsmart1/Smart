@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SmartLMS — Student</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<!-- Modular CSS -->
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/calendar.css">
+<link rel="stylesheet" href="css/themes.css">
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
+<script src="js/countdown.js"></script>
+<script src="js/core.js"></script>
+<script src="js/anti-cheat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://meet.jit.si/external_api.js"></script>
+<script src="calendar_logic.js"></script>
+<script src="js/student.js"></script>
+<link rel="manifest" href="manifest.json">
+</head>
+<body class="student-dashboard">
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">SmartLMS</div>
+    <nav id="studentNav">
+      <button class="active" data-page="dashboard">🏠 <span>Dashboard</span></button>
+      <button data-page="courses">🛒 <span>Course Catalog</span></button>
+      <button data-page="my-courses">📚 <span>My Courses</span></button>
+      <button data-page="assignments">📝 <span>Assignments</span></button>
+      <button data-page="quizzes">❓ <span>Quizzes</span></button>
+      <button data-page="grades">📊 <span>Grades</span></button>
+      <button data-page="analytics">📈 <span>Analytics</span></button>
+      <button data-page="discussions">💬 <span>Discussions</span></button>
+      <button data-page="calendar">📅 <span>Calendar</span></button>
+      <button data-page="materials">📚 <span>Materials</span></button>
+      <button data-page="anticheat">🛡️ <span>Anti-Cheat</span></button>
+      <button data-page="planner">📅 <span>Planner</span></button>
+      <button data-page="progress">📈 <span>Progress</span></button>
+      <button data-page="certificates">📜 <span>Certificates</span></button>
+      <button data-page="live">📹 <span>Live Classes</span></button>
+      <button data-page="settings">⚙️ <span>Settings</span></button>
+      <button data-page="help">❓ <span>Help</span></button>
+    </nav>
+  </aside>
+  <main class="main">
+    <header class="dashboard-header">
+      <div class="flex-center-y gap-10">
+        <button id="sidebarToggle" class="button small">☰</button>
+        <h1 class="m-0" style="font-size: 1.2rem;">Hi, <span id="profileName">Student</span>!</h1>
+      </div>
+      <div class="header-stats ml-auto">
+        <div class="stat-item"><div class="stat-label">Courses</div><div class="stat-val" id="statCourses">0</div></div>
+        <div class="stat-item"><div class="stat-label">Due Soon</div><div class="stat-val" id="statDue">0</div></div>
+      </div>
+      <div class="header-right flex-center-y gap-20 ml-auto">
+        <div class="notif-bell-container">
+          <div id="notifBell" style="cursor:pointer;font-size:20px">🔔</div>
+          <div id="unreadCount" class="unread-count" style="display:none">0</div>
+          <div id="notifList" class="notif-list"></div>
+        </div>
+        <button id="logoutBtn" class="button secondary small w-auto">Logout</button>
+      </div>
+    </header>
+    <div class="content-area">
+      <div id="maintBanner" class="badge-warn" style="display:none; border-radius:6px; padding:6px 10px; margin-bottom:16px; text-align:center; font-size:13px"></div>
+      <div id="pageContent"></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

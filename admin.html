@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartLMS - Admin Dashboard</title>
+
+<!-- Modular CSS -->
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/themes.css">
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
+<script src="js/countdown.js"></script>
+<script src="js/core.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="js/admin.js"></script>
+<link rel="manifest" href="manifest.json">
+</head>
+<body class="admin-dashboard">
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">⚙️</div>
+      <span>SmartLMS Admin</span>
+    </div>
+    <nav id="adminNav">
+      <div class="nav-group-label">OVERVIEW</div>
+      <button class="active" data-page="dashboard">📊 <span>Dashboard</span></button>
+      <button data-page="analytics">📈 <span>Analytics</span></button>
+
+      <div class="nav-group-label">ACADEMIC MANAGEMENT</div>
+      <button data-page="users">👥 <span>Users</span></button>
+      <button data-page="courses">📚 <span>Courses</span></button>
+      <button data-page="reports">📋 <span>Academic Reports</span> <span id="reportsBadge" class="badge badge-warn" style="display:none">-</span></button>
+      <button data-page="invites">✉️ <span>Invitations</span></button>
+      <button data-page="support">🎫 <span>Support Tickets</span> <span id="supportBadge" class="badge badge-warn" style="display:none">-</span></button>
+
+      <div class="nav-group-label">SECURITY & INTEGRITY</div>
+      <button data-page="resets">🔄 <span>Security Resets</span> <span id="resetBadge" class="badge badge-inactive" style="display:none">-</span></button>
+      <button data-page="violations">🛡️ <span>Security Violations</span></button>
+      <button data-page="broadcasts">📢 <span>Broadcasts</span></button>
+
+      <div class="nav-group-label">SYSTEM CONTROL</div>
+      <button data-page="maintenance">🛡️ <span>Maintenance & Access</span></button>
+      <button data-page="health">🏥 <span>System Health</span></button>
+      <button data-page="management">⚙️ <span>Database & Backups</span></button>
+      <button data-page="system">ℹ️ <span>System Info</span></button>
+
+      <div class="nav-group-label">ACCOUNT</div>
+      <button data-page="settings">⚙️ <span>Admin Settings</span></button>
+      <button data-page="help">❓ <span>Help Center</span></button>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="dashboard-header">
+      <div class="flex-center-y gap-10">
+        <button id="sidebarToggle" class="button small">☰</button>
+        <h1 class="m-0" style="font-size: 1.2rem;">Admin Dashboard</h1>
+      </div>
+      <div class="header-right flex-center-y gap-20 ml-auto">
+        <div class="notif-bell-container">
+          <div id="notifBell" style="cursor:pointer;font-size:20px">🔔</div>
+          <div id="unreadCount" class="unread-count" style="display:none">0</div>
+          <div id="notifList" class="notif-list"></div>
+        </div>
+        <button id="logoutBtn" class="button secondary small w-auto">Logout</button>
+      </div>
+    </header>
+
+    <div class="content-area">
+      <div id="maintBanner" class="badge-warn" style="display:none; border-radius:6px; padding:6px 10px; margin-bottom:16px; text-align:center; font-size:13px"></div>
+      <div id="pageContent"></div>
+    </div>
+  </main>
+</div>
+
+<div id="modalBackdrop" class="modal-backdrop">
+  <div id="modal" class="modal"></div>
+</div>
+
+</body>
+</html>
