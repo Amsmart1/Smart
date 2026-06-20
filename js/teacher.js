@@ -2879,31 +2879,66 @@ async function renderGradeBook() {
     try {
         const user = await SessionManager.getCurrentUser();
         if (renderId !== window.currentRenderId) return;
+
+        UI.showLoading('pageContent', 'Loading Grade Book data...');
+
         const [{ data: courses }, { data: assignments }, { data: quizzes }, { data: submissions }, { data: quizSubs }] = await Promise.all([
-            SupabaseDB.getCourses(user.email, null),
-            SupabaseDB.getAssignments(user.email, null, null),
-            SupabaseDB.getQuizzes(null, user.email, null),
-            SupabaseDB.getSubmissions(null, null, user.email),
-            SupabaseDB.getQuizSubmissions(null, null, user.email)
+            SupabaseDB.getCourses(user.email, null, { all: true }),
+            SupabaseDB.getAssignments(user.email, null, null, { all: true }),
+            SupabaseDB.getQuizzes(null, user.email, null, { all: true }),
+            SupabaseDB.getSubmissions(null, null, user.email, { all: true }),
+            SupabaseDB.getQuizSubmissions(null, null, user.email, { all: true })
         ]);
         if (renderId !== window.currentRenderId) return;
 
+        // Fetch all enrollments for teacher's courses upfront
+        const courseIds = courses.map(c => c.id);
+        const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(courseIds, { all: true });
+        if (renderId !== window.currentRenderId) return;
+
         content.innerHTML = `
-            <div class="card flex-between">
-                <h2 class="m-0">Grade Book</h2>
-                <div class="flex gap-10">
-                    <select id="gbCourseSelect" onchange="filterGradeBook()" style="width:auto; margin:0">
-                        <option value="">All Courses</option>
-                        ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
-                    </select>
-                    <button class="button secondary small w-auto" onclick="exportGradeBook('csv')">CSV</button>
-                    <button class="button secondary small w-auto" onclick="exportGradeBook('pdf')">PDF</button>
+            <div class="card">
+                <div class="flex-between flex-wrap gap-15">
+                    <h2 class="m-0">Grade Book</h2>
+                    <div class="flex gap-10 flex-wrap">
+                        <button class="button secondary small w-auto" onclick="exportGradeBook('csv')">CSV Export</button>
+                        <button class="button secondary small w-auto" onclick="exportGradeBook('pdf')">PDF Report</button>
+                    </div>
+                </div>
+                <div class="grid-3 mt-20 gap-10">
+                    <div>
+                        <label class="small bold">Filter Course</label>
+                        <select id="gbCourseSelect" onchange="filterGradeBook()" class="m-0">
+                            <option value="">All My Courses</option>
+                            ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="small bold">Assessment Type</label>
+                        <select id="gbTypeSelect" onchange="filterGradeBook()" class="m-0">
+                            <option value="all">All Assessments</option>
+                            <option value="assignments">Assignments Only</option>
+                            <option value="quizzes">Quizzes Only</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="small bold">Search Student</label>
+                        <input type="text" id="gbStudentSearch" placeholder="Name or email..." class="m-0">
+                    </div>
                 </div>
             </div>
             <div id="gradeBookArea" class="mt-20"></div>
         `;
 
-        TeacherState.gradeBookRawData = { courses, assignments, quizzes, submissions, quizSubs };
+        TeacherState.gradeBookRawData = { courses, assignments, quizzes, submissions, quizSubs, enrollments };
+
+        const searchInput = document.getElementById('gbStudentSearch');
+        if (searchInput) {
+            searchInput.addEventListener('input', debounce(() => {
+                filterGradeBook();
+            }, 300));
+        }
+
         filterGradeBook();
     } catch (error) {
         console.error('Grade Book error:', error);
@@ -3176,57 +3211,74 @@ async function exportStudents(type) {
 }
 
 async function filterGradeBook() {
-    const { courses, assignments, quizzes, submissions, quizSubs } = TeacherState.gradeBookRawData;
+    const { courses, assignments, quizzes, submissions, quizSubs, enrollments } = TeacherState.gradeBookRawData;
     const courseId = document.getElementById('gbCourseSelect').value;
+    const typeFilter = document.getElementById('gbTypeSelect').value;
+    const studentSearch = (document.getElementById('gbStudentSearch').value || '').toLowerCase();
     const area = document.getElementById('gradeBookArea');
     const renderId = window.currentRenderId;
 
     try {
         let filteredCourses = courseId ? courses.filter(c => c.id === courseId) : courses;
-        let courseIds = filteredCourses.map(c => c.id);
-
-        const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(courseIds);
-        if (renderId !== window.currentRenderId) return;
 
         TeacherState.currentGradeBookData = { filteredCourses, enrollments, assignments, quizzes, submissions, quizSubs };
 
         let html = '';
 
         for (const course of filteredCourses) {
-            const courseAssigns = assignments.filter(a => a.course_id === course.id && a.status === 'published');
-            const courseQuizzes = quizzes.filter(q => q.course_id === course.id && q.status === 'published');
-            const courseStudents = enrollments.filter(e => e.course_id === course.id).map(e => e.student_email);
+            const showAssignments = typeFilter === 'all' || typeFilter === 'assignments';
+            const showQuizzes = typeFilter === 'all' || typeFilter === 'quizzes';
 
-            if (courseStudents.length === 0) {
-                html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No students enrolled.</p></div>`;
+            const courseAssigns = showAssignments ? assignments.filter(a => a.course_id === course.id && a.status === 'published') : [];
+            const courseQuizzes = showQuizzes ? quizzes.filter(q => q.course_id === course.id && q.status === 'published') : [];
+
+            const courseEnrollments = enrollments.filter(e => {
+                if (e.course_id !== course.id) return false;
+                if (!studentSearch) return true;
+                const name = (e.users?.full_name || '').toLowerCase();
+                const email = (e.student_email || '').toLowerCase();
+                return name.includes(studentSearch) || email.includes(studentSearch);
+            });
+
+            if (courseEnrollments.length === 0) {
+                if (!studentSearch) {
+                    html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No students enrolled.</p></div>`;
+                }
                 continue;
             }
 
+            if (courseAssigns.length === 0 && courseQuizzes.length === 0) {
+                 html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No published assessments to display for this filter.</p></div>`;
+                 continue;
+            }
+
             html += `
-                <div class="card mb-20" style="padding:0; overflow:hidden">
+                <div class="card mb-20 animate-fade-in" style="padding:0; overflow:hidden">
                     <div class="p-15" style="background:var(--bg)">
                         <h3 class="m-0">${escapeHtml(course.title)}</h3>
-                        <p class="tiny text-muted m-0">${courseStudents.length} Students | ${courseAssigns.length} Assignments | ${courseQuizzes.length} Quizzes</p>
+                        <p class="tiny text-muted m-0">${courseEnrollments.length} Students | ${courseAssigns.length} Assignments | ${courseQuizzes.length} Quizzes</p>
                     </div>
                     <div style="overflow-x:auto">
                         <table class="m-0">
                             <thead>
                                 <tr>
                                     <th style="min-width:200px">Student</th>
-                                    ${courseAssigns.map(a => `<th class="text-center" style="min-width:120px" title="${escapeAttr(a.title)}">📝 ${escapeHtml(a.title.substring(0,10))}...</th>`).join('')}
-                                    ${courseQuizzes.map(q => `<th class="text-center" style="min-width:120px" title="${escapeAttr(q.title)}">❓ ${escapeHtml(q.title.substring(0,10))}...</th>`).join('')}
-                                    <th class="text-center" style="min-width:100px; background:#f8fafc">Final Avg</th>
+                                    ${courseAssigns.map(a => `<th class="text-center" style="min-width:120px" title="${escapeAttr(a.title)}">📝 ${escapeHtml(a.title.substring(0,15))}${a.title.length > 15 ? '...' : ''}</th>`).join('')}
+                                    ${courseQuizzes.map(q => `<th class="text-center" style="min-width:120px" title="${escapeAttr(q.title)}">❓ ${escapeHtml(q.title.substring(0,15))}${q.title.length > 15 ? '...' : ''}</th>`).join('')}
+                                    <th class="text-center" style="min-width:100px; background:#f8fafc">Course Avg</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${courseStudents.map(email => {
+                                ${courseEnrollments.map(e => {
+                                    const email = e.student_email;
+                                    const fullName = e.users?.full_name || 'Unknown';
                                     let earnedPoints = 0;
                                     let itemsCount = 0;
 
                                     const assignmentCells = courseAssigns.map(a => {
                                         const sub = submissions.find(s => s.assignment_id === a.id && s.student_email === email);
                                         if (sub && sub.status === 'graded') {
-                                            earnedPoints += sub.final_grade;
+                                            earnedPoints += (sub.final_grade || 0);
                                             itemsCount++;
                                             return `
                                                 <td class="text-center">
@@ -3238,16 +3290,19 @@ async function filterGradeBook() {
                                     }).join('');
 
                                     const quizCells = courseQuizzes.map(q => {
-                                        const sub = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email && s.status === 'submitted')
-                                                            .sort((a,b) => (b.score || 0) - (a.score || 0))[0];
-                                        if (sub) {
-                                            earnedPoints += sub.score;
+                                        // Fix: Improved logic to ensure all submitted quiz scores for this specific student/quiz are considered.
+                                        // We pick the best attempt for the grade book display.
+                                        const allAttempts = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email && s.status === 'submitted');
+                                        const bestSub = allAttempts.sort((a,b) => (b.score || 0) - (a.score || 0))[0];
+
+                                        if (bestSub) {
+                                            earnedPoints += (bestSub.score || 0);
                                             itemsCount++;
-                                            const rawScore = Math.round((sub.score / 100) * sub.total_points);
+                                            const rawScore = Math.round(((bestSub.score || 0) / 100) * (bestSub.total_points || 0));
                                             return `
                                                 <td class="text-center">
-                                                    <span class="badge ${sub.score >= 70 ? 'badge-active' : 'badge-warn'}">${sub.score}%</span>
-                                                    <div class="tiny text-muted mt-5">${rawScore} / ${sub.total_points}</div>
+                                                    <span class="badge ${bestSub.score >= 70 ? 'badge-active' : 'badge-warn'}">${bestSub.score}%</span>
+                                                    <div class="tiny text-muted mt-5">${rawScore} / ${bestSub.total_points}</div>
                                                 </td>`;
                                         }
                                         return `<td class="text-center"><span class="tiny text-muted">-</span></td>`;
@@ -3257,7 +3312,10 @@ async function filterGradeBook() {
 
                                     return `
                                         <tr>
-                                            <td><div class="bold small">${escapeHtml(email)}</div></td>
+                                            <td>
+                                                <div class="bold small">${escapeHtml(fullName)}</div>
+                                                <div class="tiny text-muted">${escapeHtml(email)}</div>
+                                            </td>
                                             ${assignmentCells}
                                             ${quizCells}
                                             <td class="text-center" style="background:#f8fafc"><strong class="${avg >= 70 ? 'success-text' : 'danger-text'}">${itemsCount > 0 ? avg + '%' : '-'}</strong></td>
@@ -3270,7 +3328,9 @@ async function filterGradeBook() {
                 </div>
             `;
         }
-        area.innerHTML = html || '<div class="empty">No data available.</div>';
+
+        if (renderId !== window.currentRenderId) return;
+        area.innerHTML = html || '<div class="empty">No matching data available. Try adjusting your filters.</div>';
     } catch (error) {
         console.error('Filter Grade Book error:', error);
         UI.showNotification('Error filtering grade book: ' + error.message, 'error');
