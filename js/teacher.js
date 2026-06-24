@@ -191,13 +191,18 @@ function showCourseForm(course = null) {
   });
 }
 async function editCourse(id) {
+  const renderId = ++window.currentRenderId;
   const user = await SessionManager.getCurrentUser();
+  if (renderId !== window.currentRenderId) return;
+
   const [{ data: courses }, topicRes, lessonRes, { data: courseAssignments }] = await Promise.all([
     SupabaseDB.getCourses(user.email, null),
     SupabaseDB.getTopics(id),
     SupabaseDB.getLessons(id),
     SupabaseDB.getAssignments(user.email, id, null)
   ]);
+  if (renderId !== window.currentRenderId) return;
+
   const topics = topicRes.data || [];
   const lessons = lessonRes.data || [];
   const course = (courses || []).find(c => c.id === id);
@@ -297,11 +302,13 @@ async function editCourse(id) {
   `;
 }
 async function showLessonForm(courseId, lesson = null) {
+  const renderId = ++window.currentRenderId;
   const isEdit = !!lesson;
   const content = document.getElementById('pageContent');
   if (!content) return;
 
   const { data: topics } = await SupabaseDB.getTopics(courseId);
+  if (renderId !== window.currentRenderId) return;
 
   content.innerHTML = `
     <div class="card">
@@ -386,10 +393,12 @@ async function showLessonForm(courseId, lesson = null) {
   });
 }
 async function editLesson(lessonId, courseId) {
+  const renderId = ++window.currentRenderId;
   const lessonRes = await SupabaseDB.getLessons(courseId);
+  if (renderId !== window.currentRenderId) return;
   const lessons = lessonRes.data || [];
   const lesson = lessons.find(l => l.id === lessonId);
-  await showLessonForm(courseId, lesson);
+  if (lesson) await showLessonForm(courseId, lesson);
 }
 async function deleteLessonById(id, courseId) {
   if (await UI.confirm('Are you sure you want to delete this lesson?', 'Delete Lesson')) {
@@ -761,7 +770,7 @@ async function renderCertificates() {
 }
 
 async function showCertForm(studentEmail, targetCourseId = null, requestedCertId = null) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
@@ -947,7 +956,7 @@ function addQuestionField(q = null) {
 }
 
 async function showAssignmentForm(assignment = null, courseId = null) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
   const isEdit = !!assignment;
@@ -1169,7 +1178,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   });
 }
 async function editAssignment(id) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const user = await SessionManager.getCurrentUser();
   if (renderId !== window.currentRenderId) return;
   const { data: assignments } = await SupabaseDB.getAssignments(user.email, null, null);
@@ -1189,7 +1198,7 @@ async function deleteAssignmentById(id, courseId = null) {
   }
 }
 async function gradeSubmission(assignmentId, studentEmail) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
 
@@ -1479,7 +1488,7 @@ async function renderAntiCheat() {
 }
 
 async function viewAssessmentViolations(assessmentId, title) {
-    const renderId = window.currentRenderId;
+    const renderId = ++window.currentRenderId;
     const area = document.getElementById('violationDetailArea');
     if (!area) return;
     area.innerHTML = `<div class="loading-spinner"></div>`;
@@ -1566,7 +1575,7 @@ async function viewAssessmentViolations(assessmentId, title) {
 }
 
 async function viewStudentIntegrityReport(assessmentId, studentEmail) {
-    const renderId = window.currentRenderId;
+    const renderId = ++window.currentRenderId;
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
@@ -1829,7 +1838,7 @@ async function renderLiveClasses() {
 }
 
 async function loadAndEditLiveClass(id) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   try {
     const liveClass = await SupabaseDB.getLiveClass(id);
     if (renderId !== window.currentRenderId) return;
@@ -1840,7 +1849,7 @@ async function loadAndEditLiveClass(id) {
 }
 
 async function showLiveClassForm(liveClass = null) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const isEdit = !!liveClass;
   const area = document.getElementById('liveFormArea');
   if (!area) return;
@@ -2236,7 +2245,7 @@ async function deleteLiveClass(id) {
 }
 
 async function viewAttendance(classId) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   try {
     const { data: att } = await SupabaseDB.getAttendance(classId, null);
     if (renderId !== window.currentRenderId) return;
@@ -2520,7 +2529,7 @@ async function handleQuizSave(e) {
 }
 
 async function showQuizForm(quiz = null) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const isEdit = !!quiz;
   const container = document.getElementById('pageContent');
   if (!container) return;
@@ -2598,13 +2607,13 @@ async function showQuizForm(quiz = null) {
 }
 
 async function editQuiz(id) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   const user = await SessionManager.getCurrentUser();
   if (renderId !== window.currentRenderId) return;
   const { data: quizzes } = await SupabaseDB.getQuizzes(null, user.email, null);
   if (renderId !== window.currentRenderId) return;
   const quiz = (quizzes || []).find(q => q.id === id);
-  showQuizForm(quiz);
+  if (quiz) showQuizForm(quiz);
 }
 
 async function deleteQuizById(id) {
@@ -2620,7 +2629,7 @@ async function deleteQuizById(id) {
 }
 
 async function viewQuizResults(quizId) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   // Authoritative reconciliation before viewing results
   try { await SupabaseDB.reconcileQuizAttempts(quizId); } catch(e) { console.warn('Reconciliation failed:', e); }
   if (renderId !== window.currentRenderId) return;
@@ -2670,7 +2679,7 @@ async function viewQuizResults(quizId) {
 }
 
 async function gradeQuizSubmission(submissionId, quizId) {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   try {
     const [quiz, submission] = await Promise.all([
       SupabaseDB.getQuiz(quizId),
@@ -2880,6 +2889,11 @@ async function renderGradeBook() {
         const user = await SessionManager.getCurrentUser();
         if (renderId !== window.currentRenderId) return;
 
+        UI.showLoading('pageContent', 'Synchronizing data...');
+        // Authoritative reconciliation before fetching data
+        try { await SupabaseDB.reconcileQuizAttempts(); } catch(e) { console.warn('Global reconciliation failed:', e); }
+        if (renderId !== window.currentRenderId) return;
+
         UI.showLoading('pageContent', 'Loading Grade Book data...');
 
         const [{ data: courses }, { data: assignments }, { data: quizzes }, { data: submissions }, { data: quizSubs }] = await Promise.all([
@@ -2951,60 +2965,154 @@ async function renderGradeBook() {
     }
 }
 
+function calculateGradeBookData(rawData, filters = {}) {
+    const { courses, assignments, quizzes, submissions, quizSubs, enrollments } = rawData;
+    const { courseId = '', typeFilter = 'all', studentSearch = '' } = filters;
+    const search = studentSearch.toLowerCase();
+
+    let filteredCourses = courseId ? courses.filter(c => c.id === courseId) : courses;
+
+    return filteredCourses.map(course => {
+        const showAssignments = typeFilter === 'all' || typeFilter === 'assignments';
+        const showQuizzes = typeFilter === 'all' || typeFilter === 'quizzes';
+
+        const courseAssigns = showAssignments ? assignments.filter(a => a.course_id === course.id && a.status === 'published') : [];
+        const courseQuizzes = showQuizzes ? quizzes.filter(q => q.course_id === course.id && q.status === 'published') : [];
+
+        const courseEnrollments = enrollments.filter(e => {
+            if (e.course_id !== course.id) return false;
+            if (!search) return true;
+            const name = (e.users?.full_name || '').toLowerCase();
+            const email = (e.student_email || '').toLowerCase();
+            return name.includes(search) || email.includes(search);
+        }).sort((a, b) => (a.users?.full_name || 'Z').localeCompare(b.users?.full_name || 'Z'));
+
+        const students = courseEnrollments.map(e => {
+            const email = e.student_email;
+            const fullName = e.users?.full_name || 'Unknown';
+            let earnedPoints = 0;
+            let itemsCount = 0;
+
+            const assignmentGrades = courseAssigns.map(a => {
+                const sub = submissions.find(s => s.assignment_id === a.id && s.student_email === email);
+                let status = 'not_submitted';
+                let grade = null;
+                let rawScore = null;
+                let pointsPossible = a.points_possible;
+                let displayStatus = '-';
+
+                if (sub) {
+                    if (sub.status === 'graded') {
+                        status = 'graded';
+                        grade = sub.final_grade;
+                        rawScore = sub.grade;
+                        earnedPoints += (grade || 0);
+                        itemsCount++;
+                        displayStatus = `${grade}%`;
+                    } else if (sub.status === 'submitted') {
+                        status = 'pending';
+                        displayStatus = 'Pending';
+                    }
+
+                    if (sub.regrade_request) {
+                        status = 'regrade';
+                        displayStatus = 'Regrade Req';
+                    }
+
+                    const dueDate = new Date(a.due_date);
+                    const subDate = new Date(sub.submitted_at);
+                    if (subDate > dueDate) {
+                        status += '_late';
+                    }
+                }
+
+                return { id: a.id, title: a.title, status, grade, rawScore, pointsPossible, displayStatus };
+            });
+
+            const quizGrades = courseQuizzes.map(q => {
+                const allAttempts = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email);
+                const submittedAttempts = allAttempts.filter(s => s.status === 'submitted');
+                const inProgressAttempts = allAttempts.filter(s => s.status === 'in-progress');
+
+                const bestSub = submittedAttempts.sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+
+                let status = 'not_started';
+                let grade = null;
+                let rawScore = null;
+                let pointsPossible = null;
+                let displayStatus = '-';
+
+                if (bestSub) {
+                    status = 'submitted';
+                    grade = bestSub.score;
+                    rawScore = Math.round(((bestSub.score || 0) / 100) * (bestSub.total_points || 0));
+                    pointsPossible = bestSub.total_points;
+                    earnedPoints += (grade || 0);
+                    itemsCount++;
+                    displayStatus = `${grade}%`;
+                } else if (inProgressAttempts.length > 0) {
+                    status = 'in_progress';
+                    displayStatus = 'In Progress';
+                }
+
+                return { id: q.id, title: q.title, status, grade, rawScore, pointsPossible, displayStatus };
+            });
+
+            const average = itemsCount > 0 ? Math.round(earnedPoints / itemsCount) : null;
+
+            return {
+                email,
+                fullName,
+                assignmentGrades,
+                quizGrades,
+                average
+            };
+        });
+
+        return {
+            id: course.id,
+            title: course.title,
+            assignmentCount: courseAssigns.length,
+            quizCount: courseQuizzes.length,
+            studentCount: courseEnrollments.length,
+            students
+        };
+    });
+}
+
 async function exportGradeBook(type) {
     const data = TeacherState.currentGradeBookData;
     if (!data) return UI.showNotification('No data to export', 'warn');
 
-    const { filteredCourses, enrollments, assignments, quizzes, submissions, quizSubs } = data;
-
     let allHeaders = ['Course', 'Student', 'Type', 'Title', 'Grade', 'Raw Score', 'Max Points'];
     let allRows = [];
 
-    for (const course of filteredCourses) {
-        const courseAssigns = assignments.filter(a => a.course_id === course.id && a.status === 'published');
-        const courseQuizzes = quizzes.filter(q => q.course_id === course.id && q.status === 'published');
-        const courseStudents = enrollments.filter(e => e.course_id === course.id).map(e => e.student_email);
-
-        for (const email of courseStudents) {
-            // Assignments
-            courseAssigns.forEach(a => {
-                const sub = submissions.find(s => s.assignment_id === a.id && s.student_email === email);
-                if (sub && sub.status === 'graded') {
-                    allRows.push([
-                        course.title,
-                        email,
-                        'Assignment',
-                        a.title,
-                        `${sub.final_grade}%`,
-                        sub.grade,
-                        a.points_possible
-                    ]);
-                } else {
-                    allRows.push([course.title, email, 'Assignment', a.title, '-', '-', a.points_possible]);
-                }
+    data.forEach(course => {
+        course.students.forEach(student => {
+            student.assignmentGrades.forEach(ag => {
+                allRows.push([
+                    course.title,
+                    student.email,
+                    'Assignment',
+                    ag.title,
+                    ag.displayStatus,
+                    ag.rawScore !== null ? ag.rawScore : '-',
+                    ag.pointsPossible
+                ]);
             });
-
-            // Quizzes
-            courseQuizzes.forEach(q => {
-                const sub = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email && s.status === 'submitted')
-                                   .sort((a,b) => (b.score || 0) - (a.score || 0))[0];
-                if (sub) {
-                    const rawScore = Math.round((sub.score / 100) * sub.total_points);
-                    allRows.push([
-                        course.title,
-                        email,
-                        'Quiz',
-                        q.title,
-                        `${sub.score}%`,
-                        rawScore,
-                        sub.total_points
-                    ]);
-                } else {
-                    allRows.push([course.title, email, 'Quiz', q.title, '-', '-', '-']);
-                }
+            student.quizGrades.forEach(qg => {
+                allRows.push([
+                    course.title,
+                    student.email,
+                    'Quiz',
+                    qg.title,
+                    qg.displayStatus,
+                    qg.rawScore !== null ? qg.rawScore : '-',
+                    qg.pointsPossible !== null ? qg.pointsPossible : '-'
+                ]);
             });
-        }
-    }
+        });
+    });
 
     if (allRows.length === 0) return UI.showNotification('No grades to export', 'warn');
 
@@ -3104,7 +3212,7 @@ async function renderMaterials() {
 }
 
 async function showMaterialForm() {
-  const renderId = window.currentRenderId;
+  const renderId = ++window.currentRenderId;
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
@@ -3211,114 +3319,87 @@ async function exportStudents(type) {
 }
 
 async function filterGradeBook() {
-    const { courses, assignments, quizzes, submissions, quizSubs, enrollments } = TeacherState.gradeBookRawData;
-    const courseId = document.getElementById('gbCourseSelect').value;
-    const typeFilter = document.getElementById('gbTypeSelect').value;
-    const studentSearch = (document.getElementById('gbStudentSearch').value || '').toLowerCase();
     const area = document.getElementById('gradeBookArea');
+    if (!area) return;
     const renderId = window.currentRenderId;
 
     try {
-        let filteredCourses = courseId ? courses.filter(c => c.id === courseId) : courses;
+        const filters = {
+            courseId: document.getElementById('gbCourseSelect')?.value || '',
+            typeFilter: document.getElementById('gbTypeSelect')?.value || 'all',
+            studentSearch: document.getElementById('gbStudentSearch')?.value || ''
+        };
 
-        TeacherState.currentGradeBookData = { filteredCourses, enrollments, assignments, quizzes, submissions, quizSubs };
+        const data = calculateGradeBookData(TeacherState.gradeBookRawData, filters);
+        TeacherState.currentGradeBookData = data;
 
         let html = '';
-
-        for (const course of filteredCourses) {
-            const showAssignments = typeFilter === 'all' || typeFilter === 'assignments';
-            const showQuizzes = typeFilter === 'all' || typeFilter === 'quizzes';
-
-            const courseAssigns = showAssignments ? assignments.filter(a => a.course_id === course.id && a.status === 'published') : [];
-            const courseQuizzes = showQuizzes ? quizzes.filter(q => q.course_id === course.id && q.status === 'published') : [];
-
-            const courseEnrollments = enrollments.filter(e => {
-                if (e.course_id !== course.id) return false;
-                if (!studentSearch) return true;
-                const name = (e.users?.full_name || '').toLowerCase();
-                const email = (e.student_email || '').toLowerCase();
-                return name.includes(studentSearch) || email.includes(studentSearch);
-            });
-
-            if (courseEnrollments.length === 0) {
-                if (!studentSearch) {
+        data.forEach(course => {
+            if (course.studentCount === 0) {
+                if (!filters.studentSearch) {
                     html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No students enrolled.</p></div>`;
                 }
-                continue;
+                return;
             }
 
-            if (courseAssigns.length === 0 && courseQuizzes.length === 0) {
+            if (course.assignmentCount === 0 && course.quizCount === 0) {
                  html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No published assessments to display for this filter.</p></div>`;
-                 continue;
+                 return;
             }
 
             html += `
                 <div class="card mb-20 animate-fade-in" style="padding:0; overflow:hidden">
                     <div class="p-15" style="background:var(--bg)">
                         <h3 class="m-0">${escapeHtml(course.title)}</h3>
-                        <p class="tiny text-muted m-0">${courseEnrollments.length} Students | ${courseAssigns.length} Assignments | ${courseQuizzes.length} Quizzes</p>
+                        <p class="tiny text-muted m-0">${course.studentCount} Students | ${course.assignmentCount} Assignments | ${course.quizCount} Quizzes</p>
                     </div>
                     <div style="overflow-x:auto">
                         <table class="m-0">
                             <thead>
                                 <tr>
                                     <th style="min-width:200px">Student</th>
-                                    ${courseAssigns.map(a => `<th class="text-center" style="min-width:120px" title="${escapeAttr(a.title)}">📝 ${escapeHtml(a.title.substring(0,15))}${a.title.length > 15 ? '...' : ''}</th>`).join('')}
-                                    ${courseQuizzes.map(q => `<th class="text-center" style="min-width:120px" title="${escapeAttr(q.title)}">❓ ${escapeHtml(q.title.substring(0,15))}${q.title.length > 15 ? '...' : ''}</th>`).join('')}
+                                    ${course.students[0]?.assignmentGrades.map(ag => `<th class="text-center" style="min-width:120px" title="${escapeAttr(ag.title)}">📝 ${escapeHtml(ag.title.substring(0,15))}${ag.title.length > 15 ? '...' : ''}</th>`).join('') || ''}
+                                    ${course.students[0]?.quizGrades.map(qg => `<th class="text-center" style="min-width:120px" title="${escapeAttr(qg.title)}">❓ ${escapeHtml(qg.title.substring(0,15))}${qg.title.length > 15 ? '...' : ''}</th>`).join('') || ''}
                                     <th class="text-center" style="min-width:100px; background:#f8fafc">Course Avg</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${courseEnrollments.map(e => {
-                                    const email = e.student_email;
-                                    const fullName = e.users?.full_name || 'Unknown';
-                                    let earnedPoints = 0;
-                                    let itemsCount = 0;
+                                ${course.students.map(s => {
+                                    const assignmentCells = s.assignmentGrades.map(ag => {
+                                        let badgeClass = 'badge-inactive';
+                                        if (ag.status === 'graded') badgeClass = ag.grade >= 70 ? 'badge-active' : 'badge-warn';
+                                        else if (ag.status === 'pending' || ag.status === 'pending_late') badgeClass = 'badge-purple';
+                                        else if (ag.status === 'regrade' || ag.status === 'regrade_late') badgeClass = 'badge-warn';
 
-                                    const assignmentCells = courseAssigns.map(a => {
-                                        const sub = submissions.find(s => s.assignment_id === a.id && s.student_email === email);
-                                        if (sub && sub.status === 'graded') {
-                                            earnedPoints += (sub.final_grade || 0);
-                                            itemsCount++;
-                                            return `
-                                                <td class="text-center">
-                                                    <span class="badge ${sub.final_grade >= 70 ? 'badge-active' : 'badge-warn'}">${sub.final_grade}%</span>
-                                                    <div class="tiny text-muted mt-5">${sub.grade} / ${a.points_possible}</div>
-                                                </td>`;
-                                        }
-                                        return `<td class="text-center"><span class="tiny text-muted">-</span></td>`;
+                                        return `
+                                            <td class="text-center">
+                                                <span class="badge ${badgeClass}">${ag.displayStatus}</span>
+                                                ${ag.status.includes('late') ? '<div class="tiny danger-text bold">LATE</div>' : ''}
+                                                ${ag.rawScore !== null ? `<div class="tiny text-muted mt-5">${ag.rawScore} / ${ag.pointsPossible}</div>` : ''}
+                                            </td>`;
                                     }).join('');
 
-                                    const quizCells = courseQuizzes.map(q => {
-                                        // Fix: Improved logic to ensure all submitted quiz scores for this specific student/quiz are considered.
-                                        // We pick the best attempt for the grade book display.
-                                        const allAttempts = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email && s.status === 'submitted');
-                                        const bestSub = allAttempts.sort((a,b) => (b.score || 0) - (a.score || 0))[0];
+                                    const quizCells = s.quizGrades.map(qg => {
+                                        let badgeClass = 'badge-inactive';
+                                        if (qg.status === 'submitted') badgeClass = qg.grade >= 70 ? 'badge-active' : 'badge-warn';
+                                        else if (qg.status === 'in_progress') badgeClass = 'badge-warn';
 
-                                        if (bestSub) {
-                                            earnedPoints += (bestSub.score || 0);
-                                            itemsCount++;
-                                            const rawScore = Math.round(((bestSub.score || 0) / 100) * (bestSub.total_points || 0));
-                                            return `
-                                                <td class="text-center">
-                                                    <span class="badge ${bestSub.score >= 70 ? 'badge-active' : 'badge-warn'}">${bestSub.score}%</span>
-                                                    <div class="tiny text-muted mt-5">${rawScore} / ${bestSub.total_points}</div>
-                                                </td>`;
-                                        }
-                                        return `<td class="text-center"><span class="tiny text-muted">-</span></td>`;
+                                        return `
+                                            <td class="text-center">
+                                                <span class="badge ${badgeClass}">${qg.displayStatus}</span>
+                                                ${qg.rawScore !== null ? `<div class="tiny text-muted mt-5">${qg.rawScore} / ${qg.pointsPossible}</div>` : ''}
+                                            </td>`;
                                     }).join('');
-
-                                    const avg = itemsCount > 0 ? Math.round(earnedPoints / itemsCount) : 0;
 
                                     return `
                                         <tr>
                                             <td>
-                                                <div class="bold small">${escapeHtml(fullName)}</div>
-                                                <div class="tiny text-muted">${escapeHtml(email)}</div>
+                                                <div class="bold small">${escapeHtml(s.fullName)}</div>
+                                                <div class="tiny text-muted">${escapeHtml(s.email)}</div>
                                             </td>
                                             ${assignmentCells}
                                             ${quizCells}
-                                            <td class="text-center" style="background:#f8fafc"><strong class="${avg >= 70 ? 'success-text' : 'danger-text'}">${itemsCount > 0 ? avg + '%' : '-'}</strong></td>
+                                            <td class="text-center" style="background:#f8fafc"><strong class="${(s.average || 0) >= 70 ? 'success-text' : 'danger-text'}">${s.average !== null ? s.average + '%' : '-'}</strong></td>
                                         </tr>
                                     `;
                                 }).join('')}
@@ -3327,7 +3408,7 @@ async function filterGradeBook() {
                     </div>
                 </div>
             `;
-        }
+        });
 
         if (renderId !== window.currentRenderId) return;
         area.innerHTML = html || '<div class="empty">No matching data available. Try adjusting your filters.</div>';
