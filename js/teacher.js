@@ -574,23 +574,24 @@ async function renderGrading(page = 1) {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
 
-    // Fetch assignments for the filter dropdown
-    const { data: assignments } = await SupabaseDB.getAssignments(user.email, null, null, { all: true });
-    if (renderId !== window.currentRenderId) return;
-
-    // Optimization: Use server-side filtering for submitted status and regrade requests
-    const { data: submittedSubs, total } = await SupabaseDB.getSubmissions(
+    // Fetch assignments and submissions in parallel for performance
+    const [assignmentsRes, submissionsRes] = await Promise.all([
+      SupabaseDB.getAssignments(user.email, null, null, { all: true }),
+      SupabaseDB.getSubmissions(
         assignmentFilter || null,
         null,
         user.email,
         {
-            pendingGradingOnly: true,
-            searchTerm,
-            page,
-            pageSize
+          pendingGradingOnly: true,
+          searchTerm,
+          page,
+          pageSize
         }
-    );
+      )
+    ]);
     if (renderId !== window.currentRenderId) return;
+    const { data: assignments } = assignmentsRes;
+    const { data: submittedSubs, total } = submissionsRes;
 
     content.innerHTML = `
       <div class="card mb-20">
