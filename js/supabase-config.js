@@ -644,15 +644,24 @@ class SupabaseDB {
 
     // Submission operations
     static async getSubmissions(assignmentId = null, studentEmail = null, teacherEmail = null, options = {}) {
-        const { status = null, pendingGradingOnly = false } = options;
+        const { status = null, pendingGradingOnly = false, searchTerm = '', courseId = null } = options;
         return this._request(async () => {
-            let selectStr = '*, assignments(*)';
-            if (teacherEmail) selectStr = '*, assignments!inner(*)';
+            let selectStr = '*, assignments(*), users!student_email(*)';
+            if (teacherEmail) selectStr = '*, assignments!inner(*), users!student_email(*)';
+
+            // If searchTerm is provided, ensure users join is inner to allow filtering
+            if (searchTerm && teacherEmail) selectStr = '*, assignments!inner(*), users!student_email!inner(*)';
+            else if (searchTerm) selectStr = '*, assignments(*), users!student_email!inner(*)';
 
             let query = supabaseClient.from('submissions').select(selectStr, { count: 'exact' });
             if (assignmentId) query = query.eq('assignment_id', assignmentId);
             if (studentEmail) query = query.eq('student_email', studentEmail);
             if (teacherEmail) query = query.eq('assignments.teacher_email', teacherEmail);
+            if (courseId) query = query.eq('course_id', courseId);
+
+            if (searchTerm) {
+                query = query.or(`email.ilike.%${searchTerm}%,full_name.ilike.%${searchTerm}%`, { foreignTable: 'users' });
+            }
 
             if (pendingGradingOnly) {
                 query = query.or('status.eq.submitted,regrade_request.not.is.null');
