@@ -560,45 +560,103 @@ async function renderAssignments() {
     </div>`;
   }
 }
-async function renderGrading() {
+async function renderGrading(page = 1) {
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
   clearActiveCountdowns();
 
+  const searchTerm = document.getElementById('gradingSearch')?.value || '';
+  const assignmentFilter = document.getElementById('gradingAssignmentFilter')?.value || '';
+  const pageSize = 10;
+
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
-    // Optimization: Use server-side filtering for submitted status and regrade requests
-    const [{ data: submittedSubs, total }, { data: assignments }] = await Promise.all([
-      SupabaseDB.getSubmissions(null, null, user.email, {
-        pendingGradingOnly: true
-      }),
-      SupabaseDB.getAssignments(user.email, null, null)
+
+    // Fetch assignments and submissions in parallel for performance
+    const [assignmentsRes, submissionsRes] = await Promise.all([
+      SupabaseDB.getAssignments(user.email, null, null, { all: true }),
+      SupabaseDB.getSubmissions(
+        assignmentFilter || null,
+        null,
+        user.email,
+        {
+          pendingGradingOnly: true,
+          searchTerm,
+          page,
+          pageSize
+        }
+      )
     ]);
     if (renderId !== window.currentRenderId) return;
+    const { data: assignments } = assignmentsRes;
+    const { data: submittedSubs, total } = submissionsRes;
 
     content.innerHTML = `
-      <div class="flex-between mb-20">
-        <h2 class="m-0">Grading Queue</h2>
-        <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+      <div class="card mb-20">
+        <div class="flex-between flex-wrap gap-15">
+            <h2 class="m-0">Grading Queue</h2>
+            <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+        </div>
+        <div class="grid-2 mt-20 gap-10">
+            <div>
+                <label class="small bold">Filter by Assignment</label>
+                <select id="gradingAssignmentFilter" class="m-0">
+                    <option value="">All Assignments</option>
+                    ${assignments.map(a => `<option value="${a.id}" ${assignmentFilter === a.id ? 'selected' : ''}>${escapeHtml(a.title)}</option>`).join('')}
+                </select>
+            </div>
+            <div>
+                <label class="small bold">Search Student</label>
+                <input type="text" id="gradingSearch" placeholder="Name or email..." class="m-0" value="${escapeAttr(searchTerm)}">
+            </div>
+        </div>
       </div>
       <div id="gradingQueueTable"></div>
+      <div id="gradingPagination"></div>
     `;
 
     UI.renderTable('gradingQueueTable', ['Assignment', 'Student', 'Submitted', 'Status', 'Action'], submittedSubs, (s) => {
         const assignment = assignments.find(a => a.id === s.assignment_id);
+        const studentName = s.users?.full_name || 'Unknown Student';
         const isRegrade = !!s.regrade_request;
         return `
             <tr>
-                <td><strong>${escapeHtml(assignment?.title || 'Unknown')}</strong></td>
-                <td>${escapeHtml(s.student_email)}</td>
+                <td>
+                    <div class="bold small">${escapeHtml(assignment?.title || 'Unknown')}</div>
+                    <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
+                </td>
+                <td>
+                    <div class="bold small">${escapeHtml(studentName)}</div>
+                    <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
+                </td>
                 <td>${new Date(s.submitted_at).toLocaleString()}</td>
                 <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
                 <td><button class="button small w-auto" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button></td>
             </tr>
         `;
-    }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade.</p>' });
+    }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p>' });
+
+    UI.renderPagination('gradingPagination', total, page, pageSize, (p) => renderGrading(p));
+
+    // Event Listeners for Filters
+    const searchInput = document.getElementById('gradingSearch');
+    if (searchInput) {
+        searchInput.addEventListener('input', debounce(() => {
+            renderGrading(1);
+        }, 500));
+        if (searchTerm) {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
+        }
+    }
+
+    const filterSelect = document.getElementById('gradingAssignmentFilter');
+    if (filterSelect) {
+        filterSelect.addEventListener('change', () => renderGrading(1));
+    }
+
   } catch (error) {
     console.error('Grading error:', error);
     UI.showNotification('Error loading grading queue: ' + error.message, 'error');
