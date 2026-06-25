@@ -647,17 +647,16 @@ class SupabaseDB {
         const { status = null, pendingGradingOnly = false, searchTerm = '', courseId = null } = options;
         return this._request(async () => {
             let selectStr = '*, assignments(*), users!student_email(*)';
-            if (teacherEmail) selectStr = '*, assignments!inner(*), users!student_email(*)';
 
-            // If searchTerm is provided, ensure users join is inner to allow filtering
-            if (searchTerm && teacherEmail) selectStr = '*, assignments!inner(*), users!student_email!inner(*)';
+            if (searchTerm && (teacherEmail || courseId)) selectStr = '*, assignments!inner(*), users!student_email!inner(*)';
             else if (searchTerm) selectStr = '*, assignments(*), users!student_email!inner(*)';
+            else if (teacherEmail || courseId) selectStr = '*, assignments!inner(*), users!student_email(*)';
 
             let query = supabaseClient.from('submissions').select(selectStr, { count: 'exact' });
             if (assignmentId) query = query.eq('assignment_id', assignmentId);
             if (studentEmail) query = query.eq('student_email', studentEmail);
             if (teacherEmail) query = query.eq('assignments.teacher_email', teacherEmail);
-            if (courseId) query = query.eq('course_id', courseId);
+            if (courseId) query = query.eq('assignments.course_id', courseId);
 
             if (searchTerm) {
                 query = query.or(`email.ilike.%${searchTerm}%,full_name.ilike.%${searchTerm}%`, { foreignTable: 'users' });
@@ -1140,13 +1139,24 @@ class SupabaseDB {
     }
 
     static async getQuizSubmissions(quizId = null, studentEmail = null, teacherEmail = null, options = {}) {
-        const { status = null } = options;
+        const { status = null, searchTerm = '', courseId = null } = options;
         return this._request(async () => {
-            let query = supabaseClient.from('quiz_submissions').select('*, quizzes!quiz_id(*)', { count: 'exact' });
+            let selectStr = '*, quizzes!quiz_id(*), users!student_email(*)';
+
+            if (searchTerm && (teacherEmail || courseId)) selectStr = '*, quizzes!quiz_id!inner(*), users!student_email!inner(*)';
+            else if (searchTerm) selectStr = '*, quizzes!quiz_id(*), users!student_email!inner(*)';
+            else if (teacherEmail || courseId) selectStr = '*, quizzes!quiz_id!inner(*), users!student_email(*)';
+
+            let query = supabaseClient.from('quiz_submissions').select(selectStr, { count: 'exact' });
             if (quizId) query = query.eq('quiz_id', quizId);
             if (studentEmail) query = query.eq('student_email', studentEmail);
             if (teacherEmail) query = query.eq('quizzes.teacher_email', teacherEmail);
+            if (courseId) query = query.eq('quizzes.course_id', courseId);
             if (status) query = query.eq('status', status);
+
+            if (searchTerm) {
+                query = query.or(`email.ilike.%${searchTerm}%,full_name.ilike.%${searchTerm}%`, { foreignTable: 'users' });
+            }
 
             query = query.order('started_at', { ascending: false });
 
