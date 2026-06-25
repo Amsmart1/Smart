@@ -254,7 +254,7 @@ class SupabaseDB {
 
     // User operations
     static async getUsers(options = {}) {
-        const { searchTerm = '', role = null, resetStatus = null, status = null } = options;
+        const { searchTerm = '', role = null, resetStatus = null, status = null, page = 1, pageSize = 20 } = options;
         return this._request(async () => {
             let query = supabaseClient.from('users').select('*', { count: 'exact' });
             if (role) query = query.eq('role', role);
@@ -269,7 +269,7 @@ class SupabaseDB {
                 query = query.or(`full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`);
             }
 
-            return this._getPaginated(query.order('full_name', { ascending: true }), options);
+            return this._getPaginated(query.order('full_name', { ascending: true }), { ...options, page, pageSize });
         });
     }
 
@@ -316,7 +316,7 @@ class SupabaseDB {
 
     static async getEnrollmentsByCourses(courseIds, options = {}) {
         if (!courseIds || courseIds.length === 0) return { data: [], total: 0 };
-        const { searchTerm = '' } = options;
+        const { searchTerm = '', page = 1, pageSize = 20 } = options;
 
         return this._request(async () => {
             let query = supabaseClient
@@ -334,7 +334,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
@@ -503,7 +503,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
@@ -675,7 +675,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
@@ -916,7 +916,7 @@ class SupabaseDB {
 
     // Course operations
     static async getCourses(teacherEmail = null, status = null, options = {}) {
-        const { searchTerm = '' } = options;
+        const { searchTerm = '', page = 1, pageSize = 20 } = options;
         return this._request(async () => {
             let query = supabaseClient.from('courses').select('*', { count: 'exact' });
             if (teacherEmail) query = query.eq('teacher_email', teacherEmail);
@@ -929,7 +929,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
@@ -1108,7 +1108,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
@@ -1154,7 +1154,7 @@ class SupabaseDB {
                 const data = await this._getAll(query);
                 return { data: data || [], total: data?.length || 0 };
             }
-            return this._getPaginated(query, options);
+            return this._getPaginated(query, { ...options, page, pageSize });
         });
     }
 
