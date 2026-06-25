@@ -2952,20 +2952,13 @@ async function renderGradeBook() {
         try { await SupabaseDB.reconcileQuizAttempts(); } catch(e) { console.warn('Global reconciliation failed:', e); }
         if (renderId !== window.currentRenderId) return;
 
-        UI.showLoading('pageContent', 'Loading Grade Book data...');
+        UI.showLoading('pageContent', 'Initializing Grade Book...');
 
-        const [{ data: courses }, { data: assignments }, { data: quizzes }, { data: submissions }, { data: quizSubs }] = await Promise.all([
+        const [{ data: courses }, { data: assignments }, { data: quizzes }] = await Promise.all([
             SupabaseDB.getCourses(user.email, null, { all: true }),
             SupabaseDB.getAssignments(user.email, null, null, { all: true }),
-            SupabaseDB.getQuizzes(null, user.email, null, { all: true }),
-            SupabaseDB.getSubmissions(null, null, user.email, { all: true }),
-            SupabaseDB.getQuizSubmissions(null, null, user.email, { all: true })
+            SupabaseDB.getQuizzes(null, user.email, null, { all: true })
         ]);
-        if (renderId !== window.currentRenderId) return;
-
-        // Fetch all enrollments for teacher's courses upfront
-        const courseIds = courses.map(c => c.id);
-        const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(courseIds, { all: true });
         if (renderId !== window.currentRenderId) return;
 
         content.innerHTML = `
@@ -2977,24 +2970,30 @@ async function renderGradeBook() {
                         <button class="button secondary small w-auto" onclick="exportGradeBook('pdf')">PDF Report</button>
                     </div>
                 </div>
-                <div class="grid-3 mt-20 gap-10">
+                <div class="grid-4 mt-20 gap-10">
                     <div>
-                        <label class="small bold">Filter Course</label>
-                        <select id="gbCourseSelect" onchange="filterGradeBook()" class="m-0">
+                        <label class="small bold">Course</label>
+                        <select id="gbCourseSelect" class="m-0">
                             <option value="">All My Courses</option>
                             ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
                         </select>
                     </div>
                     <div>
-                        <label class="small bold">Assessment Type</label>
-                        <select id="gbTypeSelect" onchange="filterGradeBook()" class="m-0">
-                            <option value="all">All Assessments</option>
-                            <option value="assignments">Assignments Only</option>
-                            <option value="quizzes">Quizzes Only</option>
+                        <label class="small bold">Type</label>
+                        <select id="gbTypeSelect" class="m-0">
+                            <option value="all">All</option>
+                            <option value="assignments">Assignments</option>
+                            <option value="quizzes">Quizzes</option>
+                        </select>
+                    </div>
+                    <div id="gbAssessmentFilterContainer">
+                        <label class="small bold">Specific Assessment</label>
+                        <select id="gbAssessmentSelect" class="m-0">
+                            <option value="">All</option>
                         </select>
                     </div>
                     <div>
-                        <label class="small bold">Search Student</label>
+                        <label class="small bold">Student</label>
                         <input type="text" id="gbStudentSearch" placeholder="Name or email..." class="m-0">
                     </div>
                 </div>
@@ -3002,15 +3001,49 @@ async function renderGradeBook() {
             <div id="gradeBookArea" class="mt-20"></div>
         `;
 
-        TeacherState.gradeBookRawData = { courses, assignments, quizzes, submissions, quizSubs, enrollments };
+        TeacherState.gradeBookRawData = { courses, assignments, quizzes };
 
+        // Helper to update specific assessment dropdown
+        const updateAssessmentDropdown = () => {
+            const courseId = document.getElementById('gbCourseSelect').value;
+            const type = document.getElementById('gbTypeSelect').value;
+            const select = document.getElementById('gbAssessmentSelect');
+            if (!select) return;
+
+            let filtered = [];
+            if (type === 'assignments' || type === 'all') {
+                filtered = filtered.concat(assignments.filter(a => (!courseId || a.course_id === courseId) && a.status === 'published').map(a => ({ id: a.id, title: '📝 ' + a.title })));
+            }
+            if (type === 'quizzes' || type === 'all') {
+                filtered = filtered.concat(quizzes.filter(q => (!courseId || q.course_id === courseId) && q.status === 'published').map(q => ({ id: q.id, title: '❓ ' + q.title })));
+            }
+
+            select.innerHTML = '<option value="">All Assessments</option>' +
+                filtered.map(item => `<option value="${item.id}">${escapeHtml(item.title)}</option>`).join('');
+        };
+
+        const courseSelect = document.getElementById('gbCourseSelect');
+        const typeSelect = document.getElementById('gbTypeSelect');
+        const assessmentSelect = document.getElementById('gbAssessmentSelect');
         const searchInput = document.getElementById('gbStudentSearch');
+
+        courseSelect.addEventListener('change', () => {
+            updateAssessmentDropdown();
+            filterGradeBook();
+        });
+        typeSelect.addEventListener('change', () => {
+            updateAssessmentDropdown();
+            filterGradeBook();
+        });
+        assessmentSelect.addEventListener('change', () => filterGradeBook());
+
         if (searchInput) {
             searchInput.addEventListener('input', debounce(() => {
                 filterGradeBook();
-            }, 300));
+            }, 500));
         }
 
+        updateAssessmentDropdown();
         filterGradeBook();
     } catch (error) {
         console.error('Grade Book error:', error);
@@ -3023,10 +3056,35 @@ async function renderGradeBook() {
     }
 }
 
+/**
+ * Calculates grade book data by processing raw datasets into a display-ready format.
+ * Optimized for performance using Map-based lookups to handle large datasets.
+ */
 function calculateGradeBookData(rawData, filters = {}) {
-    const { courses, assignments, quizzes, submissions, quizSubs, enrollments } = rawData;
-    const { courseId = '', typeFilter = 'all', studentSearch = '' } = filters;
-    const search = studentSearch.toLowerCase();
+    const {
+        courses = [],
+        assignments = [],
+        quizzes = [],
+        submissions = [],
+        quizSubs = [],
+        enrollments = []
+    } = rawData || {};
+    const { courseId = '', typeFilter = 'all', assessmentId = '', studentSearch = '' } = filters;
+    const search = (studentSearch || '').toLowerCase();
+
+    // 1. Index submissions and quiz attempts for O(1) lookup performance
+    const submissionMap = new Map();
+    (submissions || []).forEach(s => {
+        const key = `${s.student_email}_${s.assignment_id}`;
+        submissionMap.set(key, s);
+    });
+
+    const quizSubMap = new Map();
+    (quizSubs || []).forEach(s => {
+        const key = `${s.student_email}_${s.quiz_id}`;
+        if (!quizSubMap.has(key)) quizSubMap.set(key, []);
+        quizSubMap.get(key).push(s);
+    });
 
     let filteredCourses = courseId ? courses.filter(c => c.id === courseId) : courses;
 
@@ -3034,10 +3092,15 @@ function calculateGradeBookData(rawData, filters = {}) {
         const showAssignments = typeFilter === 'all' || typeFilter === 'assignments';
         const showQuizzes = typeFilter === 'all' || typeFilter === 'quizzes';
 
-        const courseAssigns = showAssignments ? assignments.filter(a => a.course_id === course.id && a.status === 'published') : [];
-        const courseQuizzes = showQuizzes ? quizzes.filter(q => q.course_id === course.id && q.status === 'published') : [];
+        let courseAssigns = showAssignments ? assignments.filter(a => a.course_id === course.id && a.status === 'published') : [];
+        let courseQuizzes = showQuizzes ? quizzes.filter(q => q.course_id === course.id && q.status === 'published') : [];
 
-        const courseEnrollments = enrollments.filter(e => {
+        if (assessmentId) {
+            courseAssigns = courseAssigns.filter(a => a.id === assessmentId);
+            courseQuizzes = courseQuizzes.filter(q => q.id === assessmentId);
+        }
+
+        const courseEnrollments = (enrollments || []).filter(e => {
             if (e.course_id !== course.id) return false;
             if (!search) return true;
             const name = (e.users?.full_name || '').toLowerCase();
@@ -3052,7 +3115,7 @@ function calculateGradeBookData(rawData, filters = {}) {
             let itemsCount = 0;
 
             const assignmentGrades = courseAssigns.map(a => {
-                const sub = submissions.find(s => s.assignment_id === a.id && s.student_email === email);
+                const sub = submissionMap.get(`${email}_${a.id}`);
                 let status = 'not_submitted';
                 let grade = null;
                 let rawScore = null;
@@ -3088,7 +3151,7 @@ function calculateGradeBookData(rawData, filters = {}) {
             });
 
             const quizGrades = courseQuizzes.map(q => {
-                const allAttempts = quizSubs.filter(s => s.quiz_id === q.id && s.student_email === email);
+                const allAttempts = quizSubMap.get(`${email}_${q.id}`) || [];
                 const submittedAttempts = allAttempts.filter(s => s.status === 'submitted');
                 const inProgressAttempts = allAttempts.filter(s => s.status === 'in-progress');
 
@@ -3379,16 +3442,82 @@ async function exportStudents(type) {
 async function filterGradeBook() {
     const area = document.getElementById('gradeBookArea');
     if (!area) return;
-    const renderId = window.currentRenderId;
+
+    // Safety check to ensure we are still on the Grade Book page before starting a new authoritative render
+    if (!document.getElementById('gbCourseSelect')) return;
+
+    const renderId = ++window.currentRenderId;
+    const user = await SessionManager.getCurrentUser();
+    if (renderId !== window.currentRenderId || !document.getElementById('gradeBookArea')) return;
 
     try {
         const filters = {
             courseId: document.getElementById('gbCourseSelect')?.value || '',
             typeFilter: document.getElementById('gbTypeSelect')?.value || 'all',
+            assessmentId: document.getElementById('gbAssessmentSelect')?.value || '',
             studentSearch: document.getElementById('gbStudentSearch')?.value || ''
         };
 
-        const data = calculateGradeBookData(TeacherState.gradeBookRawData, filters);
+        area.innerHTML = '<div class="flex-center p-40"><div class="loading-spinner"></div></div>';
+
+        const type = filters.typeFilter;
+        const aid = filters.assessmentId;
+        const cid = filters.courseId;
+        const searchTerm = filters.studentSearch;
+        const teacherEmail = user.email;
+
+        // Ensure raw data is available
+        if (!TeacherState.gradeBookRawData) return;
+
+        // Optimization: identify if selected assessment is quiz or assignment upfront
+        const isQuiz = aid && (TeacherState.gradeBookRawData.quizzes || []).some(q => q.id === aid);
+        const isAssign = aid && (TeacherState.gradeBookRawData.assignments || []).some(a => a.id === aid);
+
+        const fetchTasks = [];
+
+        // 1. Submissions (Assignments)
+        if ((type === 'all' || type === 'assignments') && (!aid || isAssign)) {
+            fetchTasks.push(SupabaseDB.getSubmissions(
+                isAssign ? aid : null,
+                null,
+                teacherEmail,
+                { courseId: cid, searchTerm, all: true }
+            ));
+        } else {
+            fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
+        }
+
+        // 2. Quiz Submissions
+        if ((type === 'all' || type === 'quizzes') && (!aid || isQuiz)) {
+            fetchTasks.push(SupabaseDB.getQuizSubmissions(
+                isQuiz ? aid : null,
+                null,
+                teacherEmail,
+                { courseId: cid, searchTerm, all: true }
+            ));
+        } else {
+            fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
+        }
+
+        // 3. Enrollments (for student list per course)
+        const myCourseIds = cid ? [cid] : (TeacherState.gradeBookRawData.courses || []).map(c => c.id);
+        if (myCourseIds.length > 0) {
+            fetchTasks.push(SupabaseDB.getEnrollmentsByCourses(myCourseIds, { searchTerm, all: true }));
+        } else {
+            fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
+        }
+
+        const [subsRes, quizSubsRes, enrollRes] = await Promise.all(fetchTasks);
+        if (renderId !== window.currentRenderId || !document.getElementById('gradeBookArea')) return;
+
+        const rawData = {
+            ...TeacherState.gradeBookRawData,
+            submissions: subsRes?.data || [],
+            quizSubs: quizSubsRes?.data || [],
+            enrollments: enrollRes?.data || []
+        };
+
+        const data = calculateGradeBookData(rawData, filters);
         TeacherState.currentGradeBookData = data;
 
         let html = '';
