@@ -864,7 +864,7 @@ const NotificationManager = {
             // We apply a reasonable limit for the dropdown UI performance
             const [personalRes, broadcastsRes] = await Promise.all([
                 SupabaseDB.getNotifications(user.email, { pageSize: limit }),
-                SupabaseDB.getBroadcasts()
+                SupabaseDB.getBroadcasts({ targetRole: user.role })
             ]);
 
             const personal = personalRes.data || [];
@@ -1239,6 +1239,10 @@ const NotificationManager = {
                         this.queueUpdate(false);
                     } else if (event.data.type === 'ALERT_SHOWN') {
                         if (typeof SupabaseDB !== 'undefined') SupabaseDB.invalidateCache();
+                        // Synchronization: Sync local alerted Set with other tabs
+                        if (event.data.ids && Array.isArray(event.data.ids)) {
+                            event.data.ids.forEach(id => this._alertedSessionIds.add(id));
+                        }
                     }
                 }
             };

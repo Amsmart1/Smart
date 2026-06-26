@@ -812,6 +812,10 @@ class SupabaseDB {
                 const { error: certErr } = await supabaseClient.from('certificates').delete().match({ course_id: courseId, student_email: studentEmail });
                 if (certErr) console.warn('Cert record cleanup failed:', certErr);
 
+                // 8. Delete course-specific Notifications for this student
+                const { error: notifErr } = await supabaseClient.from('notifications').delete().match({ course_id: courseId, user_email: studentEmail });
+                if (notifErr) console.warn('Notification cleanup failed:', notifErr);
+
             } catch (e) {
                 console.warn('Identification of cleanup records failed:', e);
                 // We proceed to try delete the enrollment anyway, as that's the primary goal.
@@ -1322,13 +1326,22 @@ class SupabaseDB {
     }
 
     static async getBroadcasts(options = {}) {
-        return _cache.fetch(`broadcasts_active`, async () => {
+        const { targetRole = null } = options;
+        const cacheKey = targetRole ? `broadcasts_active_${targetRole}` : `broadcasts_active`;
+
+        return _cache.fetch(cacheKey, async () => {
             return this._request(async () => {
-                const { data, count, error } = await supabaseClient
+                let query = supabaseClient
                     .from('broadcasts')
                     .select('*', { count: 'exact' })
-                    .gt('expires_at', new Date().toISOString())
-                    .order('created_at', { ascending: false });
+                    .gt('expires_at', new Date().toISOString());
+
+                // Server-side filtering by role for performance and security
+                if (targetRole) {
+                    query = query.or(`target_role.is.null,target_role.eq.${targetRole}`);
+                }
+
+                const { data, count, error } = await query.order('created_at', { ascending: false });
                 if (error) throw error;
                 return { data: data || [], total: count || 0 };
             });
