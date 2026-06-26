@@ -850,17 +850,22 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
     let courses = [];
     if (targetCourseId) {
         const course = await SupabaseDB.getCourse(targetCourseId);
+        if (renderId !== window.currentRenderId) return;
         courses = [course];
     } else {
-        // Filter courses: only show courses where the student is actually enrolled
-        const studentEnrolledCourseIds = TeacherState.currentStudents
-            .filter(s => s.email === studentEmail)
-            .map(s => s.course_id);
+        // Robust fetch: get all enrollments for this student across all teacher's courses
+        const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
+        if (renderId !== window.currentRenderId) return;
+        const myCourseIds = (myCourses || []).map(c => c.id);
 
-        const { data: allCourses } = await SupabaseDB.getCourses(user.email, null);
+        const { data: studentEnrollments } = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, { all: true });
         if (renderId !== window.currentRenderId) return;
 
-        courses = allCourses.filter(c => studentEnrolledCourseIds.includes(c.id));
+        const enrolledCourseIds = (studentEnrollments || [])
+            .filter(e => e.student_email === studentEmail)
+            .map(e => e.course_id);
+
+        courses = myCourses.filter(c => enrolledCourseIds.includes(c.id));
     }
 
     const area = document.getElementById('certFormArea');
@@ -3593,15 +3598,20 @@ async function filterGradeBook(page = 1) {
 
         let html = '';
         data.forEach(course => {
+            // In paginated view, only show courses that have students in the current chunk
             if (course.studentCount === 0) {
-                if (!filters.studentSearch) {
-                    html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No students enrolled.</p></div>`;
+                // If viewing a specific course that is empty, show the message
+                if (filters.courseId === course.id) {
+                    html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No students found.</p></div>`;
                 }
                 return;
             }
 
             if (course.assignmentCount === 0 && course.quizCount === 0) {
-                 html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No published assessments to display for this filter.</p></div>`;
+                 // Only show if it's the specific course being filtered
+                 if (filters.courseId === course.id || !filters.courseId) {
+                    html += `<div class="card mb-20"><h3>${escapeHtml(course.title)}</h3><p class="empty small">No published assessments available.</p></div>`;
+                 }
                  return;
             }
 
