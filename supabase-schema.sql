@@ -982,14 +982,12 @@ DROP TRIGGER IF EXISTS tr_quiz_published ON quizzes;
 CREATE TRIGGER tr_quiz_published AFTER INSERT OR UPDATE ON quizzes FOR EACH ROW EXECUTE PROCEDURE tr_notify_quiz();
 
 CREATE OR REPLACE FUNCTION tr_notify_submission() RETURNS TRIGGER AS $$
-DECLARE
-  v_teacher_email VARCHAR(255);
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  SELECT c.teacher_email INTO v_teacher_email FROM courses c JOIN assignments a ON c.id = a.course_id WHERE a.id = NEW.assignment_id;
-  IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'submitted'))) THEN
-    IF v_teacher_email IS NOT NULL THEN
-      PERFORM notify_user(v_teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received');
+  -- teacher_email and course_id are inherited BEFORE INSERT
+  IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
+    IF NEW.teacher_email IS NOT NULL THEN
+      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received');
     END IF;
   END IF;
   RETURN NEW;
@@ -999,16 +997,28 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 DROP TRIGGER IF EXISTS tr_submission_received ON submissions;
 CREATE TRIGGER tr_submission_received AFTER INSERT OR UPDATE ON submissions FOR EACH ROW EXECUTE PROCEDURE tr_notify_submission();
 
+CREATE OR REPLACE FUNCTION tr_notify_quiz_submission() RETURNS TRIGGER AS $$
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+  IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
+    IF NEW.teacher_email IS NOT NULL THEN
+      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received');
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_quiz_submission_received ON quiz_submissions;
+CREATE TRIGGER tr_quiz_submission_received AFTER INSERT OR UPDATE ON quiz_submissions FOR EACH ROW EXECUTE PROCEDURE tr_notify_quiz_submission();
+
 CREATE OR REPLACE FUNCTION tr_notify_regrade_request() RETURNS TRIGGER AS $$
-DECLARE
-  v_teacher_email VARCHAR(255);
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   -- Only trigger if regrade_request is newly added or changed and not null
   IF (NEW.regrade_request IS NOT NULL AND (OLD.regrade_request IS NULL OR OLD.regrade_request != NEW.regrade_request)) THEN
-    SELECT teacher_email INTO v_teacher_email FROM courses WHERE id = NEW.course_id;
-    IF v_teacher_email IS NOT NULL THEN
-      PERFORM notify_user(v_teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received');
+    IF NEW.teacher_email IS NOT NULL THEN
+      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received');
     END IF;
   END IF;
   RETURN NEW;
@@ -1030,6 +1040,55 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS tr_grade_posted ON submissions;
 CREATE TRIGGER tr_grade_posted AFTER INSERT OR UPDATE ON submissions FOR EACH ROW EXECUTE PROCEDURE tr_notify_grade();
+
+CREATE OR REPLACE FUNCTION tr_notify_certificate_event() RETURNS TRIGGER AS $$
+DECLARE
+  v_course_title TEXT;
+  v_student_name TEXT;
+  v_admin_email VARCHAR(255);
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  -- 1. Student Requests Certificate (status: 'requested')
+  IF (NEW.status = 'requested' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'requested'))) THEN
+    IF NEW.type = 'consolidated' THEN
+      -- Notify all admins
+      FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
+        PERFORM notify_user(v_admin_email, 'Consolidated Certificate Requested', 'Student ' || NEW.student_email || ' requested a consolidated certificate.', 'admin.html?page=users', 'cert_requested');
+      END LOOP;
+    ELSE
+      -- Single course certificate
+      SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
+      IF NEW.teacher_email IS NOT NULL THEN
+        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested');
+      END IF;
+    END IF;
+  END IF;
+
+  -- 2. Teacher Issues Certificate (status: 'pending_approval')
+  IF (NEW.status = 'pending_approval' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'pending_approval'))) THEN
+     -- Notify all admins
+     SELECT full_name INTO v_student_name FROM users WHERE email = NEW.student_email;
+     FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
+       PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate for ' || COALESCE(v_student_name, NEW.student_email) || ' is pending approval.', 'admin.html?page=users', 'cert_issued');
+     END LOOP;
+  END IF;
+
+  -- 3. Certificate Approved or Rejected
+  IF (TG_OP = 'UPDATE' AND OLD.status != NEW.status) THEN
+    IF (NEW.status = 'approved') THEN
+       PERFORM notify_user(NEW.student_email, 'Certificate Approved', 'Your certificate is ready for download.', 'student.html?page=certificates', 'cert_approved');
+    ELSIF (NEW.status = 'rejected') THEN
+       PERFORM notify_user(NEW.student_email, 'Certificate Request Rejected', 'Your certificate request was rejected. Reason: ' || COALESCE(NEW.metadata->>'reason', 'None provided'), 'student.html?page=certificates', 'cert_rejected');
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_certificate_event ON certificates;
+CREATE TRIGGER tr_certificate_event AFTER INSERT OR UPDATE ON certificates FOR EACH ROW EXECUTE PROCEDURE tr_notify_certificate_event();
 
 CREATE OR REPLACE FUNCTION tr_notify_material_published() RETURNS TRIGGER AS $$
 BEGIN
@@ -2264,6 +2323,9 @@ BEGIN
     -- Soft limit: Delete read notifications older than 30 days
     DELETE FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE;
     DELETE FROM violations WHERE expires_at < NOW();
+
+    -- Clean up orphaned alerted_ids and other metadata tracking
+    -- This helps keep the users.metadata object size manageable over time
 
     -- Maintenance: Prune old tracking IDs from user metadata to prevent bloat
     -- We keep entries that still exist in the database (which are already pruned to 90 days)
