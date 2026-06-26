@@ -989,8 +989,8 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   -- teacher_email and course_id are inherited BEFORE INSERT
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
-    IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
+    IF v_teacher_email IS NOT NULL THEN
+      PERFORM notify_user(v_teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1004,8 +1004,8 @@ CREATE OR REPLACE FUNCTION tr_notify_quiz_submission() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
-    IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id);
+    IF v_teacher_email IS NOT NULL THEN
+      PERFORM notify_user(v_teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1020,20 +1020,17 @@ DECLARE
   v_course_title TEXT;
   v_parent_author VARCHAR(255);
   v_recipient_role VARCHAR(50);
+  v_teacher_email VARCHAR(255);
   v_link TEXT;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
+  SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
 
   IF NEW.parent_id IS NULL THEN
     -- New thread: notify teacher
-    IF NEW.teacher_email IS NULL THEN
-      SELECT teacher_email INTO NEW.teacher_email FROM courses WHERE id = NEW.course_id;
-    END IF;
-
-    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Discussion Thread', 'A student started a new discussion in "' || v_course_title || '".', 'teacher.html?page=discussions', 'discussion_post', NEW.course_id);
+    IF v_teacher_email IS NOT NULL AND NEW.user_email != v_teacher_email THEN
+      PERFORM notify_user(v_teacher_email, 'New Discussion Thread', 'A student started a new discussion in "' || v_course_title || '".', 'teacher.html?page=discussions', 'discussion_post', NEW.course_id);
     END IF;
   ELSE
     -- Reply: notify parent author
@@ -1043,6 +1040,38 @@ BEGIN
       SELECT role INTO v_recipient_role FROM users WHERE email = v_parent_author;
       v_link := CASE WHEN v_recipient_role = 'teacher' THEN 'teacher.html?page=discussions' ELSE 'student.html?page=discussions' END;
 
+      PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your post in "' || v_course_title || '".', v_link, 'discussion_reply', NEW.course_id);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_discussion_posted ON discussions;
+CREATE TRIGGER tr_discussion_posted AFTER INSERT ON discussions FOR EACH ROW EXECUTE PROCEDURE tr_notify_discussion();
+
+CREATE OR REPLACE FUNCTION tr_notify_discussion() RETURNS TRIGGER AS $$
+DECLARE
+  v_course_title TEXT;
+  v_teacher_email VARCHAR(255);
+  v_parent_author VARCHAR(255);
+  v_recipient_role VARCHAR(50);
+  v_link TEXT;
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
+
+  IF NEW.parent_id IS NULL THEN
+    IF v_teacher_email IS NOT NULL AND NEW.user_email != v_teacher_email THEN
+      PERFORM notify_user(v_teacher_email, 'New Discussion Thread', 'A student started a new discussion in "' || v_course_title || '".', 'teacher.html?page=discussions', 'discussion_post', NEW.course_id);
+    END IF;
+  ELSE
+    SELECT user_email INTO v_parent_author FROM discussions WHERE id = NEW.parent_id;
+    IF v_parent_author IS NOT NULL AND v_parent_author != NEW.user_email THEN
+      SELECT role INTO v_recipient_role FROM users WHERE email = v_parent_author;
+      v_link := CASE WHEN v_recipient_role = 'teacher' THEN 'teacher.html?page=discussions' ELSE 'student.html?page=discussions' END;
       PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your post in "' || v_course_title || '".', v_link, 'discussion_reply', NEW.course_id);
     END IF;
   END IF;
@@ -1079,8 +1108,8 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   -- Only trigger if regrade_request is newly added or changed and not null
   IF (NEW.regrade_request IS NOT NULL AND (OLD.regrade_request IS NULL OR OLD.regrade_request != NEW.regrade_request)) THEN
-    IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
+    IF v_teacher_email IS NOT NULL THEN
+      PERFORM notify_user(v_teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1121,8 +1150,8 @@ BEGIN
     ELSE
       -- Single course certificate
       SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
-      IF NEW.teacher_email IS NOT NULL THEN
-        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id);
+      IF v_teacher_email IS NOT NULL THEN
+        PERFORM notify_user(v_teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id);
       END IF;
     END IF;
   END IF;
@@ -1168,7 +1197,7 @@ CREATE TRIGGER tr_material_published AFTER INSERT ON materials FOR EACH ROW EXEC
 CREATE OR REPLACE FUNCTION tr_sync_course_teacher_name() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  SELECT full_name INTO NEW.created_by FROM users WHERE email = NEW.teacher_email;
+  SELECT full_name INTO NEW.created_by FROM users WHERE email = v_teacher_email;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -1196,21 +1225,21 @@ FOR EACH ROW EXECUTE PROCEDURE tr_update_courses_teacher_name();
 CREATE OR REPLACE FUNCTION tr_sync_course_children_owner() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (TG_OP = 'UPDATE' AND OLD.teacher_email IS DISTINCT FROM NEW.teacher_email) THEN
-    UPDATE assignments SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE quizzes SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE live_classes SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE materials SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE topics SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE lessons SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE submissions SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE quiz_submissions SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE attendance SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE discussions SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE broadcasts SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE certificates SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE study_sessions SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
-    UPDATE violations SET teacher_email = NEW.teacher_email WHERE course_id = NEW.id;
+  IF (TG_OP = 'UPDATE' AND OLD.teacher_email IS DISTINCT FROM v_teacher_email) THEN
+    UPDATE assignments SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE quizzes SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE live_classes SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE materials SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE topics SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE lessons SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE submissions SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE quiz_submissions SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE attendance SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE discussions SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE broadcasts SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE certificates SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE study_sessions SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
+    UPDATE violations SET teacher_email = v_teacher_email WHERE course_id = NEW.id;
   END IF;
   RETURN NEW;
 END;
@@ -1242,8 +1271,8 @@ BEGIN
   END IF;
 
   -- 2. Populate teacher_email from course if missing
-  IF NEW.teacher_email IS NULL AND NEW.course_id IS NOT NULL THEN
-    SELECT teacher_email INTO NEW.teacher_email FROM courses WHERE id = NEW.course_id;
+  IF v_teacher_email IS NULL AND NEW.course_id IS NOT NULL THEN
+    SELECT teacher_email INTO v_teacher_email FROM courses WHERE id = NEW.course_id;
   END IF;
 
   RETURN NEW;

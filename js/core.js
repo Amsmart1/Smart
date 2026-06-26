@@ -1971,10 +1971,10 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                     <div class="flex-between" style="align-items:start">
                         <div class="small"><strong>${escapeHtml(d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}</div>
                         <div class="flex gap-5">
-                            <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'reply', '${d.id}')">Reply</button>
+                            <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction(event, '${containerId}', 'reply', '${d.id}')">Reply</button>
                             ${isMine ? `
-                                <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'edit', '${d.id}')">Edit</button>
-                                <button class="button danger tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'delete', '${d.id}')">Delete</button>
+                                <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction(event, '${containerId}', 'edit', '${d.id}')">Edit</button>
+                                <button class="button danger tiny" onclick="UI._dispatchDiscussionAction(event, '${containerId}', 'delete', '${d.id}')">Delete</button>
                             ` : ''}
                         </div>
                     </div>
@@ -1995,7 +1995,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
             </div>
             <div class="flex-column gap-10 border-top pt-15">
                 <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0" style="display:none"></textarea>
-                <button class="button w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
+                <button class="button w-auto" onclick="UI._dispatchDiscussionAction(event, '${containerId}', 'post', null)">Post</button>
             </div>
         </div>
     `;
@@ -2012,7 +2012,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     UI._discussionOptions[containerId] = options;
 };
 
-UI._dispatchDiscussionAction = function(containerId, action, id) {
+UI._dispatchDiscussionAction = function(event, containerId, action, id) {
     const opts = UI._discussionOptions[containerId];
     if (!opts) return;
 
@@ -2021,7 +2021,7 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         area.innerHTML = `
             <div class="flex-column gap-10 mt-10">
                 <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10" style="display:none"></textarea>
-                <button class="button small w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
+                <button class="button small w-auto" onclick="UI._dispatchDiscussionAction(event, '${containerId}', 'post', '${id}')">Reply</button>
                 <button class="button secondary small w-auto" onclick="this.parentElement.remove()">Cancel</button>
             </div>
         `;
@@ -2562,8 +2562,10 @@ const DiscussionManager = {
             saveBtn.disabled = true;
             saveBtn.innerHTML = 'Saving...';
             try {
-                if (await onSave(id, content)) {
-                    // Success handled by caller re-rendering
+                const result = await onSave(id, content);
+                if (result === false) {
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = 'Save';
                 }
             } catch (e) {
                 UI.showNotification('Error updating: ' + e.message, 'error');
