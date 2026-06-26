@@ -181,6 +181,7 @@ function showCourseForm(course = null) {
       };
 
       await SupabaseDB.saveCourse(courseData);
+      TeacherState.myCourseIds = null;
       UI.showNotification('Course saved successfully', 'success');
       renderCourses();
     } catch (err) {
@@ -490,6 +491,7 @@ async function deleteCourseById(id) {
     UI.showNotification('Deleting course...', 'info');
     try {
       await SupabaseDB.deleteCourse(id);
+      TeacherState.myCourseIds = null;
       UI.showNotification('Course deleted successfully', 'success');
       renderCourses();
     } catch (e) {
@@ -696,12 +698,14 @@ async function renderStudents(page = 1) {
 
     const students = enrollments.map(e => {
         return {
-            full_name: e.users?.full_name,
+            full_name: e.users?.full_name || 'N/A',
             email: e.student_email,
-            course_title: e.courses?.title,
+            course_title: e.courses?.title || 'Unknown',
             course_id: e.course_id
         };
     }).filter(s => s.email);
+
+    const isSearchFocused = document.activeElement && document.activeElement.id === 'studentSearch';
 
     content.innerHTML = `
     <div class="card">
@@ -743,9 +747,12 @@ async function renderStudents(page = 1) {
         searchInput.addEventListener('input', debounce(() => {
             renderStudents(1);
         }, 500));
-        searchInput.focus();
-        // Restore cursor position if possible or just end
-        searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
+
+        if (isSearchFocused) {
+            searchInput.focus();
+            // Restore cursor position if possible or just end
+            searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
+        }
     }
 
 
@@ -849,20 +856,18 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
         courses = [course];
     } else {
         // Filter courses: only show courses where the student is actually enrolled AND the teacher teaches
-        const { data: enrollments } = await SupabaseDB.getEnrollments(studentEmail);
+        const [{ data: enrollments }, { data: allCourses }] = await Promise.all([
+            SupabaseDB.getEnrollments(studentEmail),
+            SupabaseDB.getCourses(user.email, null)
+        ]);
         if (renderId !== window.currentRenderId) return;
+
         const studentEnrolledCourseIds = enrollments.map(e => e.course_id);
 
-        if (!TeacherState.myCourseIds) {
-            const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
-            if (renderId !== window.currentRenderId) return;
-            TeacherState.myCourseIds = (myCourses || []).map(c => c.id);
-        }
+        // Cache teacher course IDs for other views
+        TeacherState.myCourseIds = (allCourses || []).map(c => c.id);
 
-        const { data: allCourses } = await SupabaseDB.getCourses(user.email, null);
-        if (renderId !== window.currentRenderId) return;
-
-        courses = allCourses.filter(c => studentEnrolledCourseIds.includes(c.id) && TeacherState.myCourseIds.includes(c.id));
+        courses = (allCourses || []).filter(c => studentEnrolledCourseIds.includes(c.id));
     }
 
     const area = document.getElementById('certFormArea');
@@ -3452,7 +3457,7 @@ async function exportStudents(type) {
             full_name: e.users?.full_name || 'N/A',
             email: e.student_email,
             course_title: e.courses?.title || 'Unknown'
-        }));
+        })).filter(s => s.email);
 
         const headers = ['Name', 'Email', 'Course'];
         const rows = students.map(s => [s.full_name, s.email, s.course_title]);
