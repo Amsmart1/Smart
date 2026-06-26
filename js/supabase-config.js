@@ -1389,6 +1389,15 @@ class SupabaseDB {
         _cache.invalidate(`user_${email}`);
     }
 
+    static async purgeUserMetadata(email) {
+        return this._request(async () => {
+            const { error } = await supabaseClient.rpc('purge_user_metadata', { p_email: email });
+            if (error) throw error;
+            _cache.invalidate(`user_${email}`);
+            return true;
+        });
+    }
+
     static async markNotificationsAsRead(userEmail, id = null) {
         const query = supabaseClient
             .from('notifications')

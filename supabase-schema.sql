@@ -989,9 +989,12 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   -- teacher_email and course_id are inherited BEFORE INSERT
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
+    -- Notify Teacher
     IF NEW.teacher_email IS NOT NULL THEN
       PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
+    -- Notify Student (Confirmation)
+    PERFORM notify_user(NEW.student_email, 'Submission Received', 'Your assignment submission has been received and is pending grading.', 'student.html?page=assignments', 'system', NEW.course_id);
   END IF;
   RETURN NEW;
 END;
@@ -1004,9 +1007,12 @@ CREATE OR REPLACE FUNCTION tr_notify_quiz_submission() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
+    -- Notify Teacher
     IF NEW.teacher_email IS NOT NULL THEN
       PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id);
     END IF;
+    -- Notify Student (Confirmation)
+    PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id);
   END IF;
   RETURN NEW;
 END;
@@ -1125,6 +1131,118 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS tr_material_published ON materials;
 CREATE TRIGGER tr_material_published AFTER INSERT ON materials FOR EACH ROW EXECUTE PROCEDURE tr_notify_material_published();
+
+CREATE OR REPLACE FUNCTION tr_notify_discussion() RETURNS TRIGGER AS $$
+DECLARE
+  v_course_title TEXT;
+  v_parent_author VARCHAR(255);
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
+
+  IF NEW.parent_id IS NULL THEN
+    -- New Thread
+    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email THEN
+      PERFORM notify_user(NEW.teacher_email, 'New Discussion Thread', 'A new discussion thread has been started in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'system', NEW.course_id);
+    END IF;
+  ELSE
+    -- Reply
+    SELECT user_email INTO v_parent_author FROM discussions WHERE id = NEW.parent_id;
+
+    -- Notify Parent Author
+    IF v_parent_author IS NOT NULL AND v_parent_author != NEW.user_email THEN
+      PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your discussion post.', null, 'system', NEW.course_id);
+    END IF;
+
+    -- Notify Teacher (if not the one replying and not already notified as parent author)
+    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email AND v_parent_author != NEW.teacher_email THEN
+       PERFORM notify_user(NEW.teacher_email, 'New Discussion Reply', 'A reply was posted in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'system', NEW.course_id);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_discussion_event ON discussions;
+CREATE TRIGGER tr_discussion_event AFTER INSERT ON discussions FOR EACH ROW EXECUTE PROCEDURE tr_notify_discussion();
+
+CREATE OR REPLACE FUNCTION tr_notify_support_ticket() RETURNS TRIGGER AS $$
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  IF (TG_OP = 'UPDATE') THEN
+    IF (OLD.status IS DISTINCT FROM NEW.status) THEN
+      PERFORM notify_user(NEW.user_email, 'Support Ticket Updated', 'The status of your ticket "' || NEW.subject || '" has been updated to ' || NEW.status || '.', null, 'system');
+    ELSIF (OLD.resolution_notes IS NULL AND NEW.resolution_notes IS NOT NULL) OR (OLD.resolution_notes IS DISTINCT FROM NEW.resolution_notes) THEN
+      PERFORM notify_user(NEW.user_email, 'Support Ticket Update', 'New resolution notes have been added to your ticket "' || NEW.subject || '".', null, 'system');
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_support_ticket_event ON support_tickets;
+CREATE TRIGGER tr_support_ticket_event AFTER UPDATE ON support_tickets FOR EACH ROW EXECUTE PROCEDURE tr_notify_support_ticket();
+
+CREATE OR REPLACE FUNCTION tr_notify_user_security() RETURNS TRIGGER AS $$
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  IF (TG_OP = 'UPDATE') THEN
+    -- Account Status Change
+    IF (OLD.active IS TRUE AND NEW.active IS FALSE) THEN
+      PERFORM notify_user(NEW.email, 'Account Deactivated', 'Your account has been deactivated by an administrator.', null, 'system');
+    ELSIF (OLD.active IS FALSE AND NEW.active IS TRUE) THEN
+      PERFORM notify_user(NEW.email, 'Account Reactivated', 'Your account has been reactivated. You can now login.', null, 'system');
+    END IF;
+
+    -- Flagging
+    IF (OLD.flagged IS FALSE AND NEW.flagged IS TRUE) THEN
+      PERFORM notify_user(NEW.email, 'Account Flagged', 'Your account has been flagged for suspicious activity and is under review.', null, 'system');
+    END IF;
+
+    -- Role Update
+    IF (OLD.role IS DISTINCT FROM NEW.role) THEN
+      PERFORM notify_user(NEW.email, 'Permissions Updated', 'Your account role has been updated to ' || NEW.role || '.', null, 'system');
+    END IF;
+
+    -- Reset Request
+    IF (NEW.reset_request IS NOT NULL AND (OLD.reset_request IS NULL OR OLD.reset_request->>'status' IS DISTINCT FROM NEW.reset_request->>'status')) THEN
+      IF (NEW.reset_request->>'status' = 'pending') THEN
+        PERFORM notify_user(NEW.email, 'Reset Requested', 'Your password reset request is pending administrator review.', null, 'reset_requested');
+      ELSIF (NEW.reset_request->>'status' = 'approved') THEN
+        PERFORM notify_user(NEW.email, 'Reset Approved', 'Your password reset request was approved. Please use the temporary password to login and finalize your reset.', null, 'system');
+      ELSIF (NEW.reset_request->>'status' = 'denied') THEN
+        PERFORM notify_user(NEW.email, 'Reset Denied', 'Your password reset request was denied. Reason: ' || COALESCE(NEW.reset_request->>'denial_reason', 'Security verification failed'), null, 'system');
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_user_security_event ON users;
+CREATE TRIGGER tr_user_security_event AFTER UPDATE ON users FOR EACH ROW EXECUTE PROCEDURE tr_notify_user_security();
+
+CREATE OR REPLACE FUNCTION tr_notify_password_updated() RETURNS TRIGGER AS $$
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  IF (TG_OP = 'UPDATE' AND OLD.password_hash IS DISTINCT FROM NEW.password_hash) THEN
+    -- Notify only on actual password change
+    PERFORM notify_user(NEW.email, 'Password Updated', 'Your account password has been successfully updated.', null, 'password_updated');
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_user_secrets_event ON user_secrets;
+CREATE TRIGGER tr_user_secrets_event AFTER UPDATE ON user_secrets FOR EACH ROW EXECUTE PROCEDURE tr_notify_password_updated();
 
 CREATE OR REPLACE FUNCTION tr_sync_course_teacher_name() RETURNS TRIGGER AS $$
 BEGIN
@@ -1930,8 +2048,7 @@ BEGIN
         reset_data = NULL,
         updated_at = NOW();
 
-    -- 5. Create Success Notification
-    PERFORM notify_user(p_email, 'Password Updated', 'Your password has been successfully reset and finalized.', null, 'password_updated');
+    -- 5. Trigger-based Notification (Automated via tr_user_secrets_event and tr_user_security_event)
 
     RETURN jsonb_build_object('success', true, 'message', 'Password successfully reset. Please login with your new credentials.');
 END;
@@ -1971,10 +2088,7 @@ BEGIN
         END,
         updated_at = NOW();
 
-    -- Create Notification for manual password updates (not from reset finalize which has its own)
-    IF p_password_hash IS NOT NULL AND (p_reset_data IS NULL OR p_reset_data = '{}'::jsonb) AND NOT _is_migration_mode() THEN
-       PERFORM notify_user(p_email, 'Password Updated', 'Your account password has been updated.', null, 'password_updated');
-    END IF;
+    -- Trigger-based Notification (Automated via tr_user_secrets_event)
 
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -2117,8 +2231,7 @@ BEGIN
         'denial_reason', null
     ) WHERE email = p_email;
 
-    -- Create Notification
-    PERFORM notify_user(p_email, 'Reset Requested', 'Password reset requested and pending admin review.', null, 'reset_requested');
+    -- Trigger-based Notification (Automated via tr_user_security_event)
 
     RETURN jsonb_build_object('success', true, 'message', 'Password reset request submitted.');
 END;
@@ -2331,14 +2444,11 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Periodic Purge Function
+-- Periodic Purge Function (Global Cleanup)
 CREATE OR REPLACE FUNCTION purge_expired_records()
 RETURNS TRIGGER AS $$
 DECLARE
   v_expired_cutoff TIMESTAMP WITH TIME ZONE := (NOW() - INTERVAL '90 days');
-  v_alerted_ids JSONB;
-  v_cleared_broadcasts JSONB;
-  v_read_broadcasts JSONB;
-  v_user_email VARCHAR;
 BEGIN
     -- Bypass cleanup during migration mode
     IF _is_migration_mode() THEN
@@ -2352,47 +2462,6 @@ BEGIN
     DELETE FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE;
     DELETE FROM violations WHERE expires_at < NOW();
 
-    -- Clean up orphaned alerted_ids and other metadata tracking
-    -- This helps keep the users.metadata object size manageable over time
-
-    -- Maintenance: Prune old tracking IDs from user metadata to prevent bloat
-    -- We keep entries that still exist in the database (which are already pruned to 90 days)
-    v_user_email := get_auth_email_raw();
-
-    IF v_user_email IS NOT NULL THEN
-        v_alerted_ids := (
-            SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-            FROM users, jsonb_array_elements_text(metadata->'alerted_ids') elem
-            WHERE email = v_user_email AND elem::uuid IN (SELECT id FROM notifications UNION SELECT id FROM broadcasts)
-        );
-
-        v_cleared_broadcasts := (
-            SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-            FROM users, jsonb_array_elements_text(metadata->'cleared_broadcasts') elem
-            WHERE email = v_user_email AND elem::uuid IN (SELECT id FROM broadcasts)
-        );
-
-        v_read_broadcasts := (
-            SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-            FROM users, jsonb_array_elements_text(metadata->'read_broadcasts') elem
-            WHERE email = v_user_email AND elem::uuid IN (SELECT id FROM broadcasts)
-        );
-
-        -- Final safety: ensure we never nullify metadata via builder if queries return no rows (though subqueries with COALESCE handle this)
-        v_alerted_ids := COALESCE(v_alerted_ids, '[]'::jsonb);
-        v_cleared_broadcasts := COALESCE(v_cleared_broadcasts, '[]'::jsonb);
-        v_read_broadcasts := COALESCE(v_read_broadcasts, '[]'::jsonb);
-
-        UPDATE users
-        SET metadata = metadata || jsonb_build_object(
-            'alerted_ids', v_alerted_ids,
-            'cleared_broadcasts', v_cleared_broadcasts,
-            'read_broadcasts', v_read_broadcasts
-        )
-        WHERE email = v_user_email
-        AND (metadata ? 'alerted_ids' OR metadata ? 'cleared_broadcasts' OR metadata ? 'read_broadcasts');
-    END IF;
-
     -- Automatically clear expired password reset requests (24h window)
     UPDATE users
     SET reset_request = NULL
@@ -2401,6 +2470,48 @@ BEGIN
     AND (reset_request->>'expires_at')::TIMESTAMP WITH TIME ZONE < NOW();
 
     RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Authoritative Metadata Pruning RPC (User-specific)
+-- Prunes orphaned tracking IDs from user metadata to prevent bloat.
+CREATE OR REPLACE FUNCTION purge_user_metadata(p_email VARCHAR)
+RETURNS VOID AS $$
+DECLARE
+  v_alerted_ids JSONB;
+  v_cleared_broadcasts JSONB;
+  v_read_broadcasts JSONB;
+BEGIN
+    -- Security: Only authorized roles or self can update metadata
+    IF NOT (is_admin() OR get_auth_email_raw() = p_email) THEN
+        RAISE EXCEPTION 'Unauthorized metadata update.';
+    END IF;
+
+    v_alerted_ids := (
+        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+        FROM users, jsonb_array_elements_text(metadata->'alerted_ids') elem
+        WHERE email = p_email AND elem::uuid IN (SELECT id FROM notifications UNION SELECT id FROM broadcasts)
+    );
+
+    v_cleared_broadcasts := (
+        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+        FROM users, jsonb_array_elements_text(metadata->'cleared_broadcasts') elem
+        WHERE email = p_email AND elem::uuid IN (SELECT id FROM broadcasts)
+    );
+
+    v_read_broadcasts := (
+        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+        FROM users, jsonb_array_elements_text(metadata->'read_broadcasts') elem
+        WHERE email = p_email AND elem::uuid IN (SELECT id FROM broadcasts)
+    );
+
+    UPDATE users
+    SET metadata = metadata || jsonb_build_object(
+        'alerted_ids', COALESCE(v_alerted_ids, '[]'::jsonb),
+        'cleared_broadcasts', COALESCE(v_cleared_broadcasts, '[]'::jsonb),
+        'read_broadcasts', COALESCE(v_read_broadcasts, '[]'::jsonb)
+    )
+    WHERE email = p_email;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
