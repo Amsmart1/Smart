@@ -1019,6 +1019,8 @@ CREATE OR REPLACE FUNCTION tr_notify_discussion() RETURNS TRIGGER AS $$
 DECLARE
   v_course_title TEXT;
   v_parent_author VARCHAR(255);
+  v_recipient_role VARCHAR(50);
+  v_link TEXT;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
@@ -1026,7 +1028,6 @@ BEGIN
 
   IF NEW.parent_id IS NULL THEN
     -- New thread: notify teacher
-    -- Ensure teacher_email is available (usually populated by tr_inherit_course_data BEFORE INSERT)
     IF NEW.teacher_email IS NULL THEN
       SELECT teacher_email INTO NEW.teacher_email FROM courses WHERE id = NEW.course_id;
     END IF;
@@ -1037,8 +1038,12 @@ BEGIN
   ELSE
     -- Reply: notify parent author
     SELECT user_email INTO v_parent_author FROM discussions WHERE id = NEW.parent_id;
+
     IF v_parent_author IS NOT NULL AND v_parent_author != NEW.user_email THEN
-      PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your post in "' || v_course_title || '".', 'student.html?page=discussions', 'discussion_reply', NEW.course_id);
+      SELECT role INTO v_recipient_role FROM users WHERE email = v_parent_author;
+      v_link := CASE WHEN v_recipient_role = 'teacher' THEN 'teacher.html?page=discussions' ELSE 'student.html?page=discussions' END;
+
+      PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your post in "' || v_course_title || '".', v_link, 'discussion_reply', NEW.course_id);
     END IF;
   END IF;
 

@@ -438,7 +438,7 @@ class SupabaseDB {
             .delete()
             .eq('id', id);
         if (error) throw error;
-        _cache.invalidate();
+        _cache.invalidate("discussions");
     }
 
     static async getUser(email, bypassCache = false) {
@@ -1089,7 +1089,7 @@ class SupabaseDB {
 
     static async saveDiscussion(discussion) {
         const data = await this._upsert('discussions', discussion);
-        _cache.invalidate('materials');
+        _cache.invalidate('discussions');
         return data?.[0];
     }
 
@@ -1582,7 +1582,7 @@ class SupabaseDB {
             .delete()
             .eq('id', id);
         if (error) throw error;
-        _cache.invalidate('planner');
+        _cache.invalidate('discussions');
     }
 
     /**

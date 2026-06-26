@@ -1508,11 +1508,14 @@ async function viewCourseDiscussions(courseId) {
 
     UI.renderDiscussion('discussionArea', disc, user.email, {
         onPost: async (content, parentId) => {
-            if (await DiscussionManager.post(courseId, content, parentId)) viewCourseDiscussions(courseId);
+            const success = await DiscussionManager.post(courseId, content, parentId);
+            if (success) viewCourseDiscussions(courseId);
+            return success;
         },
         onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
             const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-            const existing = disc.find(d => d.id === id);
+            const existing = disc?.find(d => d.id === id);
+            if (!existing) return false;
             await SupabaseDB.saveDiscussion({ ...existing, content });
             viewCourseDiscussions(courseId);
             return true;

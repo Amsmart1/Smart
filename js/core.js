@@ -268,6 +268,11 @@ const UI = {
         const textarea = document.getElementById(textareaId);
         if (!textarea) return;
 
+        // Cleanup existing RTE if any
+        if (textarea._rte) {
+            textarea._rte.destroy();
+        }
+
         const container = document.createElement('div');
         container.className = 'rte-container mb-10';
         container.innerHTML = `
@@ -293,9 +298,9 @@ const UI = {
         editor.oninput = sync;
         editor.onblur = sync;
 
-        container.querySelector('.rte-btn-bold').onclick = () => { document.execCommand('bold', false); editor.focus(); sync(); };
-        container.querySelector('.rte-btn-italic').onclick = () => { document.execCommand('italic', false); editor.focus(); sync(); };
-        container.querySelector('.rte-btn-underline').onclick = () => { document.execCommand('underline', false); editor.focus(); sync(); };
+        container.querySelector('.rte-btn-bold').onclick = (e) => { e.preventDefault(); document.execCommand('bold', false); editor.focus(); sync(); };
+        container.querySelector('.rte-btn-italic').onclick = (e) => { e.preventDefault(); document.execCommand('italic', false); editor.focus(); sync(); };
+        container.querySelector('.rte-btn-underline').onclick = (e) => { e.preventDefault(); document.execCommand('underline', false); editor.focus(); sync(); };
 
         editor.onpaste = (e) => {
             e.preventDefault();
@@ -304,10 +309,21 @@ const UI = {
             sync();
         };
 
-        return {
-            destroy: () => container.remove(),
-            sync: sync
+        const rte = {
+            destroy: () => {
+                container.remove();
+                textarea.style.display = '';
+                delete textarea._rte;
+            },
+            sync: sync,
+            clear: () => {
+                editor.innerHTML = '';
+                sync();
+            }
         };
+
+        textarea._rte = rte;
+        return rte;
     },
 
     renderStats(containerId, stats) {
@@ -1948,7 +1964,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     } = options;
 
     const renderThread = (parentId = null, depth = 0) => {
-        return discussions.filter(d => d.parent_id === parentId).map(d => {
+        return (discussions || []).filter(d => d.parent_id === parentId).map(d => {
             const isMine = d.user_email === currentUserEmail;
             return `
                 <div class="question mb-10" style="margin-left:${depth * 20}px" id="disc-${d.id}">
@@ -1970,19 +1986,26 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
         }).join('');
     };
 
+    const threadHtml = renderThread();
     container.innerHTML = `
         <div class="card">
             <h3 class="m-0">Course Discussion</h3>
-            <div id="disc-list" class="mt-20 mb-20" style="max-height:500px; overflow-y:auto">
-                ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
+            <div id="disc-list" class="mt-20 mb-20" style="max-height:600px; overflow-y:auto">
+                ${threadHtml || '<div class="empty">No messages yet. Start the conversation!</div>'}
             </div>
-            <div class="flex-column gap-10">
+            <div class="flex-column gap-10 border-top pt-15">
                 <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0" style="display:none"></textarea>
                 <button class="button w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
             </div>
         </div>
     `;
     UI.createRTE('discInputMain');
+
+    // Scroll to bottom on new threads if list is large
+    if (threadHtml) {
+        const list = document.getElementById('disc-list');
+        list.scrollTop = list.scrollHeight;
+    }
 
     // Internal action dispatcher
     UI._discussionOptions = UI._discussionOptions || {};
@@ -2005,8 +2028,23 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         UI.createRTE(`replyInput-${id}`, { minHeight: '60px' });
     } else if (action === 'post') {
         const inputId = id ? `replyInput-${id}` : 'discInputMain';
-        const content = document.getElementById(inputId).value;
-        if (content) opts.onPost(content, id);
+        const input = document.getElementById(inputId);
+        if (input?._rte) input._rte.sync();
+        const content = input?.value;
+        if (content) {
+            const btn = event.currentTarget;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = 'Posting...';
+            opts.onPost(content, id).then(success => {
+                if (success !== false && input?._rte) input._rte.clear();
+            }).finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }
+            });
+        }
     } else if (action === 'edit') {
         opts.onEdit(id);
     } else if (action === 'delete') {
@@ -2474,8 +2512,12 @@ const HelpSystem = {
 window.HelpSystem = HelpSystem;
 
 const DiscussionManager = {
+    _isPosting: false,
+
     async post(courseId, content, parentId = null) {
-        if (!content) return;
+        if (!content || this._isPosting) return false;
+        this._isPosting = true;
+
         const user = await SessionManager.getCurrentUser();
         try {
             await SupabaseDB.saveDiscussion({
@@ -2490,6 +2532,8 @@ const DiscussionManager = {
         } catch (e) {
             UI.showNotification('Error posting message: ' + e.message, 'error');
             return false;
+        } finally {
+            this._isPosting = false;
         }
     },
 
@@ -2508,18 +2552,23 @@ const DiscussionManager = {
         `;
         UI.createRTE(`edit-disc-input-${id}`, { minHeight: '60px' });
 
-        document.getElementById(`save-disc-${id}`).onclick = async () => {
-            const content = document.getElementById(`edit-disc-input-${id}`).value;
+        const saveBtn = document.getElementById(`save-disc-${id}`);
+        saveBtn.onclick = async () => {
+            const input = document.getElementById(`edit-disc-input-${id}`);
+            if (input?._rte) input._rte.sync();
+            const content = input?.value;
             if (!content) return;
+
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = 'Saving...';
             try {
-                // Fetching individual record for consistency check if needed,
-                // but typically we just need the ID and new content for save.
-                // We'll trust the current UI flow which already has course info via closure in callers.
                 if (await onSave(id, content)) {
                     // Success handled by caller re-rendering
                 }
             } catch (e) {
                 UI.showNotification('Error updating: ' + e.message, 'error');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = 'Save';
             }
         };
 
