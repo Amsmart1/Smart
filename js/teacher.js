@@ -3,6 +3,7 @@ const TeacherState = {
   currentGradeBookData: null,
   gradeBookRawData: null,
   myCourseIds: null,
+  myCourses: null,
   studentsPage: 1,
   _warnedEnd: false,
   liveClassTimer: null
@@ -182,6 +183,7 @@ function showCourseForm(course = null) {
 
       await SupabaseDB.saveCourse(courseData);
       TeacherState.myCourseIds = null;
+      TeacherState.myCourses = null;
       UI.showNotification('Course saved successfully', 'success');
       renderCourses();
     } catch (err) {
@@ -492,6 +494,7 @@ async function deleteCourseById(id) {
     try {
       await SupabaseDB.deleteCourse(id);
       TeacherState.myCourseIds = null;
+      TeacherState.myCourses = null;
       UI.showNotification('Course deleted successfully', 'success');
       renderCourses();
     } catch (e) {
@@ -678,18 +681,22 @@ async function renderStudents(page = 1) {
   clearActiveCountdowns();
 
   const searchTerm = document.getElementById('studentSearch')?.value || '';
+  const courseFilter = document.getElementById('courseFilter')?.value || '';
   const pageSize = 20;
 
   try {
-    if (!TeacherState.myCourseIds) {
+    if (!TeacherState.myCourses) {
         const user = await SessionManager.getCurrentUser();
         if (renderId !== window.currentRenderId) return;
         const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
         if (renderId !== window.currentRenderId) return;
-        TeacherState.myCourseIds = (myCourses || []).map(c => c.id);
+        TeacherState.myCourses = myCourses || [];
+        TeacherState.myCourseIds = TeacherState.myCourses.map(c => c.id);
     }
 
-    const { data: enrollments, total } = await SupabaseDB.getEnrollmentsByCourses(TeacherState.myCourseIds, {
+    const targetCourseIds = courseFilter ? [courseFilter] : TeacherState.myCourseIds;
+
+    const { data: enrollments, total } = await SupabaseDB.getEnrollmentsByCourses(targetCourseIds, {
         searchTerm,
         page,
         pageSize
@@ -706,12 +713,18 @@ async function renderStudents(page = 1) {
     }).filter(s => s.email);
 
     const isSearchFocused = document.activeElement && document.activeElement.id === 'studentSearch';
+    const isFilterFocused = document.activeElement && document.activeElement.id === 'courseFilter';
 
     content.innerHTML = `
     <div class="card">
-      <div class="flex-between mb-20">
+      <div class="flex-between mb-20 flex-wrap gap-15">
         <h2 class="m-0">My Enrolled Students</h2>
-        <div class="flex gap-10">
+        <div class="flex gap-10 flex-wrap">
+            <div class="small text-muted flex-center-y">${total} Total</div>
+            <select id="courseFilter" class="m-0" style="width:200px">
+                <option value="">All Courses</option>
+                ${TeacherState.myCourses.map(c => `<option value="${c.id}" ${courseFilter === c.id ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}
+            </select>
             <input type="text" id="studentSearch" placeholder="Search by name or email..." class="m-0" style="width:250px" value="${escapeAttr(searchTerm)}">
             <button class="button secondary small w-auto" onclick="exportStudents('csv')">CSV</button>
             <button class="button secondary small w-auto" onclick="exportStudents('pdf')">PDF</button>
@@ -753,6 +766,12 @@ async function renderStudents(page = 1) {
             // Restore cursor position if possible or just end
             searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
         }
+    }
+
+    const filterSelect = document.getElementById('courseFilter');
+    if (filterSelect) {
+        filterSelect.addEventListener('change', () => renderStudents(1));
+        if (isFilterFocused) filterSelect.focus();
     }
 
 
@@ -865,7 +884,8 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
         const studentEnrolledCourseIds = (enrollments || []).map(e => e.course_id);
 
         // Cache teacher course IDs for other views
-        TeacherState.myCourseIds = (allCourses || []).map(c => c.id);
+        TeacherState.myCourses = allCourses || [];
+        TeacherState.myCourseIds = TeacherState.myCourses.map(c => c.id);
 
         courses = (allCourses || []).filter(c => studentEnrolledCourseIds.includes(c.id));
     }
@@ -3451,7 +3471,14 @@ async function deleteMaterial(id) {
 // Consolidate global window assignments
 async function exportStudents(type) {
     try {
-        const { data: allEnrollments } = await SupabaseDB.getEnrollmentsByCourses(TeacherState.myCourseIds, { all: true });
+        const searchTerm = document.getElementById('studentSearch')?.value || '';
+        const courseFilter = document.getElementById('courseFilter')?.value || '';
+        const targetCourseIds = courseFilter ? [courseFilter] : TeacherState.myCourseIds;
+
+        const { data: allEnrollments } = await SupabaseDB.getEnrollmentsByCourses(targetCourseIds, {
+            searchTerm,
+            all: true
+        });
 
         const students = (allEnrollments || []).map(e => ({
             full_name: e.users?.full_name || 'N/A',
