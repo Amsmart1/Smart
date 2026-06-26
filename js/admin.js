@@ -493,14 +493,6 @@ async function approveCert(certId) {
             metadata: { ...(cert.metadata || {}), verification_id: verificationId }
         });
 
-        await SupabaseDB.createNotification(
-            cert.student_email,
-            'Certificate Approved',
-            'Your certificate is ready for download.',
-            null,
-            'cert_approved'
-        );
-
         UI.showNotification('Certificate approved and PDF generated!', 'success');
         renderReports('certificates');
     } catch (e) {
@@ -514,17 +506,6 @@ async function rejectCert(certId) {
     if (reason === null) return;
     try {
         await SupabaseDB.updateCertificate(certId, { status: 'rejected', metadata: { reason } });
-
-        const { data: cert } = await supabaseClient.from('certificates').select('student_email').eq('id', certId).single();
-        if (cert) {
-            await SupabaseDB.createNotification(
-                cert.student_email,
-                'Certificate Request Rejected',
-                `Your certificate request was rejected. Reason: ${reason}`,
-                null,
-                'cert_rejected'
-            );
-        }
 
         UI.showNotification('Certificate rejected', 'info');
         renderReports('certificates');
@@ -604,14 +585,6 @@ async function consolidateAndApproveCert(certId, studentEmail) {
         // Use upsert to handle both creation (if targetId was from a single cert) and update
         const { error: upsertError } = await supabaseClient.from('certificates').upsert(payload);
         if (upsertError) throw upsertError;
-
-        await SupabaseDB.createNotification(
-            studentEmail,
-            'Consolidated Certificate Ready',
-            'Your consolidated certificate has been updated with all your verified courses.',
-            null,
-            'cert_approved'
-        );
 
         UI.showNotification('Consolidated certificate approved and updated!', 'success');
         renderReports('certificates');

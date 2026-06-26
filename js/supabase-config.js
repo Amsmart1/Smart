@@ -1322,13 +1322,22 @@ class SupabaseDB {
     }
 
     static async getBroadcasts(options = {}) {
-        return _cache.fetch(`broadcasts_active`, async () => {
+        const { targetRole = null } = options;
+        const cacheKey = targetRole ? `broadcasts_active_${targetRole}` : `broadcasts_active`;
+
+        return _cache.fetch(cacheKey, async () => {
             return this._request(async () => {
-                const { data, count, error } = await supabaseClient
+                let query = supabaseClient
                     .from('broadcasts')
                     .select('*', { count: 'exact' })
-                    .gt('expires_at', new Date().toISOString())
-                    .order('created_at', { ascending: false });
+                    .gt('expires_at', new Date().toISOString());
+
+                // Server-side filtering by role for performance and security
+                if (targetRole) {
+                    query = query.or(`target_role.is.null,target_role.eq.${targetRole}`);
+                }
+
+                const { data, count, error } = await query.order('created_at', { ascending: false });
                 if (error) throw error;
                 return { data: data || [], total: count || 0 };
             });

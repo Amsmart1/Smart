@@ -649,15 +649,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(result.message || 'Finalization failed');
                 }
 
-                // Notify user of update
-                await SupabaseDB.createNotification(
-                    freshUser.email,
-                    'Password Updated',
-                    'Password updated after reset.',
-                    null,
-                    'password_updated'
-                );
-
                 alert('Password successfully reset. You MUST now login with your new permanent password.');
 
                 // Force re-authentication by clearing the local session to finalize the "used" state

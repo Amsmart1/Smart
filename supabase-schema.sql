@@ -1012,6 +1012,26 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 DROP TRIGGER IF EXISTS tr_quiz_submission_received ON quiz_submissions;
 CREATE TRIGGER tr_quiz_submission_received AFTER INSERT OR UPDATE ON quiz_submissions FOR EACH ROW EXECUTE PROCEDURE tr_notify_quiz_submission();
 
+CREATE OR REPLACE FUNCTION tr_notify_enrollment() RETURNS TRIGGER AS $$
+DECLARE
+  v_course_title TEXT;
+  v_teacher_email VARCHAR(255);
+BEGIN
+  IF _is_migration_mode() THEN RETURN NEW; END IF;
+
+  SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
+
+  IF v_teacher_email IS NOT NULL THEN
+    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student ' || NEW.student_email || ' has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system');
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_enrollment_received ON enrollments;
+CREATE TRIGGER tr_enrollment_received AFTER INSERT ON enrollments FOR EACH ROW EXECUTE PROCEDURE tr_notify_enrollment();
+
 CREATE OR REPLACE FUNCTION tr_notify_regrade_request() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
@@ -1074,8 +1094,8 @@ BEGIN
      END LOOP;
   END IF;
 
-  -- 3. Certificate Approved or Rejected
-  IF (TG_OP = 'UPDATE' AND OLD.status != NEW.status) THEN
+  -- 3. Certificate Approved or Rejected (Handles UPDATE status change or direct INSERT with final status)
+  IF (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status)) THEN
     IF (NEW.status = 'approved') THEN
        PERFORM notify_user(NEW.student_email, 'Certificate Approved', 'Your certificate is ready for download.', 'student.html?page=certificates', 'cert_approved');
     ELSIF (NEW.status = 'rejected') THEN
@@ -1948,6 +1968,11 @@ BEGIN
         END,
         updated_at = NOW();
 
+    -- Create Notification for manual password updates (not from reset finalize which has its own)
+    IF p_password_hash IS NOT NULL AND (p_reset_data IS NULL OR p_reset_data = '{}'::jsonb) AND NOT _is_migration_mode() THEN
+       PERFORM notify_user(p_email, 'Password Updated', 'Your account password has been updated.', null, 'password_updated');
+    END IF;
+
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -2414,13 +2439,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- Deprecated: Use create_broadcast instead
-CREATE OR REPLACE FUNCTION broadcast_data(n_course_id UUID, n_role VARCHAR, n_title TEXT, n_msg TEXT, n_link TEXT DEFAULT NULL, n_type TEXT DEFAULT 'system', n_expires_in INTERVAL DEFAULT INTERVAL '30 days')
-RETURNS VOID AS $$
-BEGIN
-  PERFORM create_broadcast(n_course_id, n_role, n_title, n_msg, n_link, n_type, n_expires_in);
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
 -- 8. Seed Data
@@ -2681,7 +2699,7 @@ DROP POLICY IF EXISTS "Broadcasts: SELECT" ON broadcasts;
 DROP POLICY IF EXISTS "Broadcasts: MANAGE" ON broadcasts;
 CREATE POLICY "Broadcasts: SELECT" ON broadcasts FOR SELECT USING (
   is_admin() OR
-  teacher_email = get_auth_email() OR
+  teacher_email = get_auth_email() OR -- Author visibility
   (
     -- Role must match (or be 'all' / NULL)
     (target_role IS NULL OR target_role = get_auth_role()) AND (
