@@ -2457,23 +2457,24 @@ const DiscussionManager = {
         const div = document.getElementById(`disc-${id}`);
         if (!div) return;
         const contentDiv = div.querySelector('.disc-content');
-        const current = contentDiv.innerHTML;
+        const currentText = contentDiv.innerText;
+        const currentHTML = contentDiv.innerHTML;
 
         contentDiv.innerHTML = `
-        <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px">${current}</textarea>
-            <div style="margin-top:8px; display:flex; gap:8px">
-                <button class="button" style="padding:4px 8px; font-size:11px" id="save-disc-${id}">Save</button>
-                <button class="button secondary" style="padding:4px 8px; font-size:11px" id="cancel-disc-${id}">Cancel</button>
+            <textarea id="edit-disc-input-${id}" class="input mt-10" rows="3"></textarea>
+            <div class="flex gap-5 mt-10">
+                <button class="button small w-auto" style="padding:4px 12px; font-size:11px" id="save-disc-${id}">Save</button>
+                <button class="button secondary small w-auto" style="padding:4px 12px; font-size:11px" id="cancel-disc-${id}">Cancel</button>
             </div>
         `;
 
+        const textarea = document.getElementById(`edit-disc-input-${id}`);
+        textarea.value = currentText;
+
         document.getElementById(`save-disc-${id}`).onclick = async () => {
-            const content = document.getElementById(`edit-disc-input-${id}`).value;
+            const content = textarea.value;
             if (!content) return;
             try {
-                // Fetching individual record for consistency check if needed,
-                // but typically we just need the ID and new content for save.
-                // We'll trust the current UI flow which already has course info via closure in callers.
                 if (await onSave(id, content)) {
                     // Success handled by caller re-rendering
                 }
@@ -2483,7 +2484,7 @@ const DiscussionManager = {
         };
 
         document.getElementById(`cancel-disc-${id}`).onclick = () => {
-            contentDiv.innerHTML = current;
+            contentDiv.innerHTML = currentHTML;
         };
     },
 
