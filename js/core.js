@@ -1227,9 +1227,19 @@ const NotificationManager = {
      * Initializes the notification manager, setting up cross-tab communication
      * and global event listeners for the UI.
      */
-    init() {
+    async init() {
         if (this._initialized) return;
         this._initialized = true;
+
+        // Perform authoritative metadata cleanup upon dashboard entry
+        try {
+            const user = await SessionManager.getCurrentUser();
+            if (user) {
+                await SupabaseDB.purgeUserMetadata(user.email);
+            }
+        } catch (e) {
+            console.warn('[NotificationManager] Metadata purge failed during init:', e);
+        }
 
         if (this._channel) {
             this._channel.onmessage = (event) => {
