@@ -2,7 +2,8 @@ const TeacherState = {
   activeCountdowns: [],
   currentGradeBookData: null,
   gradeBookRawData: null,
-  currentStudents: [],
+  myCourseIds: null,
+  studentsPage: 1,
   _warnedEnd: false,
   liveClassTimer: null
 };
@@ -667,23 +668,29 @@ async function renderGrading(page = 1) {
     </div>`;
   }
 }
-async function renderStudents() {
+async function renderStudents(page = 1) {
+  TeacherState.studentsPage = page;
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
   clearActiveCountdowns();
 
   const searchTerm = document.getElementById('studentSearch')?.value || '';
+  const pageSize = 20;
 
   try {
-    const user = await SessionManager.getCurrentUser();
-    if (renderId !== window.currentRenderId) return;
-    const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
-    if (renderId !== window.currentRenderId) return;
-    const myCourseIds = (myCourses || []).map(c => c.id);
+    if (!TeacherState.myCourseIds) {
+        const user = await SessionManager.getCurrentUser();
+        if (renderId !== window.currentRenderId) return;
+        const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
+        if (renderId !== window.currentRenderId) return;
+        TeacherState.myCourseIds = (myCourses || []).map(c => c.id);
+    }
 
-    const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, {
-        searchTerm
+    const { data: enrollments, total } = await SupabaseDB.getEnrollmentsByCourses(TeacherState.myCourseIds, {
+        searchTerm,
+        page,
+        pageSize
     });
     if (renderId !== window.currentRenderId) return;
 
@@ -724,28 +731,31 @@ async function renderStudents() {
             </tbody>
           </table>
       </div>
+      <div id="studentsPagination" class="mt-20"></div>
     </div>
     <div id="certFormArea" class="hidden mt-20"></div>
     `;
 
+    UI.renderPagination('studentsPagination', total, page, pageSize, (p) => renderStudents(p));
+
     const searchInput = document.getElementById('studentSearch');
     if (searchInput) {
         searchInput.addEventListener('input', debounce(() => {
-            renderStudents();
+            renderStudents(1);
         }, 500));
         searchInput.focus();
         // Restore cursor position if possible or just end
         searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
     }
 
-    TeacherState.currentStudents = students;
 
   } catch (error) {
     console.error('Students error:', error);
+    UI.showNotification('Failed to load students: ' + error.message, 'error');
     content.innerHTML = `<div class="stat-card danger">
       <h3>Error Loading Students</h3>
       <div class="small danger-text">${escapeHtml(error.message)}</div>
-      <button class="button w-auto mt-10" onclick="renderStudents()">Retry</button>
+      <button class="button w-auto mt-10" onclick="renderStudents(${page})">Retry</button>
     </div>`;
   }
 }
@@ -760,7 +770,7 @@ async function unenrollStudent(courseId, studentEmail) {
   try {
     await SupabaseDB.deleteEnrollment(courseId, studentEmail);
     UI.showNotification('Student unenrolled successfully.', 'success');
-    renderStudents();
+    renderStudents(TeacherState.studentsPage);
   } catch (e) {
     UI.showNotification('Unenrollment failed: ' + e.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = originalText; }
@@ -838,15 +848,21 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
         const course = await SupabaseDB.getCourse(targetCourseId);
         courses = [course];
     } else {
-        // Filter courses: only show courses where the student is actually enrolled
-        const studentEnrolledCourseIds = TeacherState.currentStudents
-            .filter(s => s.email === studentEmail)
-            .map(s => s.course_id);
+        // Filter courses: only show courses where the student is actually enrolled AND the teacher teaches
+        const { data: enrollments } = await SupabaseDB.getEnrollments(studentEmail);
+        if (renderId !== window.currentRenderId) return;
+        const studentEnrolledCourseIds = enrollments.map(e => e.course_id);
+
+        if (!TeacherState.myCourseIds) {
+            const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
+            if (renderId !== window.currentRenderId) return;
+            TeacherState.myCourseIds = (myCourses || []).map(c => c.id);
+        }
 
         const { data: allCourses } = await SupabaseDB.getCourses(user.email, null);
         if (renderId !== window.currentRenderId) return;
 
-        courses = allCourses.filter(c => studentEnrolledCourseIds.includes(c.id));
+        courses = allCourses.filter(c => studentEnrolledCourseIds.includes(c.id) && TeacherState.myCourseIds.includes(c.id));
     }
 
     const area = document.getElementById('certFormArea');
@@ -3429,13 +3445,26 @@ async function deleteMaterial(id) {
 
 // Consolidate global window assignments
 async function exportStudents(type) {
-    const headers = ['Name', 'Email', 'Course'];
-    const rows = TeacherState.currentStudents.map(s => [s.full_name || 'N/A', s.email, s.course_title || 'Unknown']);
+    try {
+        const { data: allEnrollments } = await SupabaseDB.getEnrollmentsByCourses(TeacherState.myCourseIds, { all: true });
 
-    if (type === 'csv') {
-        Exporter.csv('students_list.csv', headers, rows);
-    } else {
-        await Exporter.pdf('students_list.pdf', 'Enrolled Students List', headers, rows);
+        const students = allEnrollments.map(e => ({
+            full_name: e.users?.full_name || 'N/A',
+            email: e.student_email,
+            course_title: e.courses?.title || 'Unknown'
+        }));
+
+        const headers = ['Name', 'Email', 'Course'];
+        const rows = students.map(s => [s.full_name, s.email, s.course_title]);
+
+        if (type === 'csv') {
+            Exporter.csv('students_list.csv', headers, rows);
+        } else {
+            await Exporter.pdf('students_list.pdf', 'Enrolled Students List', headers, rows);
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        UI.showNotification('Failed to export students: ' + error.message, 'error');
     }
 }
 
