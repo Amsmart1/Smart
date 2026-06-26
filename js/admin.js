@@ -2752,7 +2752,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateSidebarBadges();
         }
     });
-    renderDashboard();
+
+    // Deep linking support
+    const urlParams = new URLSearchParams(window.location.search);
+    const page = urlParams.get('page');
+    if (page) {
+        const navBtn = document.querySelector(`nav button[data-page="${page}"]`);
+        if (navBtn) {
+            navBtn.click();
+        } else {
+            renderDashboard();
+        }
+    } else {
+        renderDashboard();
+    }
+
     updateSidebarBadges();
 
     setInterval(updateMaintBanner, 30000);

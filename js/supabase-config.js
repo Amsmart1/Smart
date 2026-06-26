@@ -1417,24 +1417,7 @@ class SupabaseDB {
             type: certificate.type || 'single'
         };
         const data = await this._upsert('certificates', payload);
-
-        // Notify admins for approval
-        if (payload.status === 'pending_approval') {
-            try {
-                const admins = await this.getAdmins();
-                for (const admin of admins) {
-                    await this.createNotification(
-                        admin.email,
-                        'Certificate Approval Required',
-                        `Teacher ${user.full_name} issued a certificate to ${certificate.student_email}. Approval needed.`,
-                        null,
-                        'cert_issued'
-                    );
-                }
-            } catch (e) {
-                console.warn('Failed to notify admins of certificate issuance:', e);
-            }
-        }
+        // Notifications are now handled by DB trigger tr_notify_certificate_event
 
         _cache.invalidate('certificates');
         return data?.[0];
@@ -1445,13 +1428,10 @@ class SupabaseDB {
             const enrollRes = await this.getEnrollments(studentEmail);
             const enrollments = enrollRes.data || [];
             const results = [];
-            const teacherNotifications = {}; // Map of teacherEmail -> list of course titles
 
             // 1. Handle individual course certificate requests
             for (const e of enrollments) {
                 const id = e.course_id;
-                const courseTitle = e.courses?.title || 'Unknown Course';
-                const teacherEmail = e.courses?.teacher_email;
 
                 const { data: existing } = await supabaseClient
                     .from('certificates')
@@ -1470,35 +1450,10 @@ class SupabaseDB {
                     };
                     const res = await this._upsert('certificates', payload);
                     if (res && res[0]) results.push(res[0]);
-
-                    // Queue notification for teacher
-                    if (teacherEmail) {
-                        if (!teacherNotifications[teacherEmail]) teacherNotifications[teacherEmail] = [];
-                        teacherNotifications[teacherEmail].push(courseTitle);
-                    }
                 }
             }
 
-            // Send grouped notifications to teachers to avoid redundancy and ensure they only see their own courses
-            for (const [tEmail, titles] of Object.entries(teacherNotifications)) {
-                try {
-                    const message = titles.length === 1
-                        ? `Student ${studentEmail} requested a certificate for your course "${titles[0]}".`
-                        : `Student ${studentEmail} requested certificates for ${titles.length} of your courses: ${titles.join(', ')}.`;
-
-                    await this.createNotification(
-                        tEmail,
-                        'New Certificate Request(s)',
-                        message,
-                        'teacher.html?page=certificates',
-                        'cert_requested'
-                    );
-                } catch (err) {
-                    console.warn(`Failed to notify teacher ${tEmail}:`, err);
-                }
-            }
-
-            // 2. Handle the master consolidated certificate request (For Student Dashboard and Admin approval)
+            // 2. Handle the master consolidated certificate request
             const { data: existingMaster } = await supabaseClient
                 .from('certificates')
                 .select('id, status')
@@ -1529,22 +1484,7 @@ class SupabaseDB {
             type: 'single'
         };
         const data = await this._upsert('certificates', payload);
-
-        // Notify the course teacher
-        try {
-            const course = await this.getCourse(courseId);
-            if (course && course.teacher_email) {
-                await this.createNotification(
-                    course.teacher_email,
-                    'New Certificate Request',
-                    `Student ${studentEmail} requested a certificate for your course "${course.title}".`,
-                    'teacher.html?page=certificates',
-                    'cert_requested'
-                );
-            }
-        } catch (e) {
-            console.warn('Failed to notify teacher of certificate request:', e);
-        }
+        // Notifications handled by DB trigger tr_notify_certificate_event
 
         _cache.invalidate('certificates');
         return data?.[0];
@@ -1558,20 +1498,7 @@ class SupabaseDB {
             updated_at: new Date().toISOString()
         }, { id: certId });
 
-        // Notify student
-        let title, type;
-        if (status === 'approved') { title = 'Certificate Approved'; type = 'cert_approved'; }
-        else if (status === 'rejected') { title = 'Certificate Request Rejected'; type = 'cert_rejected'; }
-
-        if (title && cert) {
-            await this.createNotification(
-                cert.student_email,
-                title,
-                status === 'approved' ? 'Your certificate is ready for download.' : `Your certificate request was rejected. Reason: ${metadata.reason || 'None provided'}`,
-                null,
-                type
-            );
-        }
+        // Notifications handled by DB trigger tr_notify_certificate_event
 
         _cache.invalidate('certificates');
         return data;

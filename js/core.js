@@ -851,7 +851,7 @@ const NotificationManager = {
         })();
     },
 
-    async fetchNotifications() {
+    async fetchNotifications(limit = 50) {
         try {
             const user = await SessionManager.getCurrentUser();
             if (!user) return [];
@@ -861,8 +861,9 @@ const NotificationManager = {
             const metadata = freshUser?.metadata || {};
 
             // 2. Fetch personal notifications and active broadcasts
+            // We apply a reasonable limit for the dropdown UI performance
             const [personalRes, broadcastsRes] = await Promise.all([
-                SupabaseDB.getNotifications(user.email),
+                SupabaseDB.getNotifications(user.email, { pageSize: limit }),
                 SupabaseDB.getBroadcasts()
             ]);
 
@@ -891,7 +892,10 @@ const NotificationManager = {
             const uniqueMap = new Map();
             all.forEach(n => { if (!uniqueMap.has(n.id)) uniqueMap.set(n.id, n); });
 
-            return Array.from(uniqueMap.values()).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            // 6. Enforce final limit after combination
+            return Array.from(uniqueMap.values())
+                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                .slice(0, limit);
         } catch (e) {
             console.warn('Failed to fetch notifications:', e);
             return [];
@@ -1033,7 +1037,7 @@ const NotificationManager = {
             // Enforce One-Time Alert Policy
             const user = await SessionManager.getCurrentUser();
             if (user) {
-                const freshUser = await SupabaseDB.getUser(user.email);
+                const freshUser = await SupabaseDB.getUser(user.email, true);
                 const metadata = freshUser?.metadata || {};
                 const alertedIds = metadata.alerted_ids || [];
                 const prefs = await this.getPreferences();
@@ -1116,7 +1120,10 @@ const NotificationManager = {
                         document.getElementById('notifList')?.classList.remove('active');
 
                         // Trigger dashboard internal navigation
-                        navBtn.click();
+                        // We check if it's already active to avoid redundant renders
+                        if (!navBtn.classList.contains('active')) {
+                            navBtn.click();
+                        }
                         return;
                     }
                 }
