@@ -862,7 +862,7 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
         ]);
         if (renderId !== window.currentRenderId) return;
 
-        const studentEnrolledCourseIds = enrollments.map(e => e.course_id);
+        const studentEnrolledCourseIds = (enrollments || []).map(e => e.course_id);
 
         // Cache teacher course IDs for other views
         TeacherState.myCourseIds = (allCourses || []).map(c => c.id);
@@ -3453,7 +3453,7 @@ async function exportStudents(type) {
     try {
         const { data: allEnrollments } = await SupabaseDB.getEnrollmentsByCourses(TeacherState.myCourseIds, { all: true });
 
-        const students = allEnrollments.map(e => ({
+        const students = (allEnrollments || []).map(e => ({
             full_name: e.users?.full_name || 'N/A',
             email: e.student_email,
             course_title: e.courses?.title || 'Unknown'
