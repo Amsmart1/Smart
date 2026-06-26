@@ -644,7 +644,7 @@ class SupabaseDB {
 
     // Submission operations
     static async getSubmissions(assignmentId = null, studentEmail = null, teacherEmail = null, options = {}) {
-        const { status = null, pendingGradingOnly = false, searchTerm = '', courseId = null } = options;
+        const { status = null, pendingGradingOnly = false, searchTerm = '', courseId = null, studentEmails = null } = options;
         return this._request(async () => {
             let selectStr = '*, assignments(*), users!student_email(*)';
 
@@ -655,6 +655,7 @@ class SupabaseDB {
             let query = supabaseClient.from('submissions').select(selectStr, { count: 'exact' });
             if (assignmentId) query = query.eq('assignment_id', assignmentId);
             if (studentEmail) query = query.eq('student_email', studentEmail);
+            if (studentEmails && Array.isArray(studentEmails)) query = query.in('student_email', studentEmails);
             if (teacherEmail) query = query.eq('assignments.teacher_email', teacherEmail);
             if (courseId) query = query.eq('assignments.course_id', courseId);
 
@@ -1139,7 +1140,7 @@ class SupabaseDB {
     }
 
     static async getQuizSubmissions(quizId = null, studentEmail = null, teacherEmail = null, options = {}) {
-        const { status = null, searchTerm = '', courseId = null } = options;
+        const { status = null, searchTerm = '', courseId = null, studentEmails = null } = options;
         return this._request(async () => {
             let selectStr = '*, quizzes!quiz_id(*), users!student_email(*)';
 
@@ -1150,6 +1151,7 @@ class SupabaseDB {
             let query = supabaseClient.from('quiz_submissions').select(selectStr, { count: 'exact' });
             if (quizId) query = query.eq('quiz_id', quizId);
             if (studentEmail) query = query.eq('student_email', studentEmail);
+            if (studentEmails && Array.isArray(studentEmails)) query = query.in('student_email', studentEmails);
             if (teacherEmail) query = query.eq('quizzes.teacher_email', teacherEmail);
             if (courseId) query = query.eq('quizzes.course_id', courseId);
             if (status) query = query.eq('status', status);

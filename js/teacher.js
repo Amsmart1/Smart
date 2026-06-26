@@ -667,13 +667,14 @@ async function renderGrading(page = 1) {
     </div>`;
   }
 }
-async function renderStudents() {
+async function renderStudents(page = 1) {
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
   clearActiveCountdowns();
 
   const searchTerm = document.getElementById('studentSearch')?.value || '';
+  const pageSize = 10;
 
   try {
     const user = await SessionManager.getCurrentUser();
@@ -682,8 +683,15 @@ async function renderStudents() {
     if (renderId !== window.currentRenderId) return;
     const myCourseIds = (myCourses || []).map(c => c.id);
 
-    const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, {
-        searchTerm
+    if (myCourseIds.length === 0) {
+        content.innerHTML = `<div class="card"><h2 class="m-0">My Enrolled Students</h2><div class="empty mt-20">You don't have any courses yet.</div></div>`;
+        return;
+    }
+
+    const { data: enrollments, total } = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, {
+        searchTerm,
+        page,
+        pageSize
     });
     if (renderId !== window.currentRenderId) return;
 
@@ -698,7 +706,7 @@ async function renderStudents() {
 
     content.innerHTML = `
     <div class="card">
-      <div class="flex-between mb-20">
+      <div class="flex-between mb-20 flex-wrap gap-15">
         <h2 class="m-0">My Enrolled Students</h2>
         <div class="flex gap-10">
             <input type="text" id="studentSearch" placeholder="Search by name or email..." class="m-0" style="width:250px" value="${escapeAttr(searchTerm)}">
@@ -715,27 +723,33 @@ async function renderStudents() {
                   <td>${escapeHtml(s.full_name)}</td>
                   <td>${escapeHtml(s.email)}</td>
                   <td>${escapeHtml(s.course_title || 'Unknown')}</td>
-                  <td class="flex gap-10">
-                    <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
-                    <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                  <td>
+                    <div class="flex gap-10">
+                      <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
+                      <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                    </div>
                   </td>
                 </tr>
               `).join('') || '<tr><td colspan="4" class="empty">No students found.</td></tr>'}
             </tbody>
           </table>
       </div>
+      <div id="studentPagination"></div>
     </div>
     <div id="certFormArea" class="hidden mt-20"></div>
     `;
 
+    UI.renderPagination('studentPagination', total, page, pageSize, (p) => renderStudents(p));
+
     const searchInput = document.getElementById('studentSearch');
     if (searchInput) {
         searchInput.addEventListener('input', debounce(() => {
-            renderStudents();
+            renderStudents(1);
         }, 500));
-        searchInput.focus();
-        // Restore cursor position if possible or just end
-        searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
+        if (searchTerm) {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchTerm.length, searchTerm.length);
+        }
     }
 
     TeacherState.currentStudents = students;
@@ -3202,13 +3216,38 @@ function calculateGradeBookData(rawData, filters = {}) {
 }
 
 async function exportGradeBook(type) {
-    const data = TeacherState.currentGradeBookData;
-    if (!data) return UI.showNotification('No data to export', 'warn');
+    UI.showNotification('Preparing comprehensive report...', 'info');
 
-    let allHeaders = ['Course', 'Student', 'Type', 'Title', 'Grade', 'Raw Score', 'Max Points'];
-    let allRows = [];
+    try {
+        const user = await SessionManager.getCurrentUser();
+        const cid = document.getElementById('gbCourseSelect')?.value || '';
+        const typeFilter = document.getElementById('gbTypeSelect')?.value || 'all';
+        const aid = document.getElementById('gbAssessmentSelect')?.value || '';
+        const searchTerm = document.getElementById('gbStudentSearch')?.value || '';
 
-    data.forEach(course => {
+        const myCourseIds = cid ? [cid] : (TeacherState.gradeBookRawData?.courses || []).map(c => c.id);
+        if (myCourseIds.length === 0) return UI.showNotification('No data to export', 'warn');
+
+        // Fetch ALL data for export
+        const [subsRes, quizSubsRes, enrollRes] = await Promise.all([
+            SupabaseDB.getSubmissions(null, null, user.email, { courseId: cid, searchTerm, all: true }),
+            SupabaseDB.getQuizSubmissions(null, null, user.email, { courseId: cid, searchTerm, all: true }),
+            SupabaseDB.getEnrollmentsByCourses(myCourseIds, { searchTerm, all: true })
+        ]);
+
+        const rawData = {
+            ...TeacherState.gradeBookRawData,
+            submissions: subsRes?.data || [],
+            quizSubs: quizSubsRes?.data || [],
+            enrollments: enrollRes?.data || []
+        };
+
+        const data = calculateGradeBookData(rawData, { courseId: cid, typeFilter, assessmentId: aid, studentSearch: searchTerm });
+
+        let allHeaders = ['Course', 'Student', 'Type', 'Title', 'Grade', 'Raw Score', 'Max Points'];
+        let allRows = [];
+
+        data.forEach(course => {
         course.students.forEach(student => {
             student.assignmentGrades.forEach(ag => {
                 allRows.push([
@@ -3235,12 +3274,16 @@ async function exportGradeBook(type) {
         });
     });
 
-    if (allRows.length === 0) return UI.showNotification('No grades to export', 'warn');
+        if (allRows.length === 0) return UI.showNotification('No grades to export', 'warn');
 
-    if (type === 'csv') {
-        Exporter.csv('gradebook_export.csv', allHeaders, allRows);
-    } else {
-        await Exporter.pdf('gradebook_export.pdf', 'Detailed Grade Book Report', allHeaders, allRows);
+        if (type === 'csv') {
+            Exporter.csv('gradebook_export.csv', allHeaders, allRows);
+        } else {
+            await Exporter.pdf('gradebook_export.pdf', 'Detailed Grade Book Report', allHeaders, allRows);
+        }
+    } catch (e) {
+        console.error('Export error:', e);
+        UI.showNotification('Export failed: ' + e.message, 'error');
     }
 }
 
@@ -3429,17 +3472,37 @@ async function deleteMaterial(id) {
 
 // Consolidate global window assignments
 async function exportStudents(type) {
-    const headers = ['Name', 'Email', 'Course'];
-    const rows = TeacherState.currentStudents.map(s => [s.full_name || 'N/A', s.email, s.course_title || 'Unknown']);
+    UI.showNotification('Preparing export...', 'info');
+    try {
+        const user = await SessionManager.getCurrentUser();
+        const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
+        const myCourseIds = (myCourses || []).map(c => c.id);
 
-    if (type === 'csv') {
-        Exporter.csv('students_list.csv', headers, rows);
-    } else {
-        await Exporter.pdf('students_list.pdf', 'Enrolled Students List', headers, rows);
+        if (myCourseIds.length === 0) return UI.showNotification('No data to export', 'warn');
+
+        const { data: enrollments } = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, { all: true });
+
+        const headers = ['Name', 'Email', 'Course'];
+        const rows = (enrollments || []).map(e => [
+            e.users?.full_name || 'N/A',
+            e.student_email,
+            e.courses?.title || 'Unknown'
+        ]);
+
+        if (rows.length === 0) return UI.showNotification('No students found to export', 'warn');
+
+        if (type === 'csv') {
+            Exporter.csv('students_list.csv', headers, rows);
+        } else {
+            await Exporter.pdf('students_list.pdf', 'Enrolled Students List', headers, rows);
+        }
+    } catch (e) {
+        console.error('Export error:', e);
+        UI.showNotification('Export failed: ' + e.message, 'error');
     }
 }
 
-async function filterGradeBook() {
+async function filterGradeBook(page = 1) {
     const area = document.getElementById('gradeBookArea');
     if (!area) return;
 
@@ -3457,6 +3520,7 @@ async function filterGradeBook() {
             assessmentId: document.getElementById('gbAssessmentSelect')?.value || '',
             studentSearch: document.getElementById('gbStudentSearch')?.value || ''
         };
+        const pageSize = 10;
 
         area.innerHTML = '<div class="flex-center p-40"><div class="loading-spinner"></div></div>';
 
@@ -3473,48 +3537,55 @@ async function filterGradeBook() {
         const isQuiz = aid && (TeacherState.gradeBookRawData.quizzes || []).some(q => q.id === aid);
         const isAssign = aid && (TeacherState.gradeBookRawData.assignments || []).some(a => a.id === aid);
 
+        // Scalable fetching strategy:
+        // 1. Fetch paginated enrollments to identify which students to show
+        const myCourseIds = cid ? [cid] : (TeacherState.gradeBookRawData.courses || []).map(c => c.id);
+        if (myCourseIds.length === 0) {
+            area.innerHTML = '<div class="empty">You have no courses yet.</div>';
+            return;
+        }
+
+        const enrollRes = await SupabaseDB.getEnrollmentsByCourses(myCourseIds, { searchTerm, page, pageSize });
+        if (renderId !== window.currentRenderId || !document.getElementById('gradeBookArea')) return;
+
+        const enrollments = enrollRes.data || [];
+        const studentEmails = enrollments.map(e => e.student_email).filter(Boolean);
+
+        // 2. Targeted fetching for submissions and quiz attempts ONLY for those students
         const fetchTasks = [];
 
-        // 1. Submissions (Assignments)
-        if ((type === 'all' || type === 'assignments') && (!aid || isAssign)) {
+        // Submissions (Assignments)
+        if (studentEmails.length > 0 && (type === 'all' || type === 'assignments') && (!aid || isAssign)) {
             fetchTasks.push(SupabaseDB.getSubmissions(
                 isAssign ? aid : null,
                 null,
                 teacherEmail,
-                { courseId: cid, searchTerm, all: true }
+                { courseId: cid, studentEmails, all: true }
             ));
         } else {
             fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
         }
 
-        // 2. Quiz Submissions
-        if ((type === 'all' || type === 'quizzes') && (!aid || isQuiz)) {
+        // Quiz Submissions
+        if (studentEmails.length > 0 && (type === 'all' || type === 'quizzes') && (!aid || isQuiz)) {
             fetchTasks.push(SupabaseDB.getQuizSubmissions(
                 isQuiz ? aid : null,
                 null,
                 teacherEmail,
-                { courseId: cid, searchTerm, all: true }
+                { courseId: cid, studentEmails, all: true }
             ));
         } else {
             fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
         }
 
-        // 3. Enrollments (for student list per course)
-        const myCourseIds = cid ? [cid] : (TeacherState.gradeBookRawData.courses || []).map(c => c.id);
-        if (myCourseIds.length > 0) {
-            fetchTasks.push(SupabaseDB.getEnrollmentsByCourses(myCourseIds, { searchTerm, all: true }));
-        } else {
-            fetchTasks.push(Promise.resolve({ data: [], total: 0 }));
-        }
-
-        const [subsRes, quizSubsRes, enrollRes] = await Promise.all(fetchTasks);
+        const [subsRes, quizSubsRes] = await Promise.all(fetchTasks);
         if (renderId !== window.currentRenderId || !document.getElementById('gradeBookArea')) return;
 
         const rawData = {
             ...TeacherState.gradeBookRawData,
             submissions: subsRes?.data || [],
             quizSubs: quizSubsRes?.data || [],
-            enrollments: enrollRes?.data || []
+            enrollments: enrollments // This is already filtered to our page
         };
 
         const data = calculateGradeBookData(rawData, filters);
@@ -3599,6 +3670,13 @@ async function filterGradeBook() {
 
         if (renderId !== window.currentRenderId) return;
         area.innerHTML = html || '<div class="empty">No matching data available. Try adjusting your filters.</div>';
+
+        if (html) {
+            const paginationDiv = document.createElement('div');
+            paginationDiv.id = 'gbPagination';
+            area.appendChild(paginationDiv);
+            UI.renderPagination('gbPagination', enrollRes.total, page, pageSize, (p) => filterGradeBook(p));
+        }
     } catch (error) {
         console.error('Filter Grade Book error:', error);
         UI.showNotification('Error filtering grade book: ' + error.message, 'error');
