@@ -134,11 +134,12 @@ $$ LANGUAGE plpgsql STABLE;
 -- Defined early as it is used by triggers and RPCs
 -- We drop it first to handle potential parameter name/type changes (ERROR 42P13)
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT) CASCADE;
-CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system')
+DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL)
 RETURNS VOID AS $$
 BEGIN
-  INSERT INTO notifications (user_email, title, message, link, type)
-  VALUES (p_email, p_title, p_message, p_link, p_type);
+  INSERT INTO notifications (user_email, title, message, link, type, course_id)
+  VALUES (p_email, p_title, p_message, p_link, p_type, p_course_id);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -378,6 +379,7 @@ CREATE TABLE IF NOT EXISTS discussions (
 CREATE TABLE IF NOT EXISTS notifications (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   link TEXT,
@@ -798,6 +800,7 @@ BEGIN
 
     -- notifications
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS course_id UUID REFERENCES courses(id) ON DELETE CASCADE;
     BEGIN
         ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
         ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
@@ -987,7 +990,7 @@ BEGIN
   -- teacher_email and course_id are inherited BEFORE INSERT
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received');
+      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1002,7 +1005,7 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received');
+      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1022,7 +1025,7 @@ BEGIN
   SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
 
   IF v_teacher_email IS NOT NULL THEN
-    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student ' || NEW.student_email || ' has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system');
+    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student ' || NEW.student_email || ' has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system', NEW.course_id);
   END IF;
 
   RETURN NEW;
@@ -1038,7 +1041,7 @@ BEGIN
   -- Only trigger if regrade_request is newly added or changed and not null
   IF (NEW.regrade_request IS NOT NULL AND (OLD.regrade_request IS NULL OR OLD.regrade_request != NEW.regrade_request)) THEN
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received');
+      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
   END IF;
   RETURN NEW;
@@ -1052,7 +1055,7 @@ CREATE OR REPLACE FUNCTION tr_notify_grade() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'graded'))) THEN
-    PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted');
+    PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted', NEW.course_id);
   END IF;
   RETURN NEW;
 END;
@@ -1080,7 +1083,7 @@ BEGIN
       -- Single course certificate
       SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
       IF NEW.teacher_email IS NOT NULL THEN
-        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested');
+        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id);
       END IF;
     END IF;
   END IF;
@@ -1097,9 +1100,9 @@ BEGIN
   -- 3. Certificate Approved or Rejected (Handles UPDATE status change or direct INSERT with final status)
   IF (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status)) THEN
     IF (NEW.status = 'approved') THEN
-       PERFORM notify_user(NEW.student_email, 'Certificate Approved', 'Your certificate is ready for download.', 'student.html?page=certificates', 'cert_approved');
+       PERFORM notify_user(NEW.student_email, 'Certificate Approved', 'Your certificate is ready for download.', 'student.html?page=certificates', 'cert_approved', NEW.course_id);
     ELSIF (NEW.status = 'rejected') THEN
-       PERFORM notify_user(NEW.student_email, 'Certificate Request Rejected', 'Your certificate request was rejected. Reason: ' || COALESCE(NEW.metadata->>'reason', 'None provided'), 'student.html?page=certificates', 'cert_rejected');
+       PERFORM notify_user(NEW.student_email, 'Certificate Request Rejected', 'Your certificate request was rejected. Reason: ' || COALESCE(NEW.metadata->>'reason', 'None provided'), 'student.html?page=certificates', 'cert_rejected', NEW.course_id);
     END IF;
   END IF;
 
@@ -2688,7 +2691,16 @@ DROP POLICY IF EXISTS "Notifications: SELECT" ON notifications;
 DROP POLICY IF EXISTS "Notifications: UPDATE" ON notifications;
 DROP POLICY IF EXISTS "Notifications: DELETE" ON notifications;
 DROP POLICY IF EXISTS "Notifications: Admin Manage" ON notifications;
-CREATE POLICY "Notifications: SELECT" ON notifications FOR SELECT USING (is_admin() OR user_email = get_auth_email());
+CREATE POLICY "Notifications: SELECT" ON notifications FOR SELECT USING (
+  is_admin() OR
+  (user_email = get_auth_email() AND (
+    -- Global/System notification
+    course_id IS NULL OR
+    -- Course-related: user must be either the teacher or an enrolled student
+    EXISTS (SELECT 1 FROM courses WHERE id = notifications.course_id AND teacher_email = get_auth_email()) OR
+    EXISTS (SELECT 1 FROM enrollments WHERE course_id = notifications.course_id AND student_email = get_auth_email())
+  ))
+);
 CREATE POLICY "Notifications: UPDATE" ON notifications FOR UPDATE USING (user_email = get_auth_email()) WITH CHECK (user_email = get_auth_email());
 CREATE POLICY "Notifications: DELETE" ON notifications FOR DELETE USING (is_admin() OR user_email = get_auth_email());
 CREATE POLICY "Notifications: Admin Manage" ON notifications FOR ALL USING (is_admin());

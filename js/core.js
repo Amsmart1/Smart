@@ -1314,11 +1314,7 @@ const NotificationManager = {
             }, onTableChange);
         }
 
-        channel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-                console.log(`[Realtime] Subscribed to ${channelId}`);
-            }
-        });
+        channel.subscribe();
     }
 };
 

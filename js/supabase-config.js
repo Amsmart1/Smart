@@ -812,6 +812,10 @@ class SupabaseDB {
                 const { error: certErr } = await supabaseClient.from('certificates').delete().match({ course_id: courseId, student_email: studentEmail });
                 if (certErr) console.warn('Cert record cleanup failed:', certErr);
 
+                // 8. Delete course-specific Notifications for this student
+                const { error: notifErr } = await supabaseClient.from('notifications').delete().match({ course_id: courseId, user_email: studentEmail });
+                if (notifErr) console.warn('Notification cleanup failed:', notifErr);
+
             } catch (e) {
                 console.warn('Identification of cleanup records failed:', e);
                 // We proceed to try delete the enrollment anyway, as that's the primary goal.
