@@ -3366,12 +3366,16 @@ async function exportGradeBook(type) {
             });
         });
 
-    if (allRows.length === 0) return UI.showNotification('No grades to export', 'warn');
+        if (allRows.length === 0) return UI.showNotification('No grades to export', 'warn');
 
-    if (type === 'csv') {
-        Exporter.csv('gradebook_export.csv', allHeaders, allRows);
-    } else {
-        await Exporter.pdf('gradebook_export.pdf', 'Detailed Grade Book Report', allHeaders, allRows);
+        if (type === 'csv') {
+            Exporter.csv('gradebook_export.csv', allHeaders, allRows);
+        } else {
+            await Exporter.pdf('gradebook_export.pdf', 'Detailed Grade Book Report', allHeaders, allRows);
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        UI.showNotification('Error preparing export: ' + error.message, 'error');
     }
 }
 
@@ -3752,7 +3756,8 @@ async function filterGradeBook(page = 1) {
                     </div>
                 </div>
             `;
-        });
+            });
+        }
 
         if (renderId !== window.currentRenderId) return;
         area.innerHTML = html;
