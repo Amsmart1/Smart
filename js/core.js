@@ -1834,7 +1834,7 @@ const Exporter = {
 
             row.forEach((cell, i) => {
                 const text = String(cell || '');
-                const truncated = text.length > 25 ? text.substring(0, 22) + '...' : text;
+                const truncated = text.length > 30 ? text.substring(0, 27) + '...' : text;
                 doc.text(truncated, margin + (i * colWidth), y);
             });
             y += 8;
