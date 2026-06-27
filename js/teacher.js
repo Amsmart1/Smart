@@ -154,7 +154,6 @@ function showCourseForm(course = null) {
       </form>
     </div>
   `;
-  UI.createRTE('courseDescription');
   document.getElementById('courseForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -341,7 +340,6 @@ async function showLessonForm(courseId, lesson = null) {
       </form>
     </div>
   `;
-  UI.createRTE('lessonContent', { minHeight: '300px' });
   document.getElementById('lessonForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -436,7 +434,6 @@ function showTopicForm(courseId, topic = null) {
       </form>
     </div>
   `;
-  UI.createRTE('topicDescription');
   document.getElementById('topicForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -1025,7 +1022,7 @@ function addQuestionField(q = null) {
     <div class="grid">
       <div class="mb-10">
         <label class="bold">Question Text:</label>
-        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required style="display:none">${q ? escapeHtml(q.text) : ''}</textarea>
+        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required>${q ? escapeHtml(q.text) : ''}</textarea>
       </div>
       <div class="grid-2">
         <div>
@@ -1045,7 +1042,6 @@ function addQuestionField(q = null) {
     </div>
   `;
   container.appendChild(div);
-  UI.createRTE(qId, { minHeight: '60px' });
 
   // Auto-update total points when individual question points change
   div.querySelector('.q-points').addEventListener('input', updateAssignmentTotalPoints);
@@ -1151,7 +1147,6 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       </form>
     </div>
   `;
-  UI.createRTE('assignmentDescription');
   if (isEdit && assignment.questions) { assignment.questions.forEach(q => addQuestionField(q)); }
   updateACPreview();
 
@@ -1407,7 +1402,6 @@ async function gradeSubmission(assignmentId, studentEmail) {
       </form>
     </div>
   `;
-  UI.createRTE('feedback');
   const rawInput = document.getElementById('grade');
   const finalInput = document.getElementById('finalGrade');
 
@@ -2468,7 +2462,7 @@ function addQuizQuestionField(q = null) {
     </div>
     <div class="mb-10">
       <label class="bold">Question Text:</label>
-      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required style="display:none">${q ? escapeHtml(q.text) : ''}</textarea>
+      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required>${q ? escapeHtml(q.text) : ''}</textarea>
     </div>
     <div class="grid-2 mt-10">
       <div>
@@ -2495,7 +2489,6 @@ function addQuizQuestionField(q = null) {
     </div>
   `;
   container.appendChild(div);
-  UI.createRTE(qId, { minHeight: '60px' });
   div.querySelector('.q-points').addEventListener('input', updateQuizTotalPoints);
   div.querySelector('.q-points').addEventListener('change', updateQuizTotalPoints);
   updateQuizTotalPoints();
@@ -2699,7 +2692,6 @@ async function showQuizForm(quiz = null) {
       </form>
     </div>
   `;
-  UI.createRTE('quizDesc');
   updateACPreview();
   if (isEdit && quiz.questions) { quiz.questions.forEach(q => addQuizQuestionField(q)); }
   document.getElementById('quizForm').addEventListener('submit', handleQuizSave);
@@ -3403,7 +3395,6 @@ async function showMaterialForm() {
     </div>
   `;
 
-  UI.createRTE('matDesc');
     UI.createFileUploader('materialUploaderContainer', {
       bucket: 'materials',
       pathPrefix: 'course-content',
