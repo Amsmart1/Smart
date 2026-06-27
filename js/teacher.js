@@ -3756,7 +3756,8 @@ async function filterGradeBook(page = 1) {
                     </div>
                 </div>
             `;
-        });
+            });
+        }
 
         if (renderId !== window.currentRenderId) return;
         area.innerHTML = html;
