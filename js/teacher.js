@@ -118,6 +118,7 @@ async function loadAndEditCourse(id) {
 }
 
 function showCourseForm(course = null) {
+  const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
   const isEdit = !!course;
@@ -129,26 +130,26 @@ function showCourseForm(course = null) {
         <div class="grid">
           <div>
             <label>Course Title</label>
-            <input type="text" id="courseTitle" placeholder="Course Title" value="${isEdit ? escapeHtml(course.title) : ''}" required>
+            <input type="text" id="courseTitle" placeholder="Course Title" value="${isEdit ? escapeHtml(course.title) : ''}" class="no-margin" required>
           </div>
-          <div>
+          <div class="mt-10">
             <label>Description</label>
-            <textarea id="courseDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(course.description || '')) : ''}</textarea>
+            <textarea id="courseDescription" placeholder="Description" rows="4" class="no-margin">${isEdit ? escapeHtml(UI.htmlToPlainText(course.description || '')) : ''}</textarea>
           </div>
-          <div>
+          <div class="mt-10">
             <label>Enrollment ID (Optional)</label>
-            <input type="text" id="courseEnrollmentId" placeholder="Require ID for enrollment" value="${isEdit ? escapeHtml(course.enrollment_id || '') : ''}">
+            <input type="text" id="courseEnrollmentId" placeholder="Require ID for enrollment" value="${isEdit ? escapeHtml(course.enrollment_id || '') : ''}" class="no-margin">
           </div>
-          <div>
+          <div class="mt-10">
             <label>Status</label>
-            <select id="courseStatus">
+            <select id="courseStatus" class="no-margin">
               <option value="draft" ${isEdit && course.status === 'draft' ? 'selected' : ''}>Draft</option>
               <option value="published" ${isEdit && course.status === 'published' ? 'selected' : ''}>Published</option>
             </select>
           </div>
         </div>
         <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-30">${isEdit ? 'Update Course' : 'Create Course'}</button>
+          <button type="submit" class="button w-auto px-30" id="saveCourseBtn">${isEdit ? 'Update Course' : 'Create Course'}</button>
           <button type="button" class="button secondary w-auto px-30" onclick="renderCourses()">Cancel</button>
         </div>
       </form>
@@ -156,12 +157,21 @@ function showCourseForm(course = null) {
   `;
   document.getElementById('courseForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
+    const btn = document.getElementById('saveCourseBtn');
+    if (btn) btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Saving...';
 
     try {
+      const title = document.getElementById('assignmentTitle').value.trim();
+      const vTitle = Validator.required(title, 'Assignment title');
+      if (!vTitle.valid) {
+          UI.showNotification(vTitle.message, 'warn');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+      }
+
       const user = await SessionManager.getCurrentUser();
       const courseId = isEdit ? course.id : crypto.randomUUID();
 
@@ -318,21 +328,21 @@ async function showLessonForm(courseId, lesson = null) {
       <h2 class="m-0">${isEdit ? 'Edit Lesson' : 'Add Lesson'}</h2>
       <form id="lessonForm" class="mt-20">
         <label>Lesson Title</label>
-        <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" required>
+        <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" class="no-margin" required>
 
-        <label>Topic</label>
-        <select id="lessonTopicId" required>
+        <label class="mt-10">Topic</label>
+        <select id="lessonTopicId" class="no-margin" required>
           <option value="">-- Select Topic --</option>
           ${topics.map(t => `<option value="${t.id}" ${lesson?.topic_id === t.id ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
         </select>
         ${topics.length === 0 ? '<p class="tiny danger-text mt-5">No topics found. Please create a topic first.</p>' : ''}
 
         <label class="mt-10">Video URL (Optional)</label>
-        <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
-        <label>Content</label>
-        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
-        <label>Order Index</label>
-        <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
+        <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}" class="no-margin">
+        <label class="mt-10">Content</label>
+        <textarea id="lessonContent" placeholder="Lesson content..." rows="10" class="no-margin">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
+        <label class="mt-10">Order Index</label>
+        <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}" class="no-margin">
         <div class="flex gap-10 mt-20">
           <button type="submit" class="button w-auto px-40" ${topics.length === 0 ? 'disabled' : ''}>${isEdit ? 'Update Lesson' : 'Save Lesson'}</button>
           <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
@@ -342,8 +352,8 @@ async function showLessonForm(courseId, lesson = null) {
   `;
   document.getElementById('lessonForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
+    const btn = document.getElementById('saveLessonBtn');
+    if (btn) btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Saving...';
 
@@ -422,13 +432,13 @@ function showTopicForm(courseId, topic = null) {
       <h2 class="m-0">${isEdit ? 'Edit Topic' : 'Add Topic'}</h2>
       <form id="topicForm" class="mt-20">
         <label>Topic Title</label>
-        <input type="text" id="topicTitle" placeholder="Topic Title" value="${isEdit ? escapeHtml(topic.title) : ''}" required>
-        <label>Description (Optional)</label>
-        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3">${isEdit ? escapeHtml(UI.htmlToPlainText(topic.description || '')) : ''}</textarea>
-        <label>Order Index</label>
-        <input type="number" id="topicOrder" placeholder="Order Index" value="${isEdit ? topic.order_index : 0}">
+        <input type="text" id="topicTitle" placeholder="Topic Title" value="${isEdit ? escapeHtml(topic.title) : ''}" class="no-margin" required>
+        <label class="mt-10">Description (Optional)</label>
+        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3" class="no-margin">${isEdit ? escapeHtml(UI.htmlToPlainText(topic.description || '')) : ''}</textarea>
+        <label class="mt-10">Order Index</label>
+        <input type="number" id="topicOrder" placeholder="Order Index" value="${isEdit ? topic.order_index : 0}" class="no-margin">
         <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40">${isEdit ? 'Update Topic' : 'Save Topic'}</button>
+          <button type="submit" class="button w-auto px-40" id="saveTopicBtn">${isEdit ? 'Update Topic' : 'Save Topic'}</button>
           <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
         </div>
       </form>
@@ -436,8 +446,8 @@ function showTopicForm(courseId, topic = null) {
   `;
   document.getElementById('topicForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
+    const btn = document.getElementById('saveTopicBtn');
+    if (btn) btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Saving...';
 
@@ -812,6 +822,7 @@ async function renderCertificates() {
 
     // Fetch teacher's courses first to filter certificates
     const { data: myCourses } = await SupabaseDB.getCourses(user.email, null);
+    if (renderId !== window.currentRenderId) return;
     const myCourseIds = (myCourses || []).map(c => c.id);
 
     // Fetch all certificates related to this teacher
@@ -895,7 +906,7 @@ async function showCertForm(studentEmail, targetCourseId = null, requestedCertId
     <div class="card">
       <h3 class="m-0">Issue Certificate to ${escapeHtml(studentEmail)}</h3>
       <label class="mt-15">Select Course</label>
-      <select id="certCourseId">${courses.map(c => `<option value="${escapeAttr(c.id)}" ${targetCourseId === c.id ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}</select>
+      <select id="certCourseId" class="no-margin">${courses.map(c => `<option value="${escapeAttr(c.id)}" ${targetCourseId === c.id ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}</select>
       ${courses.length === 0 ? '<p class="tiny danger-text mt-5">Student is not enrolled in any of your courses.</p>' : ''}
       <p class="small mt-10">This will generate a official PDF certificate and award it to the student.</p>
       <div class="flex gap-10 mt-15">
@@ -1067,34 +1078,34 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       <h2>${isEdit ? 'Edit Assignment' : 'Create Assignment'}</h2>
       <form id="assignmentForm">
         <label>Assignment Title</label>
-        <input type="text" id="assignmentTitle" placeholder="Assignment Title" value="${isEdit ? escapeHtml(assignment.title) : ''}" required>
+        <input type="text" id="assignmentTitle" placeholder="Assignment Title" value="${isEdit ? escapeHtml(assignment.title) : ''}" class="no-margin" required>
 
-        <label>Course</label>
-        <select id="assignmentCourseId" required>
+        <label class="mt-10">Course</label>
+        <select id="assignmentCourseId" class="no-margin" required>
           <option value="">Select Course</option>
           ${courses.map(c => `<option value="${c.id}" ${((isEdit ? assignment.course_id : courseId) === c.id) ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}
         </select>
 
-        <label>Description</label>
-        <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(assignment.description)) : ''}</textarea>
+        <label class="mt-10">Description</label>
+        <textarea id="assignmentDescription" placeholder="Description" rows="4" class="no-margin">${isEdit ? escapeHtml(UI.htmlToPlainText(assignment.description)) : ''}</textarea>
 
-        <div class="grid-2">
+        <div class="grid-2 mt-10">
           <div>
             <label>Release Date</label>
-            <input type="datetime-local" id="assignmentStartAt" value="${isEdit && assignment.start_at ? new Date(assignment.start_at).toISOString().slice(0, 16) : ''}">
+            <input type="datetime-local" id="assignmentStartAt" class="no-margin" value="${isEdit && assignment.start_at ? new Date(assignment.start_at).toISOString().slice(0, 16) : ''}">
           </div>
           <div>
             <label>Due Date</label>
-            <input type="datetime-local" id="assignmentDueDate" value="${isEdit && assignment.due_date ? new Date(assignment.due_date).toISOString().slice(0, 16) : ''}" required>
+            <input type="datetime-local" id="assignmentDueDate" class="no-margin" value="${isEdit && assignment.due_date ? new Date(assignment.due_date).toISOString().slice(0, 16) : ''}" required>
           </div>
         </div>
 
         <div class="grid-3 mt-10">
-          <div><label class="small">Max Points:</label><input type="number" id="assignmentPoints" value="${isEdit ? assignment.points_possible : 0}" readonly style="background:#f0f0f0"></div>
-          <div><label class="small">Late Penalty/Day (%):</label><input type="number" id="assignmentLatePenalty" value="${isEdit ? assignment.late_penalty_per_day : 0}"></div>
+          <div><label class="small">Max Points:</label><input type="number" id="assignmentPoints" class="no-margin" value="${isEdit ? assignment.points_possible : 0}" readonly style="background:#f0f0f0"></div>
+          <div><label class="small">Late Penalty/Day (%):</label><input type="number" id="assignmentLatePenalty" class="no-margin" value="${isEdit ? assignment.late_penalty_per_day : 0}"></div>
           <div>
             <label class="small">Allow Late?</label>
-            <select id="assignmentAllowLate">
+            <select id="assignmentAllowLate" class="no-margin">
               <option value="true" ${isEdit && assignment.allow_late_submissions ? 'selected' : ''}>Yes</option>
               <option value="false" ${isEdit && !assignment.allow_late_submissions ? 'selected' : ''}>No</option>
             </select>
@@ -1102,10 +1113,10 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         </div>
         <div class="mt-10">
           <label>Global Allowed Extensions (for file questions):</label>
-          <input type="text" id="allowedExtensions" placeholder=".pdf, .docx, .zip, .jpg" value="${isEdit ? (assignment.allowed_extensions || []).join(', ') : '.pdf, .docx, .zip, .jpg'}">
+          <input type="text" id="allowedExtensions" placeholder=".pdf, .docx, .zip, .jpg" class="no-margin" value="${isEdit ? (assignment.allowed_extensions || []).join(', ') : '.pdf, .docx, .zip, .jpg'}">
         </div>
-        <label>Status</label>
-        <select id="assignmentStatus">
+        <label class="mt-10">Status</label>
+        <select id="assignmentStatus" class="no-margin">
           <option value="draft" ${isEdit && assignment.status === 'draft' ? 'selected' : ''}>Draft</option>
           <option value="published" ${isEdit && assignment.status === 'published' ? 'selected' : ''}>Published</option>
         </select>
@@ -1141,7 +1152,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           <button type="button" class="button w-auto secondary small" onclick="addQuestionField()">+ Add Question</button>
         </div>
         <div class="flex gap-10 mt-30">
-          <button type="submit" class="button w-auto px-40">${isEdit ? 'Update Assignment' : 'Create Assignment'}</button>
+          <button type="submit" class="button w-auto px-40" id="saveAssignmentBtn">${isEdit ? 'Update Assignment' : 'Create Assignment'}</button>
           <button type="button" class="button secondary w-auto px-40" onclick="${finalCourseId ? `editCourse('${finalCourseId}')` : 'renderAssignments()'}">Cancel</button>
         </div>
       </form>
@@ -1186,8 +1197,8 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   };
   document.getElementById('assignmentForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
+    const btn = document.getElementById('saveAssignmentBtn');
+    if (btn) btn.disabled = true;
     const originalText = btn.textContent;
     btn.textContent = 'Saving...';
 
@@ -1383,20 +1394,20 @@ async function gradeSubmission(assignmentId, studentEmail) {
         <div class="mt-20 grid-2">
           <div>
             <label>Raw Score (0-${assignment.points_possible}):</label>
-            <input type="number" id="grade" min="0" max="${assignment.points_possible}" value="${submission.grade ?? ''}" required readonly style="background:#f0f0f0">
+            <input type="number" id="grade" class="no-margin" min="0" max="${assignment.points_possible}" value="${submission.grade ?? ''}" required readonly style="background:#f0f0f0">
           </div>
           <div>
             <label>Final Adjusted Grade (%):</label>
-            <input type="number" id="finalGrade" min="0" max="100" value="${submission.final_grade ?? ''}" readonly style="background:#f0f0f0">
+            <input type="number" id="finalGrade" class="no-margin" min="0" max="100" value="${submission.final_grade ?? ''}" readonly style="background:#f0f0f0">
             <p class="tiny mt-5">Auto-calculated based on penalty.</p>
           </div>
         </div>
         <div class="mt-10">
           <label>Feedback:</label>
-          <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(UI.htmlToPlainText(submission.feedback || ''))}</textarea>
+          <textarea id="feedback" rows="4" placeholder="Enter feedback for student..." class="no-margin">${escapeHtml(UI.htmlToPlainText(submission.feedback || ''))}</textarea>
         </div>
         <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40">Submit Grade</button>
+          <button type="submit" class="button w-auto px-40" id="submitGradeBtn">Submit Grade</button>
           <button type="button" class="button secondary w-auto px-40" onclick="renderGrading()">Cancel</button>
         </div>
       </form>
@@ -1431,9 +1442,8 @@ async function gradeSubmission(assignmentId, studentEmail) {
 
   document.getElementById('gradingForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
+    const btn = document.getElementById('submitGradeBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
     try {
       const questionScores = {};
@@ -1465,8 +1475,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
     } catch (e) {
       UI.showNotification('Error saving grade: ' + e.message, 'error');
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Submit Grade';
+      if (btn) { btn.disabled = false; btn.textContent = 'Submit Grade'; }
     }
   });
   } catch (error) {
@@ -1964,19 +1973,19 @@ async function showLiveClassForm(liveClass = null) {
         <h3 class="m-0">${isEdit ? 'Edit Live Class' : 'Schedule Live Class'}</h3>
         <form id="liveClassForm" class="mt-20">
           <label>Title</label>
-          <input type="text" id="liveClassTitle" placeholder="e.g. Week 1 Live Session" value="${isEdit ? escapeHtml(liveClass.title) : ''}" required>
-          <label>Course</label>
-          <select id="liveClassCourseId">
+          <input type="text" id="liveClassTitle" placeholder="e.g. Week 1 Live Session" value="${isEdit ? escapeHtml(liveClass.title) : ''}" class="no-margin" required>
+          <label class="mt-10">Course</label>
+          <select id="liveClassCourseId" class="no-margin">
             ${courses.map(c => `<option value="${c.id}" ${isEdit && liveClass.course_id === c.id ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}
           </select>
           <div class="grid-2 mt-10">
-            <div><label class="small">Start At</label><input type="datetime-local" id="liveClassStart" value="${isEdit ? new Date(liveClass.start_at).toISOString().slice(0, 16) : ''}" required></div>
-            <div><label class="small">End At</label><input type="datetime-local" id="liveClassEnd" value="${isEdit ? new Date(liveClass.end_at).toISOString().slice(0, 16) : ''}" required></div>
+            <div><label class="small">Start At</label><input type="datetime-local" id="liveClassStart" class="no-margin" value="${isEdit ? new Date(liveClass.start_at).toISOString().slice(0, 16) : ''}" required></div>
+            <div><label class="small">End At</label><input type="datetime-local" id="liveClassEnd" class="no-margin" value="${isEdit ? new Date(liveClass.end_at).toISOString().slice(0, 16) : ''}" required></div>
           </div>
           <div class="grid-2 mt-10">
             <div>
               <label class="small">Recurring Pattern</label>
-              <select id="liveClassRecurring">
+              <select id="liveClassRecurring" class="no-margin">
                   <option value="none" ${isEdit && liveClass.recurring_config?.pattern === 'none' ? 'selected' : ''}>None</option>
                   <option value="daily" ${isEdit && liveClass.recurring_config?.pattern === 'daily' ? 'selected' : ''}>Daily</option>
                   <option value="weekly" ${isEdit && liveClass.recurring_config?.pattern === 'weekly' ? 'selected' : ''}>Weekly</option>
@@ -1985,13 +1994,13 @@ async function showLiveClassForm(liveClass = null) {
             </div>
             <div>
               <label class="small">Custom Meeting URL (optional)</label>
-              <input type="url" id="liveClassMeetingUrl" placeholder="https://..." value="${isEdit ? escapeHtml(liveClass.meeting_url || '') : ''}">
+              <input type="url" id="liveClassMeetingUrl" class="no-margin" placeholder="https://..." value="${isEdit ? escapeHtml(liveClass.meeting_url || '') : ''}">
               <div id="urlHintArea"></div>
             </div>
           </div>
           <div class="mt-10">
             <label class="small">Recording URL (Post-session)</label>
-            <input type="url" id="liveClassRecordingUrl" placeholder="https://..." value="${isEdit ? escapeHtml(liveClass.recording_url || '') : ''}">
+            <input type="url" id="liveClassRecordingUrl" class="no-margin" placeholder="https://..." value="${isEdit ? escapeHtml(liveClass.recording_url || '') : ''}">
           </div>
           <div class="flex gap-10 mt-15">
             <button type="submit" class="button w-auto px-40">${isEdit ? 'Update Class' : 'Schedule Class'}</button>
@@ -2031,6 +2040,9 @@ async function showLiveClassForm(liveClass = null) {
 
     document.getElementById('liveClassForm').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const btn = e.target.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
       const user = await SessionManager.getCurrentUser();
       const selCourseId = document.getElementById('liveClassCourseId').value;
       const selPattern = document.getElementById('liveClassRecurring').value;
@@ -2067,9 +2079,15 @@ async function showLiveClassForm(liveClass = null) {
           }
       }
 
-      await SupabaseDB.saveLiveClass(data);
-      UI.showNotification(isEdit ? 'Class updated' : 'Class scheduled', 'success');
-      renderLiveClasses();
+      try {
+        await SupabaseDB.saveLiveClass(data);
+        UI.showNotification(isEdit ? 'Class updated' : 'Class scheduled', 'success');
+        renderLiveClasses();
+      } catch (err) {
+        UI.showNotification('Error saving class: ' + err.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = isEdit ? 'Update Class' : 'Schedule Class'; }
+      }
     });
   } catch (e) {
       console.error(e);
@@ -2525,8 +2543,8 @@ const shuffleQuizQuestions = () => {
 
 async function handleQuizSave(e) {
   e.preventDefault();
-  const btn = e.target.querySelector('button[type="submit"]');
-  btn.disabled = true;
+  const btn = document.getElementById('saveQuizBtn');
+  if (btn) btn.disabled = true;
   const originalText = btn.textContent;
   btn.textContent = 'Saving...';
 
@@ -2637,23 +2655,23 @@ async function showQuizForm(quiz = null) {
       <form id="quizForm" class="mt-20">
         <input type="hidden" id="quizId" value="${isEdit ? quiz.id : ''}">
         <label>Quiz Title</label>
-        <input type="text" id="quizTitle" placeholder="Quiz Title" value="${isEdit ? escapeHtml(quiz.title) : ''}" required>
-        <label>Description</label>
-        <textarea id="quizDesc" placeholder="Description">${isEdit ? escapeHtml(UI.htmlToPlainText(quiz.description)) : ''}</textarea>
-        <div class="grid-2">
-          <div><label class="small">Time Limit (min):</label><input type="number" id="quizLimit" value="${isEdit ? quiz.time_limit : 0}"></div>
-          <div><label class="small">Attempts Allowed:</label><input type="number" id="quizAttempts" value="${isEdit ? quiz.attempts_allowed : 1}" min="1"></div>
+        <input type="text" id="quizTitle" placeholder="Quiz Title" value="${isEdit ? escapeHtml(quiz.title) : ''}" class="no-margin" required>
+        <label class="mt-10">Description</label>
+        <textarea id="quizDesc" placeholder="Description" class="no-margin">${isEdit ? escapeHtml(UI.htmlToPlainText(quiz.description)) : ''}</textarea>
+        <div class="grid-2 mt-10">
+          <div><label class="small">Time Limit (min):</label><input type="number" id="quizLimit" class="no-margin" value="${isEdit ? quiz.time_limit : 0}"></div>
+          <div><label class="small">Attempts Allowed:</label><input type="number" id="quizAttempts" class="no-margin" value="${isEdit ? quiz.attempts_allowed : 1}" min="1"></div>
         </div>
         <div class="grid-2 mt-10">
-          <div><label class="small">Available From:</label><input type="datetime-local" id="quizStartAt" value="${isEdit && quiz.start_at ? new Date(quiz.start_at).toISOString().slice(0, 16) : ''}"></div>
-          <div><label class="small">Available Until:</label><input type="datetime-local" id="quizEndAt" value="${isEdit && quiz.end_at ? new Date(quiz.end_at).toISOString().slice(0, 16) : ''}"></div>
+          <div><label class="small">Available From:</label><input type="datetime-local" id="quizStartAt" class="no-margin" value="${isEdit && quiz.start_at ? new Date(quiz.start_at).toISOString().slice(0, 16) : ''}"></div>
+          <div><label class="small">Available Until:</label><input type="datetime-local" id="quizEndAt" class="no-margin" value="${isEdit && quiz.end_at ? new Date(quiz.end_at).toISOString().slice(0, 16) : ''}"></div>
         </div>
         <div class="grid-3 mt-10">
-          <div><label class="small">Total Points:</label><input type="number" id="quizTotalPoints" value="0" readonly style="background:#f0f0f0"></div>
-          <div><label class="small">Passing Score (%):</label><input type="number" id="quizPassingScore" value="${isEdit ? quiz.passing_score : 60}" min="0" max="100"></div>
+          <div><label class="small">Total Points:</label><input type="number" id="quizTotalPoints" class="no-margin" value="0" readonly style="background:#f0f0f0"></div>
+          <div><label class="small">Passing Score (%):</label><input type="number" id="quizPassingScore" class="no-margin" value="${isEdit ? quiz.passing_score : 60}" min="0" max="100"></div>
           <div>
             <label class="small">Shuffle Questions?</label>
-            <select id="quizShuffle">
+            <select id="quizShuffle" class="no-margin">
               <option value="false" ${isEdit && !quiz.shuffle_questions ? 'selected' : ''}>No</option>
               <option value="true" ${isEdit && quiz.shuffle_questions ? 'selected' : ''}>Yes</option>
             </select>
@@ -2661,13 +2679,13 @@ async function showQuizForm(quiz = null) {
         </div>
         <div class="mt-10">
           <label>Course</label>
-          <select id="quizCourseId" required>
+          <select id="quizCourseId" class="no-margin" required>
             <option value="">Select Course</option>
             ${courses.map(c => `<option value="${c.id}" ${((isEdit ? quiz.course_id : null) === c.id) ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}
           </select>
         </div>
-        <label>Status</label>
-        <select id="quizStatus">
+        <label class="mt-10">Status</label>
+        <select id="quizStatus" class="no-margin">
           <option value="draft" ${isEdit && quiz.status === 'draft' ? 'selected' : ''}>Draft</option>
           <option value="published" ${isEdit && quiz.status === 'published' ? 'selected' : ''}>Published</option>
         </select>
@@ -2686,7 +2704,7 @@ async function showQuizForm(quiz = null) {
           <button type="button" class="button secondary w-auto small" onclick="addQuizQuestionField()">+ Add Question</button>
         </div>
         <div class="flex gap-10 mt-30">
-          <button type="submit" class="button w-auto px-40">${isEdit ? 'Update Quiz' : 'Save Quiz'}</button>
+          <button type="submit" class="button w-auto px-40" id="saveQuizBtn">${isEdit ? 'Update Quiz' : 'Save Quiz'}</button>
           <button type="button" class="button secondary w-auto px-40" onclick="renderQuizzes()">Cancel</button>
         </div>
       </form>
@@ -2862,7 +2880,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
           <div class="bold mb-10">Final Score</div>
           <input type="number" id="finalQuizScore" min="0" max="100" value="${submission.score || 0}" class="w-auto" style="width:100px; background:#f0f0f0" readonly>
           <p class="small mt-5">Note: Calculated from question scores.</p>
-          <button type="submit" class="button w-auto px-40 mt-15">Save Grade</button>
+          <button type="submit" class="button w-auto px-40 mt-15" id="saveQuizGradeBtn">Save Grade</button>
         </div>
       </form>
     </div>
@@ -2917,9 +2935,8 @@ async function gradeQuizSubmission(submissionId, quizId) {
 
   document.getElementById('quizGradingForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
+    const btn = document.getElementById('saveQuizGradeBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
     try {
       const manualScoresMap = {};
@@ -2964,8 +2981,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
     } catch (err) {
       UI.showNotification('Error saving grade: ' + err.message, 'error');
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Save Grade';
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Grade'; }
     }
   });
 }
@@ -3380,16 +3396,16 @@ async function showMaterialForm() {
       <h3 class="m-0">Add Course Material</h3>
       <div class="mt-20">
         <label>Course</label>
-        <select id="matCourseId">${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}</select>
-        <label>Material Title</label>
-        <input type="text" id="matTitle" placeholder="e.g. Syllabus, Week 1 Slides">
-        <label>Description (Optional)</label>
-        <textarea id="matDesc" placeholder="Briefly describe this material..." rows="2"></textarea>
+        <select id="matCourseId" class="no-margin">${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}</select>
+        <label class="mt-10">Material Title</label>
+        <input type="text" id="matTitle" placeholder="e.g. Syllabus, Week 1 Slides" class="no-margin">
+        <label class="mt-10">Description (Optional)</label>
+        <textarea id="matDesc" placeholder="Briefly describe this material..." rows="2" class="no-margin"></textarea>
         <div id="materialUploaderContainer" class="mt-10"></div>
-        <input type="hidden" id="matFileUrl">
+        <input type="hidden" id="matFileUrl" class="no-margin">
         <div class="flex gap-10 mt-20">
-          <button class="button w-auto px-30" id="saveMatBtn" onclick="saveMaterial()" disabled>Save Material</button>
-          <button class="button secondary w-auto px-30" onclick="document.getElementById('materialFormArea').classList.add('hidden')">Cancel</button>
+          <button type="button" class="button w-auto px-30" id="saveMatBtn" onclick="saveMaterial()" disabled>Save Material</button>
+          <button type="button" class="button secondary w-auto px-30" onclick="document.getElementById('materialFormArea').classList.add('hidden')">Cancel</button>
         </div>
       </div>
     </div>
@@ -3410,6 +3426,7 @@ async function showMaterialForm() {
 }
 
 async function saveMaterial() {
+  const btn = document.getElementById('saveMatBtn');
   const user = await SessionManager.getCurrentUser();
   const courseId = document.getElementById('matCourseId').value;
   const title = document.getElementById('matTitle').value;
@@ -3420,7 +3437,10 @@ async function saveMaterial() {
       return;
   }
 
-  const btn = document.getElementById('saveMatBtn');
+  const title = document.getElementById('matTitle').value.trim();
+  const vTitle = Validator.required(title, 'Material title');
+  if (!vTitle.valid) return UI.showNotification(vTitle.message, 'warn');
+
   if (btn) {
       btn.disabled = true;
       btn.textContent = 'Saving...';
@@ -3432,7 +3452,7 @@ async function saveMaterial() {
       course_id: courseId,
       teacher_email: user.email,
       title: title,
-      description: description,
+      description: description.trim(),
       file_url: url
     });
     UI.showNotification('Material saved successfully', 'success');

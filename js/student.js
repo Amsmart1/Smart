@@ -831,7 +831,7 @@ async function viewFeedback(assignmentId) {
         <h4>Request Regrade</h4>
         <p class="small">If you believe there is a mistake in your grade, provide a reason below.</p>
         <textarea id="regradeReason" class="input" rows="3" placeholder="Reason for regrade..."></textarea>
-        <button class="button secondary w-auto mt-10" onclick="requestRegrade('${escapeAttr(assignmentId)}')">Submit Regrade Request</button>
+        <button class="button secondary w-auto mt-10" id="submitRegradeBtn" onclick="requestRegrade('${escapeAttr(assignmentId)}')">Submit Regrade Request</button>
       </div>
 
     </div>
@@ -1374,12 +1374,13 @@ async function showCertRequestModal() {
 async function submitCertRequest() {
   const btn = document.getElementById('submitRequestBtn');
   const courseId = document.getElementById('requestCourseId').value;
-  const reason = document.getElementById('requestReason').value;
+  const reason = document.getElementById('requestReason').value.trim();
 
-  if(!courseId) {
-    UI.showNotification('Please select a course', 'warn');
-    return;
-  }
+  const vCourse = Validator.required(courseId, 'Course');
+  if (!vCourse.valid) return UI.showNotification(vCourse.message, 'warn');
+
+  const vReason = Validator.required(reason, 'Reason');
+  if (!vReason.valid) return UI.showNotification(vReason.message, 'warn');
 
   btn.disabled = true; btn.textContent = 'Submitting...';
   try {
@@ -1507,12 +1508,12 @@ async function renderCertificates() {
         <p class="small text-muted mb-15">Request a certificate for a course you have completed.</p>
 
         <label>Select Course</label>
-        <select id="requestCourseId" class="mb-15">
+        <select id="requestCourseId" class="no-margin">
           <!-- Populated dynamically -->
         </select>
 
-        <label>Reason / Additional Info</label>
-        <textarea id="requestReason" placeholder="e.g. Completed all lessons and passed final quiz..." rows="3"></textarea>
+        <label class="mt-10">Reason / Additional Info</label>
+        <textarea id="requestReason" placeholder="e.g. Completed all lessons and passed final quiz..." rows="3" class="no-margin"></textarea>
 
         <div class="flex gap-10 mt-20">
           <button class="button w-auto px-30" id="submitRequestBtn" onclick="submitCertRequest()">Submit Request</button>
@@ -1528,9 +1529,12 @@ async function renderCertificates() {
 }
 
 async function showCertificateDetails(certId) {
+    const renderId = ++window.currentRenderId;
     try {
         const user = await SessionManager.getCurrentUser();
+        if (renderId !== window.currentRenderId) return;
         const { data: certs } = await SupabaseDB.getCertificates(user.email);
+        if (renderId !== window.currentRenderId) return;
         const cert = certs.find(c => c.id === certId);
         if (!cert) return;
 
@@ -1651,7 +1655,7 @@ async function renderPlanner() {
             <option value="low">Low</option>
             <option value="high">High</option>
           </select>
-          <button class="button w-auto px-30" onclick="addPlannerItem()">Add</button>
+          <button class="button w-auto px-30" id="addPlannerBtn" onclick="addPlannerItem()">Add</button>
         </div>
       </div>
 
@@ -1711,11 +1715,19 @@ async function togglePlannerItem(id, completed) {
 window.togglePlannerItem = togglePlannerItem;
 
 async function addPlannerItem() {
+  const btn = document.getElementById('addPlannerBtn');
   const user = await SessionManager.getCurrentUser();
-  const title = document.getElementById('plannerTitle').value;
+  const title = document.getElementById('plannerTitle').value.trim();
   const date = document.getElementById('plannerDate').value;
   const priority = document.getElementById('plannerPriority').value;
-  if (!title || !date) return;
+
+  const vTitle = Validator.required(title, 'Task title');
+  if (!vTitle.valid) return UI.showNotification(vTitle.message, 'warn');
+  if (!date) return UI.showNotification('Due date is required.', 'warn');
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
+
+  try {
   await SupabaseDB.savePlannerItem({
       id: crypto.randomUUID(),
       user_email: user.email,
@@ -1725,7 +1737,13 @@ async function addPlannerItem() {
       completed: false,
       created_at: new Date().toISOString()
   });
+  UI.showNotification('Task added to planner.', 'success');
   renderPlanner();
+  } catch (e) {
+      UI.showNotification('Failed to add task: ' + e.message, 'error');
+  } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Add'; }
+  }
 }
 
 async function deletePlannerItem(id) {
@@ -2751,8 +2769,13 @@ async function viewQuizResults(quizId, submissionId = null) {
 
 async function requestRegrade(assignmentId) {
     const renderId = window.currentRenderId;
-    const reason = document.getElementById('regradeReason').value;
-    if (!reason) return UI.showNotification('Please provide a reason.');
+    const btn = document.getElementById('submitRegradeBtn');
+    const reason = document.getElementById('regradeReason').value.trim();
+
+    const vReason = Validator.required(reason, 'Regrade reason');
+    if (!vReason.valid) return UI.showNotification(vReason.message, 'warn');
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
 
     try {
         const user = await SessionManager.getCurrentUser();
@@ -2764,10 +2787,12 @@ async function requestRegrade(assignmentId) {
         await SupabaseDB.saveSubmission(submission);
         if (renderId !== window.currentRenderId) return;
 
-        UI.showNotification('Regrade request submitted!');
+        UI.showNotification('Regrade request submitted!', 'success');
         viewFeedback(assignmentId);
     } catch (e) {
-        UI.showNotification('Failed to submit regrade request.');
+        UI.showNotification('Failed to submit regrade request: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Submit Regrade Request'; }
     }
 }
 window.requestRegrade = requestRegrade;

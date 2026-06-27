@@ -121,7 +121,7 @@ async function renderDashboard() {
             <input type="number" id="bcExpiry" value="30" min="1" class="no-margin">
         </div>
       </div>
-      <button class="button mt-10" onclick="broadcastNotif()">Send Broadcast</button>
+      <button class="button mt-10" id="broadcastBtn" onclick="broadcastNotif()">Send Broadcast</button>
     </div>
 
     <h3 class="mb-15 mt-30">Academic Management & Support</h3>
@@ -850,6 +850,7 @@ async function exportUsersCSV() {
 }
 
 async function broadcastNotif() {
+  const btn = document.getElementById('broadcastBtn');
   const title = document.getElementById('bcTitle').value.trim();
   const role = document.getElementById('bcRole').value;
   const msg = document.getElementById('bcMsg').value.trim();
@@ -860,6 +861,8 @@ async function broadcastNotif() {
 
   const vMsg = Validator.required(msg, 'Message');
   if (!vMsg.valid) return UI.showNotification(vMsg.message, 'warn');
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
 
   try {
     // Utilize centralized createBroadcast which leverages the secure SQL RPC
@@ -879,7 +882,11 @@ async function broadcastNotif() {
     if (document.querySelector('[data-page="dashboard"].active')) {
         renderDashboard();
     }
-  } catch (e) { UI.showNotification('Broadcast failed: ' + e.message, 'error'); }
+  } catch (e) {
+    UI.showNotification('Broadcast failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send Broadcast'; }
+  }
 }
 
 async function removeSchedule(idx) {
@@ -983,7 +990,7 @@ function viewTicketDetails(id) {
             </div>
             <div class="mt-20">
                 <label>Resolution Notes:</label>
-                <textarea id="resNotes-${escapeAttr(t.id)}" rows="3" placeholder="Enter resolution details...">${escapeHtml(t.resolution_notes || '')}</textarea>
+                <textarea id="resNotes-${escapeAttr(t.id)}" rows="3" placeholder="Enter resolution details..." class="no-margin">${escapeHtml(t.resolution_notes || '')}</textarea>
             </div>
             <div class="mt-20 flex-end gap-10">
                 <button class="button w-auto px-20" onclick="saveTicketNotes('${escapeAttr(t.id)}')">Save Notes</button>
@@ -1645,11 +1652,11 @@ async function renderMaintenance() {
         </div>
         <div style="margin-bottom:15px">
             <label>Manual Until (optional):</label>
-            <input type="datetime-local" id="manualUntil" value="${maintenance.manual_until ? new Date(maintenance.manual_until).toISOString().slice(0, 16) : ''}">
+            <input type="datetime-local" id="manualUntil" class="no-margin" value="${maintenance.manual_until ? new Date(maintenance.manual_until).toISOString().slice(0, 16) : ''}">
         </div>
         <div style="margin-bottom:15px">
             <label>Public Maintenance Message:</label>
-            <textarea id="maintenanceMessage" rows="2" placeholder="e.g. System is undergoing scheduled upgrades. Expect downtime.">${escapeHtml(maintenance.message || '')}</textarea>
+            <textarea id="maintenanceMessage" rows="2" placeholder="e.g. System is undergoing scheduled upgrades. Expect downtime." class="no-margin">${escapeHtml(maintenance.message || '')}</textarea>
         </div>
         <button type="submit" id="saveMaintBtn" class="button" style="width:auto; padding:10px 40px">Save Settings</button>
       </form>
@@ -2422,18 +2429,18 @@ function showUserForm(user = null) {
       <h3>${isEdit ? 'Edit User' : 'Create User'}</h3>
       <form id="userForm" class="card">
         <label>Full Name</label>
-        <input type="text" id="fullName" placeholder="Full Name" value="${isEdit ? escapeHtml(user.full_name) : ''}" required>
-        <label>Email</label>
-        <input type="email" id="email" placeholder="Email" value="${isEdit ? escapeHtml(user.email) : ''}" required>
-        <label>Phone Number</label>
-        <input type="tel" id="phone" placeholder="Phone Number" value="${isEdit ? escapeHtml(user.phone || '') : ''}">
-        <label>Password</label>
+        <input type="text" id="fullName" placeholder="Full Name" value="${isEdit ? escapeHtml(user.full_name) : ''}" class="no-margin" required>
+        <label class="mt-10">Email</label>
+        <input type="email" id="email" placeholder="Email" value="${isEdit ? escapeHtml(user.email) : ''}" class="no-margin" required>
+        <label class="mt-10">Phone Number</label>
+        <input type="tel" id="phone" placeholder="Phone Number" value="${isEdit ? escapeHtml(user.phone || '') : ''}" class="no-margin">
+        <label class="mt-10">Password</label>
         <div class="password-wrapper">
-          <input type="password" id="password" placeholder="${isEdit ? 'New Password (leave blank to keep current)' : 'Password'}" ${isEdit ? '' : 'required'}>
+          <input type="password" id="password" placeholder="${isEdit ? 'New Password (leave blank to keep current)' : 'Password'}" class="no-margin" ${isEdit ? '' : 'required'}>
           <span class="password-toggle" onclick="const p=document.getElementById('password'); const isPass=p.type==='password'; p.type=isPass?'text':'password'; this.textContent=isPass?'🔒':'👁️'">👁️</span>
         </div>
-        <label>Role</label>
-        <select id="role">
+        <label class="mt-10">Role</label>
+        <select id="role" class="no-margin">
           <option value="student" ${isEdit && user.role === 'student' ? 'selected' : ''}>Student</option>
           <option value="teacher" ${isEdit && user.role === 'teacher' ? 'selected' : ''}>Teacher</option>
           <option value="admin" ${isEdit && user.role === 'admin' ? 'selected' : ''}>Admin</option>
@@ -2445,7 +2452,7 @@ function showUserForm(user = null) {
             </label>
         </div>
         <div class="flex gap-10 mt-20">
-            <button type="submit" class="button w-auto px-40">${isEdit ? 'Update User' : 'Create User'}</button>
+            <button type="submit" class="button w-auto px-40" id="saveUserBtn">${isEdit ? 'Update User' : 'Create User'}</button>
             <button type="button" class="button secondary w-auto px-40" onclick="renderUsers()">Cancel</button>
         </div>
       </form>
@@ -2453,6 +2460,9 @@ function showUserForm(user = null) {
   `;
   document.getElementById('userForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const btn = document.getElementById('saveUserBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
     try {
       const fullName = document.getElementById('fullName').value.trim();
       const email = document.getElementById('email').value.trim();
@@ -2517,7 +2527,9 @@ function showUserForm(user = null) {
           }
       }
     } catch (err) {
-    UI.showNotification('Error saving user: ' + err.message, 'error');
+      UI.showNotification('Error saving user: ' + err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = isEdit ? 'Update User' : 'Create User'; }
     }
   });
 }
@@ -2533,15 +2545,15 @@ function showInviteForm() {
       <p class="small">Invites bypass the public registration limits for Admin and Teacher roles.</p>
       <form id="inviteForm">
         <label>Recipient Email (Optional for Students)</label>
-        <input type="email" id="inviteEmail" placeholder="email@example.com">
-        <label>Target Role</label>
-        <select id="inviteRole" required>
+        <input type="email" id="inviteEmail" placeholder="email@example.com" class="no-margin">
+        <label class="mt-10">Target Role</label>
+        <select id="inviteRole" class="no-margin" required>
           <option value="student">Student</option>
           <option value="teacher">Teacher</option>
           <option value="admin">Admin</option>
         </select>
-        <label>Expires In</label>
-        <select id="inviteExpiry">
+        <label class="mt-10">Expires In</label>
+        <select id="inviteExpiry" class="no-margin">
           <option value="1">24 Hours</option>
           <option value="7" selected>7 Days</option>
           <option value="30">30 Days</option>
@@ -2555,7 +2567,7 @@ function showInviteForm() {
           <p class="tiny success-text mt-5">Share this link with the recipient.</p>
         </div>
         <div class="flex gap-10 mt-20" id="inviteActions">
-            <button type="submit" class="button w-auto px-30">Generate Link</button>
+            <button type="submit" class="button w-auto px-30" id="generateInviteBtn">Generate Link</button>
             <button type="button" class="button secondary w-auto px-30" onclick="this.closest('#inviteModal').remove()">Cancel</button>
         </div>
       </form>
@@ -2574,6 +2586,9 @@ function showInviteForm() {
   const inviteForm = document.getElementById('inviteForm');
   if (inviteForm) inviteForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const btn = document.getElementById('generateInviteBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+
     try {
       const emailEl = document.getElementById('inviteEmail');
       const roleEl = document.getElementById('inviteRole');
@@ -2626,7 +2641,11 @@ function showInviteForm() {
           }
           UI.showNotification('Invite generated!');
       }
-  } catch (err) { UI.showNotification('Failed to generate invite: ' + err.message, 'error'); }
+    } catch (err) {
+      UI.showNotification('Failed to generate invite: ' + err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Generate Link'; }
+    }
   });
 }
 
@@ -2640,11 +2659,11 @@ function showAddScheduleForm() {
       <h3>Add Maintenance Schedule</h3>
       <form id="scheduleForm">
         <div class="grid-2">
-            <div><label class="small">Start At</label><input type="datetime-local" id="scheduleStart" required></div>
-            <div><label class="small">End At</label><input type="datetime-local" id="scheduleEnd" required></div>
+            <div><label class="small">Start At</label><input type="datetime-local" id="scheduleStart" class="no-margin" required></div>
+            <div><label class="small">End At</label><input type="datetime-local" id="scheduleEnd" class="no-margin" required></div>
         </div>
         <div class="flex gap-10 mt-15">
-            <button type="submit" class="button w-auto px-30">Add Schedule</button>
+            <button type="submit" class="button w-auto px-30" id="addScheduleBtn">Add Schedule</button>
             <button type="button" class="button secondary w-auto px-30" onclick="this.closest('#scheduleModal').remove()">Cancel</button>
         </div>
       </form>
@@ -2654,6 +2673,9 @@ function showAddScheduleForm() {
 
   document.getElementById('scheduleForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const btn = document.getElementById('addScheduleBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
+
     try {
       const maintenance = await SupabaseDB.getMaintenance();
       maintenance.schedules = maintenance.schedules || [];
@@ -2666,7 +2688,11 @@ function showAddScheduleForm() {
           area.remove();
           renderMaintenance();
       }
-    } catch (err) { UI.showNotification('Failed to add schedule: ' + err.message, 'error'); }
+    } catch (err) {
+      UI.showNotification('Failed to add schedule: ' + err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Add Schedule'; }
+    }
   });
 }
 
