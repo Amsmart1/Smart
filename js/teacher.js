@@ -1374,7 +1374,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
                 </div>
                 <div class="mt-10">
                     <label class="small">Teacher Comment for Question ${idx + 1}:</label>
-                    <textarea class="q-feedback-input small w-100 mt-5" data-q-idx="${idx}" rows="2" placeholder="Specific feedback for this answer...">${escapeHtml(submission.question_feedback?.[idx] || '')}</textarea>
+                    <textarea class="q-feedback-input small w-100 mt-5" data-q-idx="${idx}" rows="2" placeholder="Specific feedback for this answer...">${escapeHtml(UI.htmlToPlainText(submission.question_feedback?.[idx] || ''))}</textarea>
                 </div>
               </div>`;
             }).join('')}
@@ -2485,7 +2485,7 @@ function addQuizQuestionField(q = null) {
       <label class="small">Hint (optional)</label>
       <input type="text" class="q-hint" placeholder="Hint..." value="${q?.hint ? escapeHtml(q.hint) : ''}">
       <label class="small">Explanation (optional)</label>
-      <textarea class="q-explanation" placeholder="Explanation for correct answer..." rows="2">${q?.explanation ? escapeHtml(q.explanation) : ''}</textarea>
+      <textarea class="q-explanation" placeholder="Explanation for correct answer..." rows="2">${q?.explanation ? escapeHtml(UI.htmlToPlainText(q.explanation)) : ''}</textarea>
     </div>
   `;
   container.appendChild(div);
@@ -3395,14 +3395,14 @@ async function showMaterialForm() {
     </div>
   `;
 
-    UI.createFileUploader('materialUploaderContainer', {
-      bucket: 'materials',
-      pathPrefix: 'course-content',
-      onUploadSuccess: (url) => {
-        document.getElementById('matFileUrl').value = url;
-        document.getElementById('saveMatBtn').disabled = false;
-      }
-    });
+  UI.createFileUploader('materialUploaderContainer', {
+    bucket: 'materials',
+    pathPrefix: 'course-content',
+    onUploadSuccess: (url) => {
+      document.getElementById('matFileUrl').value = url;
+      document.getElementById('saveMatBtn').disabled = false;
+    }
+  });
   } catch (error) {
     console.error('Show material form error:', error);
     UI.showNotification('Error opening material form: ' + error.message, 'error');
