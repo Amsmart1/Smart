@@ -985,16 +985,20 @@ DROP TRIGGER IF EXISTS tr_quiz_published ON quizzes;
 CREATE TRIGGER tr_quiz_published AFTER INSERT OR UPDATE ON quizzes FOR EACH ROW EXECUTE PROCEDURE tr_notify_quiz();
 
 CREATE OR REPLACE FUNCTION tr_notify_submission() RETURNS TRIGGER AS $$
+DECLARE
+  v_assign_title TEXT;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   -- teacher_email and course_id are inherited BEFORE INSERT
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
-    -- Notify Teacher
+    -- Notify teacher
     IF NEW.teacher_email IS NOT NULL THEN
       PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
     END IF;
-    -- Notify Student (Confirmation)
-    PERFORM notify_user(NEW.student_email, 'Submission Received', 'Your assignment submission has been received and is pending grading.', 'student.html?page=assignments', 'system', NEW.course_id);
+
+    -- Notify student
+    SELECT title INTO v_assign_title FROM assignments WHERE id = NEW.assignment_id;
+    PERFORM notify_user(NEW.student_email, 'Assignment Submitted', 'You have successfully submitted "' || COALESCE(v_assign_title, 'Assignment') || '".', 'student.html?page=assignments', 'system', NEW.course_id);
   END IF;
   RETURN NEW;
 END;
@@ -2444,7 +2448,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Periodic Purge Function
--- Periodic Purge Function (Global Cleanup)
+-- Periodic Purge Function (Global Maintenance)
 CREATE OR REPLACE FUNCTION purge_expired_records()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -2473,8 +2477,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Authoritative Metadata Pruning RPC (User-specific)
--- Prunes orphaned tracking IDs from user metadata to prevent bloat.
+-- User-Specific Metadata Purge RPC
 CREATE OR REPLACE FUNCTION purge_user_metadata(p_email VARCHAR)
 RETURNS VOID AS $$
 DECLARE
@@ -2484,32 +2487,37 @@ DECLARE
 BEGIN
     -- Security: Only authorized roles or self can update metadata
     IF NOT (is_admin() OR get_auth_email_raw() = p_email) THEN
-        RAISE EXCEPTION 'Unauthorized metadata update.';
+        RAISE EXCEPTION 'Unauthorized metadata purge.';
     END IF;
 
     v_alerted_ids := (
         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-        FROM users, jsonb_array_elements_text(metadata->'alerted_ids') elem
+        FROM users, jsonb_array_elements_text(COALESCE(metadata->'alerted_ids', '[]'::jsonb)) elem
         WHERE email = p_email AND elem::uuid IN (SELECT id FROM notifications UNION SELECT id FROM broadcasts)
     );
 
     v_cleared_broadcasts := (
         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-        FROM users, jsonb_array_elements_text(metadata->'cleared_broadcasts') elem
+        FROM users, jsonb_array_elements_text(COALESCE(metadata->'cleared_broadcasts', '[]'::jsonb)) elem
         WHERE email = p_email AND elem::uuid IN (SELECT id FROM broadcasts)
     );
 
     v_read_broadcasts := (
         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-        FROM users, jsonb_array_elements_text(metadata->'read_broadcasts') elem
+        FROM users, jsonb_array_elements_text(COALESCE(metadata->'read_broadcasts', '[]'::jsonb)) elem
         WHERE email = p_email AND elem::uuid IN (SELECT id FROM broadcasts)
     );
 
+    -- Ensure we never nullify metadata via builder
+    v_alerted_ids := COALESCE(v_alerted_ids, '[]'::jsonb);
+    v_cleared_broadcasts := COALESCE(v_cleared_broadcasts, '[]'::jsonb);
+    v_read_broadcasts := COALESCE(v_read_broadcasts, '[]'::jsonb);
+
     UPDATE users
     SET metadata = metadata || jsonb_build_object(
-        'alerted_ids', COALESCE(v_alerted_ids, '[]'::jsonb),
-        'cleared_broadcasts', COALESCE(v_cleared_broadcasts, '[]'::jsonb),
-        'read_broadcasts', COALESCE(v_read_broadcasts, '[]'::jsonb)
+        'alerted_ids', v_alerted_ids,
+        'cleared_broadcasts', v_cleared_broadcasts,
+        'read_broadcasts', v_read_broadcasts
     )
     WHERE email = p_email;
 END;

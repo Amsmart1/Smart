@@ -1225,14 +1225,14 @@ const NotificationManager = {
         if (this._initialized) return;
         this._initialized = true;
 
-        // Authoritative metadata pruning on dashboard entry
+        // Perform authoritative metadata cleanup upon dashboard entry
         try {
             const user = await SessionManager.getCurrentUser();
             if (user) {
                 await SupabaseDB.purgeUserMetadata(user.email);
             }
         } catch (e) {
-            console.warn('[NotificationManager] Metadata purge failed:', e);
+            console.warn('[NotificationManager] Metadata purge failed during init:', e);
         }
 
         if (this._channel) {

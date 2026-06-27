@@ -1299,18 +1299,6 @@ class SupabaseDB {
     }
 
     // Notification operations
-    static async createNotification(userEmail, title, message, link = null, type = 'system') {
-        const { error } = await supabaseClient.rpc('notify_user', {
-            p_email: userEmail,
-            p_title: title,
-            p_message: message,
-            p_link: link,
-            p_type: type
-        });
-        if (error) throw error;
-        _cache.invalidate(`notifications_${userEmail}`);
-    }
-
     static async getNotifications(userEmail, options = {}) {
         return _cache.fetch(`notifications_${userEmail}`, async () => {
             return this._request(async () => {
@@ -1389,13 +1377,15 @@ class SupabaseDB {
         _cache.invalidate(`user_${email}`);
     }
 
+    /**
+     * Authoritatively prunes orphaned IDs from user metadata server-side.
+     */
     static async purgeUserMetadata(email) {
-        return this._request(async () => {
-            const { error } = await supabaseClient.rpc('purge_user_metadata', { p_email: email });
-            if (error) throw error;
-            _cache.invalidate(`user_${email}`);
-            return true;
+        const { error } = await supabaseClient.rpc('purge_user_metadata', {
+            p_email: email
         });
+        if (error) throw error;
+        _cache.invalidate(`user_${email}`);
     }
 
     static async markNotificationsAsRead(userEmail, id = null) {
