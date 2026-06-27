@@ -1401,19 +1401,27 @@ async function gradeSubmission(assignmentId, studentEmail) {
           <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(submission.feedback || '')}</textarea>
         </div>
         <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40">Submit Grade</button>
+          <button type="submit" class="button w-auto px-40" id="submitGradeBtn">Submit Grade</button>
+          <button type="button" class="button secondary w-auto px-40" id="saveDraftBtn">Save Draft</button>
           <button type="button" class="button secondary w-auto px-40" onclick="renderGrading()">Cancel</button>
         </div>
       </form>
     </div>
   `;
   UI.createRTE('feedback');
+
   const rawInput = document.getElementById('grade');
   const finalInput = document.getElementById('finalGrade');
 
   const updateRawFromQuestions = () => {
       const total = Array.from(document.querySelectorAll('.q-score-input'))
-          .reduce((sum, input) => sum + (parseInt(input.value) || 0), 0);
+          .reduce((sum, input) => {
+              const max = parseInt(input.dataset.max) || 0;
+              let val = parseInt(input.value) || 0;
+              // Clamp for UI calculation
+              val = Math.max(0, Math.min(val, max));
+              return sum + val;
+          }, 0);
       rawInput.value = total;
       updateFinal();
   };
@@ -1435,22 +1443,38 @@ async function gradeSubmission(assignmentId, studentEmail) {
   // Force an initial update
   updateRawFromQuestions();
 
-  document.getElementById('gradingForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
+  const saveGrading = async (isDraft = false) => {
+    if (window.currentRenderId !== renderId) return;
+
+    const submitBtn = document.getElementById('submitGradeBtn');
+    const draftBtn = document.getElementById('saveDraftBtn');
+    const activeBtn = isDraft ? draftBtn : submitBtn;
+    const otherBtn = isDraft ? submitBtn : draftBtn;
+
+    if (activeBtn) {
+        activeBtn.disabled = true;
+        activeBtn.textContent = 'Saving...';
+    }
+    if (otherBtn) otherBtn.disabled = true;
 
     try {
       const questionScores = {};
       document.querySelectorAll('.q-score-input').forEach(input => {
-          questionScores[input.dataset.qIdx] = parseInt(input.value) || 0;
+          const max = parseInt(input.dataset.max) || 0;
+          let val = parseInt(input.value) || 0;
+          // Clamp score to [0, max]
+          val = Math.max(0, Math.min(val, max));
+          questionScores[input.dataset.qIdx] = val;
       });
 
       const questionFeedback = {};
       document.querySelectorAll('.q-feedback-input').forEach(input => {
           questionFeedback[input.dataset.qIdx] = input.value;
       });
+
+      // Explicitly sync RTE if it exists to ensure latest value is captured before save
+      const feedbackEl = document.getElementById('feedback');
+      if (feedbackEl?._rte) feedbackEl._rte.sync();
 
       const updatedSubmission = {
         ...submission,
@@ -1459,22 +1483,37 @@ async function gradeSubmission(assignmentId, studentEmail) {
         question_scores: questionScores,
         question_feedback: questionFeedback,
         late_penalty_applied: latePenalty,
-        feedback: document.getElementById('feedback').value,
-        status: 'graded',
-        graded_at: new Date().toISOString(),
-        regrade_request: null // Clear regrade request once graded
+        feedback: feedbackEl.value,
+        status: isDraft ? (submission.status || 'submitted') : 'graded',
+        graded_at: isDraft ? (submission.graded_at || null) : new Date().toISOString(),
+        regrade_request: isDraft ? (submission.regrade_request || null) : null
       };
+
       if (await SupabaseDB.saveSubmission(updatedSubmission)) {
-        UI.showNotification('Submission graded successfully', 'success');
+        if (window.currentRenderId !== renderId) return;
+        UI.showNotification(isDraft ? 'Draft saved successfully' : 'Submission graded successfully', 'success');
         renderGrading();
       }
     } catch (e) {
       UI.showNotification('Error saving grade: ' + e.message, 'error');
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Submit Grade';
+      if (activeBtn) {
+          activeBtn.disabled = false;
+          activeBtn.textContent = isDraft ? 'Save Draft' : 'Submit Grade';
+      }
+      if (otherBtn) otherBtn.disabled = false;
     }
+  };
+
+  document.getElementById('gradingForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveGrading(false);
   });
+
+  const draftBtn = document.getElementById('saveDraftBtn');
+  if (draftBtn) {
+      draftBtn.addEventListener('click', () => saveGrading(true));
+  }
   } catch (error) {
     console.error('Grade error:', error);
     content.innerHTML = `<div class="card" style="border-left: 4px solid var(--danger)">
