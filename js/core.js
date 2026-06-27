@@ -271,6 +271,39 @@ const UI = {
         return escapeHtml(content).replace(/\n/g, '<br>');
     },
 
+    /**
+     * Converts legacy HTML content back to plain text for standard textarea editing.
+     * Preserves line breaks from <br>, <p>, and <div> tags.
+     */
+    htmlToPlainText(html) {
+        if (!html) return '';
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+
+        // Process common block/break elements to preserve formatting
+        const process = (node) => {
+            let text = '';
+            for (const child of node.childNodes) {
+                if (child.nodeType === 3) { // Text node
+                    text += child.textContent;
+                } else if (child.nodeType === 1) { // Element
+                    const tagName = child.tagName.toUpperCase();
+                    if (tagName === 'BR') {
+                        text += '\n';
+                    } else if (tagName === 'P' || tagName === 'DIV' || tagName === 'LI') {
+                        const content = process(child);
+                        if (content) text += (tagName === 'LI' ? '• ' : '') + content + '\n';
+                    } else {
+                        text += process(child);
+                    }
+                }
+            }
+            return text;
+        };
+
+        return process(temp).trim();
+    },
+
     renderStats(containerId, stats) {
         const container = document.getElementById(containerId);
         if (!container) return;
@@ -2459,7 +2492,7 @@ const DiscussionManager = {
         const current = contentDiv.innerHTML;
 
         contentDiv.innerHTML = `
-        <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px">${current}</textarea>
+            <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px">${UI.htmlToPlainText(current)}</textarea>
             <div style="margin-top:8px; display:flex; gap:8px">
                 <button class="button" style="padding:4px 8px; font-size:11px" id="save-disc-${id}">Save</button>
                 <button class="button secondary" style="padding:4px 8px; font-size:11px" id="cancel-disc-${id}">Cancel</button>

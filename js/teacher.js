@@ -133,7 +133,7 @@ function showCourseForm(course = null) {
           </div>
           <div>
             <label>Description</label>
-            <textarea id="courseDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(course.description || '') : ''}</textarea>
+            <textarea id="courseDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(course.description || '')) : ''}</textarea>
           </div>
           <div>
             <label>Enrollment ID (Optional)</label>
@@ -330,7 +330,7 @@ async function showLessonForm(courseId, lesson = null) {
         <label class="mt-10">Video URL (Optional)</label>
         <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
         <label>Content</label>
-        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(lesson.content) : ''}</textarea>
+        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
         <label>Order Index</label>
         <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
         <div class="flex gap-10 mt-20">
@@ -424,7 +424,7 @@ function showTopicForm(courseId, topic = null) {
         <label>Topic Title</label>
         <input type="text" id="topicTitle" placeholder="Topic Title" value="${isEdit ? escapeHtml(topic.title) : ''}" required>
         <label>Description (Optional)</label>
-        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3">${isEdit ? escapeHtml(topic.description || '') : ''}</textarea>
+        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3">${isEdit ? escapeHtml(UI.htmlToPlainText(topic.description || '')) : ''}</textarea>
         <label>Order Index</label>
         <input type="number" id="topicOrder" placeholder="Order Index" value="${isEdit ? topic.order_index : 0}">
         <div class="flex gap-10 mt-20">
@@ -1022,7 +1022,7 @@ function addQuestionField(q = null) {
     <div class="grid">
       <div class="mb-10">
         <label class="bold">Question Text:</label>
-        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required>${q ? escapeHtml(q.text) : ''}</textarea>
+        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required>${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
       </div>
       <div class="grid-2">
         <div>
@@ -1076,7 +1076,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         </select>
 
         <label>Description</label>
-        <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(assignment.description) : ''}</textarea>
+        <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(assignment.description)) : ''}</textarea>
 
         <div class="grid-2">
           <div>
@@ -1393,7 +1393,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
         </div>
         <div class="mt-10">
           <label>Feedback:</label>
-          <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(submission.feedback || '')}</textarea>
+          <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(UI.htmlToPlainText(submission.feedback || ''))}</textarea>
         </div>
         <div class="flex gap-10 mt-20">
           <button type="submit" class="button w-auto px-40">Submit Grade</button>
@@ -2462,7 +2462,7 @@ function addQuizQuestionField(q = null) {
     </div>
     <div class="mb-10">
       <label class="bold">Question Text:</label>
-      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required>${q ? escapeHtml(q.text) : ''}</textarea>
+      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required>${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
     </div>
     <div class="grid-2 mt-10">
       <div>
@@ -2639,7 +2639,7 @@ async function showQuizForm(quiz = null) {
         <label>Quiz Title</label>
         <input type="text" id="quizTitle" placeholder="Quiz Title" value="${isEdit ? escapeHtml(quiz.title) : ''}" required>
         <label>Description</label>
-        <textarea id="quizDesc" placeholder="Description">${isEdit ? escapeHtml(quiz.description) : ''}</textarea>
+        <textarea id="quizDesc" placeholder="Description">${isEdit ? escapeHtml(UI.htmlToPlainText(quiz.description)) : ''}</textarea>
         <div class="grid-2">
           <div><label class="small">Time Limit (min):</label><input type="number" id="quizLimit" value="${isEdit ? quiz.time_limit : 0}"></div>
           <div><label class="small">Attempts Allowed:</label><input type="number" id="quizAttempts" value="${isEdit ? quiz.attempts_allowed : 1}" min="1"></div>
