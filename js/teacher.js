@@ -3181,7 +3181,7 @@ function calculateGradeBookData(rawData, filters = {}) {
 
         const students = courseEnrollments.map(e => {
             const email = e.student_email;
-            const fullName = e.users?.full_name || 'Unknown';
+            const fullName = e.users?.full_name || 'N/A';
             let earnedPoints = 0;
             let itemsCount = 0;
 
@@ -3204,6 +3204,12 @@ function calculateGradeBookData(rawData, filters = {}) {
                     } else if (sub.status === 'submitted') {
                         status = 'pending';
                         displayStatus = 'Pending';
+                    } else if (sub.status === 'draft') {
+                        status = 'draft';
+                        displayStatus = 'Draft';
+                    } else if (sub.status === 'returned') {
+                        status = 'returned';
+                        displayStatus = 'Returned';
                     }
 
                     if (sub.regrade_request) {
@@ -3276,11 +3282,12 @@ async function exportGradeBook(type) {
     const data = TeacherState.currentGradeBookData;
     if (!data) return UI.showNotification('No data to export', 'warn');
 
-    let allHeaders = ['Course', 'Student', 'Type', 'Title', 'Grade', 'Raw Score', 'Max Points'];
+    let allHeaders = ['Course', 'Student', 'Type', 'Title', 'Grade', 'Raw Score', 'Max Points', 'Course Avg'];
     let allRows = [];
 
     data.forEach(course => {
         course.students.forEach(student => {
+            const courseAvg = student.average !== null ? student.average + '%' : '-';
             student.assignmentGrades.forEach(ag => {
                 allRows.push([
                     course.title,
@@ -3289,7 +3296,8 @@ async function exportGradeBook(type) {
                     ag.title,
                     ag.displayStatus,
                     ag.rawScore !== null ? ag.rawScore : '-',
-                    ag.pointsPossible
+                    ag.pointsPossible,
+                    courseAvg
                 ]);
             });
             student.quizGrades.forEach(qg => {
@@ -3300,7 +3308,8 @@ async function exportGradeBook(type) {
                     qg.title,
                     qg.displayStatus,
                     qg.rawScore !== null ? qg.rawScore : '-',
-                    qg.pointsPossible !== null ? qg.pointsPossible : '-'
+                    qg.pointsPossible !== null ? qg.pointsPossible : '-',
+                    courseAvg
                 ]);
             });
         });
@@ -3647,6 +3656,8 @@ async function filterGradeBook() {
                                         if (ag.status === 'graded') badgeClass = ag.grade >= 70 ? 'badge-active' : 'badge-warn';
                                         else if (ag.status === 'pending' || ag.status === 'pending_late') badgeClass = 'badge-purple';
                                         else if (ag.status === 'regrade' || ag.status === 'regrade_late') badgeClass = 'badge-warn';
+                                        else if (ag.status === 'draft') badgeClass = 'badge-inactive';
+                                        else if (ag.status === 'returned') badgeClass = 'badge-warn';
 
                                         return `
                                             <td class="text-center">
@@ -3668,6 +3679,7 @@ async function filterGradeBook() {
                                             </td>`;
                                     }).join('');
 
+                                    const avgColorClass = s.average === null ? 'text-muted' : (s.average >= 70 ? 'success-text' : 'danger-text');
                                     return `
                                         <tr>
                                             <td>
@@ -3676,7 +3688,7 @@ async function filterGradeBook() {
                                             </td>
                                             ${assignmentCells}
                                             ${quizCells}
-                                            <td class="text-center" style="background:#f8fafc"><strong class="${(s.average || 0) >= 70 ? 'success-text' : 'danger-text'}">${s.average !== null ? s.average + '%' : '-'}</strong></td>
+                                            <td class="text-center" style="background:#f8fafc"><strong class="${avgColorClass}">${s.average !== null ? s.average + '%' : '-'}</strong></td>
                                         </tr>
                                     `;
                                 }).join('')}
