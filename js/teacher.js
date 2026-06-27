@@ -133,7 +133,7 @@ function showCourseForm(course = null) {
           </div>
           <div>
             <label>Description</label>
-            <textarea id="courseDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(course.description || '') : ''}</textarea>
+            <textarea id="courseDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(course.description || '')) : ''}</textarea>
           </div>
           <div>
             <label>Enrollment ID (Optional)</label>
@@ -154,7 +154,6 @@ function showCourseForm(course = null) {
       </form>
     </div>
   `;
-  UI.createRTE('courseDescription');
   document.getElementById('courseForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -331,7 +330,7 @@ async function showLessonForm(courseId, lesson = null) {
         <label class="mt-10">Video URL (Optional)</label>
         <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
         <label>Content</label>
-        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(lesson.content) : ''}</textarea>
+        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
         <label>Order Index</label>
         <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
         <div class="flex gap-10 mt-20">
@@ -341,7 +340,6 @@ async function showLessonForm(courseId, lesson = null) {
       </form>
     </div>
   `;
-  UI.createRTE('lessonContent', { minHeight: '300px' });
   document.getElementById('lessonForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -426,7 +424,7 @@ function showTopicForm(courseId, topic = null) {
         <label>Topic Title</label>
         <input type="text" id="topicTitle" placeholder="Topic Title" value="${isEdit ? escapeHtml(topic.title) : ''}" required>
         <label>Description (Optional)</label>
-        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3">${isEdit ? escapeHtml(topic.description || '') : ''}</textarea>
+        <textarea id="topicDescription" placeholder="Briefly describe this topic..." rows="3">${isEdit ? escapeHtml(UI.htmlToPlainText(topic.description || '')) : ''}</textarea>
         <label>Order Index</label>
         <input type="number" id="topicOrder" placeholder="Order Index" value="${isEdit ? topic.order_index : 0}">
         <div class="flex gap-10 mt-20">
@@ -436,7 +434,6 @@ function showTopicForm(courseId, topic = null) {
       </form>
     </div>
   `;
-  UI.createRTE('topicDescription');
   document.getElementById('topicForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -1025,7 +1022,7 @@ function addQuestionField(q = null) {
     <div class="grid">
       <div class="mb-10">
         <label class="bold">Question Text:</label>
-        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required style="display:none">${q ? escapeHtml(q.text) : ''}</textarea>
+        <textarea id="${qId}" class="q-text" placeholder="Enter question description here..." required>${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
       </div>
       <div class="grid-2">
         <div>
@@ -1045,7 +1042,6 @@ function addQuestionField(q = null) {
     </div>
   `;
   container.appendChild(div);
-  UI.createRTE(qId, { minHeight: '60px' });
 
   // Auto-update total points when individual question points change
   div.querySelector('.q-points').addEventListener('input', updateAssignmentTotalPoints);
@@ -1080,7 +1076,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         </select>
 
         <label>Description</label>
-        <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(assignment.description) : ''}</textarea>
+        <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(assignment.description)) : ''}</textarea>
 
         <div class="grid-2">
           <div>
@@ -1151,7 +1147,6 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       </form>
     </div>
   `;
-  UI.createRTE('assignmentDescription');
   if (isEdit && assignment.questions) { assignment.questions.forEach(q => addQuestionField(q)); }
   updateACPreview();
 
@@ -1379,7 +1374,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
                 </div>
                 <div class="mt-10">
                     <label class="small">Teacher Comment for Question ${idx + 1}:</label>
-                    <textarea class="q-feedback-input small w-100 mt-5" data-q-idx="${idx}" rows="2" placeholder="Specific feedback for this answer...">${escapeHtml(submission.question_feedback?.[idx] || '')}</textarea>
+                    <textarea class="q-feedback-input small w-100 mt-5" data-q-idx="${idx}" rows="2" placeholder="Specific feedback for this answer...">${escapeHtml(UI.htmlToPlainText(submission.question_feedback?.[idx] || ''))}</textarea>
                 </div>
               </div>`;
             }).join('')}
@@ -1398,22 +1393,28 @@ async function gradeSubmission(assignmentId, studentEmail) {
         </div>
         <div class="mt-10">
           <label>Feedback:</label>
-          <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(submission.feedback || '')}</textarea>
+          <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(UI.htmlToPlainText(submission.feedback || ''))}</textarea>
         </div>
         <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40">Submit Grade</button>
+          <button type="submit" class="button w-auto px-40" id="submitGradeBtn">Submit Grade</button>
+          <button type="button" class="button secondary w-auto px-40" id="saveDraftBtn">Save Draft</button>
           <button type="button" class="button secondary w-auto px-40" onclick="renderGrading()">Cancel</button>
         </div>
       </form>
     </div>
   `;
-  UI.createRTE('feedback');
   const rawInput = document.getElementById('grade');
   const finalInput = document.getElementById('finalGrade');
 
   const updateRawFromQuestions = () => {
       const total = Array.from(document.querySelectorAll('.q-score-input'))
-          .reduce((sum, input) => sum + (parseInt(input.value) || 0), 0);
+          .reduce((sum, input) => {
+              const max = parseInt(input.dataset.max) || 0;
+              let val = parseInt(input.value) || 0;
+              // Clamp for UI calculation
+              val = Math.max(0, Math.min(val, max));
+              return sum + val;
+          }, 0);
       rawInput.value = total;
       updateFinal();
   };
@@ -1435,22 +1436,38 @@ async function gradeSubmission(assignmentId, studentEmail) {
   // Force an initial update
   updateRawFromQuestions();
 
-  document.getElementById('gradingForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
+  const saveGrading = async (isDraft = false) => {
+    if (window.currentRenderId !== renderId) return;
+
+    const submitBtn = document.getElementById('submitGradeBtn');
+    const draftBtn = document.getElementById('saveDraftBtn');
+    const activeBtn = isDraft ? draftBtn : submitBtn;
+    const otherBtn = isDraft ? submitBtn : draftBtn;
+
+    if (activeBtn) {
+        activeBtn.disabled = true;
+        activeBtn.textContent = 'Saving...';
+    }
+    if (otherBtn) otherBtn.disabled = true;
 
     try {
       const questionScores = {};
       document.querySelectorAll('.q-score-input').forEach(input => {
-          questionScores[input.dataset.qIdx] = parseInt(input.value) || 0;
+          const max = parseInt(input.dataset.max) || 0;
+          let val = parseInt(input.value) || 0;
+          // Clamp score to [0, max]
+          val = Math.max(0, Math.min(val, max));
+          questionScores[input.dataset.qIdx] = val;
       });
 
       const questionFeedback = {};
       document.querySelectorAll('.q-feedback-input').forEach(input => {
           questionFeedback[input.dataset.qIdx] = input.value;
       });
+
+      // Explicitly sync RTE if it exists to ensure latest value is captured before save
+      const feedbackEl = document.getElementById('feedback');
+      if (feedbackEl?._rte) feedbackEl._rte.sync();
 
       const updatedSubmission = {
         ...submission,
@@ -1459,22 +1476,37 @@ async function gradeSubmission(assignmentId, studentEmail) {
         question_scores: questionScores,
         question_feedback: questionFeedback,
         late_penalty_applied: latePenalty,
-        feedback: document.getElementById('feedback').value,
-        status: 'graded',
-        graded_at: new Date().toISOString(),
-        regrade_request: null // Clear regrade request once graded
+        feedback: feedbackEl.value,
+        status: isDraft ? (submission.status || 'submitted') : 'graded',
+        graded_at: isDraft ? (submission.graded_at || null) : new Date().toISOString(),
+        regrade_request: isDraft ? (submission.regrade_request || null) : null
       };
+
       if (await SupabaseDB.saveSubmission(updatedSubmission)) {
-        UI.showNotification('Submission graded successfully', 'success');
+        if (window.currentRenderId !== renderId) return;
+        UI.showNotification(isDraft ? 'Draft saved successfully' : 'Submission graded successfully', 'success');
         renderGrading();
       }
     } catch (e) {
       UI.showNotification('Error saving grade: ' + e.message, 'error');
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Submit Grade';
+      if (activeBtn) {
+          activeBtn.disabled = false;
+          activeBtn.textContent = isDraft ? 'Save Draft' : 'Submit Grade';
+      }
+      if (otherBtn) otherBtn.disabled = false;
     }
+  };
+
+  document.getElementById('gradingForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveGrading(false);
   });
+
+  const draftBtn = document.getElementById('saveDraftBtn');
+  if (draftBtn) {
+      draftBtn.addEventListener('click', () => saveGrading(true));
+  }
   } catch (error) {
     console.error('Grade error:', error);
     content.innerHTML = `<div class="card" style="border-left: 4px solid var(--danger)">
@@ -2468,7 +2500,7 @@ function addQuizQuestionField(q = null) {
     </div>
     <div class="mb-10">
       <label class="bold">Question Text:</label>
-      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required style="display:none">${q ? escapeHtml(q.text) : ''}</textarea>
+      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required>${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
     </div>
     <div class="grid-2 mt-10">
       <div>
@@ -2491,11 +2523,10 @@ function addQuizQuestionField(q = null) {
       <label class="small">Hint (optional)</label>
       <input type="text" class="q-hint" placeholder="Hint..." value="${q?.hint ? escapeHtml(q.hint) : ''}">
       <label class="small">Explanation (optional)</label>
-      <textarea class="q-explanation" placeholder="Explanation for correct answer..." rows="2">${q?.explanation ? escapeHtml(q.explanation) : ''}</textarea>
+      <textarea class="q-explanation" placeholder="Explanation for correct answer..." rows="2">${q?.explanation ? escapeHtml(UI.htmlToPlainText(q.explanation)) : ''}</textarea>
     </div>
   `;
   container.appendChild(div);
-  UI.createRTE(qId, { minHeight: '60px' });
   div.querySelector('.q-points').addEventListener('input', updateQuizTotalPoints);
   div.querySelector('.q-points').addEventListener('change', updateQuizTotalPoints);
   updateQuizTotalPoints();
@@ -2646,7 +2677,7 @@ async function showQuizForm(quiz = null) {
         <label>Quiz Title</label>
         <input type="text" id="quizTitle" placeholder="Quiz Title" value="${isEdit ? escapeHtml(quiz.title) : ''}" required>
         <label>Description</label>
-        <textarea id="quizDesc" placeholder="Description">${isEdit ? escapeHtml(quiz.description) : ''}</textarea>
+        <textarea id="quizDesc" placeholder="Description">${isEdit ? escapeHtml(UI.htmlToPlainText(quiz.description)) : ''}</textarea>
         <div class="grid-2">
           <div><label class="small">Time Limit (min):</label><input type="number" id="quizLimit" value="${isEdit ? quiz.time_limit : 0}"></div>
           <div><label class="small">Attempts Allowed:</label><input type="number" id="quizAttempts" value="${isEdit ? quiz.attempts_allowed : 1}" min="1"></div>
@@ -2699,7 +2730,6 @@ async function showQuizForm(quiz = null) {
       </form>
     </div>
   `;
-  UI.createRTE('quizDesc');
   updateACPreview();
   if (isEdit && quiz.questions) { quiz.questions.forEach(q => addQuizQuestionField(q)); }
   document.getElementById('quizForm').addEventListener('submit', handleQuizSave);
@@ -3403,15 +3433,14 @@ async function showMaterialForm() {
     </div>
   `;
 
-  UI.createRTE('matDesc');
-    UI.createFileUploader('materialUploaderContainer', {
-      bucket: 'materials',
-      pathPrefix: 'course-content',
-      onUploadSuccess: (url) => {
-        document.getElementById('matFileUrl').value = url;
-        document.getElementById('saveMatBtn').disabled = false;
-      }
-    });
+  UI.createFileUploader('materialUploaderContainer', {
+    bucket: 'materials',
+    pathPrefix: 'course-content',
+    onUploadSuccess: (url) => {
+      document.getElementById('matFileUrl').value = url;
+      document.getElementById('saveMatBtn').disabled = false;
+    }
+  });
   } catch (error) {
     console.error('Show material form error:', error);
     UI.showNotification('Error opening material form: ' + error.message, 'error');
