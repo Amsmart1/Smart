@@ -271,86 +271,37 @@ const UI = {
         return escapeHtml(content).replace(/\n/g, '<br>');
     },
 
-    createRTE(textareaId, options = {}) {
-        const textarea = document.getElementById(textareaId);
-        if (!textarea) return;
+    /**
+     * Converts legacy HTML content back to plain text for standard textarea editing.
+     * Preserves line breaks from <br>, <p>, and <div> tags.
+     */
+    htmlToPlainText(html) {
+        if (!html) return '';
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
 
-        // Prevent double initialization
-        if (textarea._rte) {
-            textarea._rte.destroy();
-        }
-
-        const container = document.createElement('div');
-        container.className = 'rte-container mb-10';
-        container.innerHTML = `
-            <div class="rte-toolbar flex gap-5 mb-5">
-                <button type="button" class="button secondary tiny w-auto rte-btn-bold" title="Bold" style="min-width:30px"><b>B</b></button>
-                <button type="button" class="button secondary tiny w-auto rte-btn-italic" title="Italic" style="min-width:30px"><i>I</i></button>
-                <button type="button" class="button secondary tiny w-auto rte-btn-underline" title="Underline" style="min-width:30px"><u>U</u></button>
-                <button type="button" class="button secondary tiny w-auto rte-btn-ul" title="Unordered List" style="min-width:30px">UL</button>
-                <button type="button" class="button secondary tiny w-auto rte-btn-ol" title="Ordered List" style="min-width:30px">OL</button>
-            </div>
-            <div class="rte-editor input" contenteditable="true" style="min-height: ${options.minHeight || '80px'}; height: auto; overflow-y: auto; background: #fff;"></div>
-        `;
-
-        textarea.style.display = 'none';
-        textarea.parentNode.insertBefore(container, textarea.nextSibling);
-
-        const editor = container.querySelector('.rte-editor');
-        editor.innerHTML = this.renderRichText(textarea.value);
-
-        let syncTimeout = null;
-        const sync = () => {
-            textarea.value = this.safeHTML(editor.innerHTML);
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        };
-
-        editor.oninput = () => {
-            clearTimeout(syncTimeout);
-            syncTimeout = setTimeout(sync, 500);
-        };
-        editor.onblur = sync;
-
-        const setupBtn = (selector, command) => {
-            const btn = container.querySelector(selector);
-            if (!btn) return;
-            btn.onmousedown = (e) => {
-                e.preventDefault(); // Prevent focus loss
-                document.execCommand(command, false);
-                editor.focus();
-                sync();
-            };
-        };
-
-        setupBtn('.rte-btn-bold', 'bold');
-        setupBtn('.rte-btn-italic', 'italic');
-        setupBtn('.rte-btn-underline', 'underline');
-        setupBtn('.rte-btn-ul', 'insertUnorderedList');
-        setupBtn('.rte-btn-ol', 'insertOrderedList');
-
-        editor.onpaste = (e) => {
-            e.preventDefault();
-            const text = e.clipboardData.getData('text/plain');
-            document.execCommand('insertText', false, text);
-            sync();
-        };
-
-        const controller = {
-            destroy: () => {
-                clearTimeout(syncTimeout);
-                container.remove();
-                textarea.style.display = '';
-                delete textarea._rte;
-            },
-            sync: sync,
-            clear: () => {
-                editor.innerHTML = '';
-                sync();
+        // Process common block/break elements to preserve formatting
+        const process = (node) => {
+            let text = '';
+            for (const child of node.childNodes) {
+                if (child.nodeType === 3) { // Text node
+                    text += child.textContent;
+                } else if (child.nodeType === 1) { // Element
+                    const tagName = child.tagName.toUpperCase();
+                    if (tagName === 'BR') {
+                        text += '\n';
+                    } else if (tagName === 'P' || tagName === 'DIV' || tagName === 'LI') {
+                        const content = process(child);
+                        if (content) text += (tagName === 'LI' ? '• ' : '') + content + '\n';
+                    } else {
+                        text += process(child);
+                    }
+                }
             }
+            return text;
         };
 
-        textarea._rte = controller;
-        return controller;
+        return process(temp).trim();
     },
 
     renderStats(containerId, stats) {
@@ -1270,9 +1221,19 @@ const NotificationManager = {
      * Initializes the notification manager, setting up cross-tab communication
      * and global event listeners for the UI.
      */
-    init() {
+    async init() {
         if (this._initialized) return;
         this._initialized = true;
+
+        // Authoritative metadata pruning on dashboard entry
+        try {
+            const user = await SessionManager.getCurrentUser();
+            if (user) {
+                await SupabaseDB.purgeUserMetadata(user.email);
+            }
+        } catch (e) {
+            console.warn('[NotificationManager] Metadata purge failed:', e);
+        }
 
         if (this._channel) {
             this._channel.onmessage = (event) => {
@@ -2020,12 +1981,11 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                 ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
             </div>
             <div class="flex-column gap-10">
-                <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0" style="display:none"></textarea>
+                <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0"></textarea>
                 <button class="button w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
             </div>
         </div>
     `;
-    UI.createRTE('discInputMain');
 
     // Internal action dispatcher
     UI._discussionOptions = UI._discussionOptions || {};
@@ -2040,12 +2000,11 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         const area = document.getElementById(`reply-area-${id}`);
         area.innerHTML = `
             <div class="flex-column gap-10 mt-10">
-                <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10" style="display:none"></textarea>
+                <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10"></textarea>
                 <button class="button small w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
                 <button class="button secondary small w-auto" onclick="this.parentElement.remove()">Cancel</button>
             </div>
         `;
-        UI.createRTE(`replyInput-${id}`, { minHeight: '60px' });
     } else if (action === 'post') {
         const inputId = id ? `replyInput-${id}` : 'discInputMain';
         const content = document.getElementById(inputId).value;
@@ -2543,13 +2502,12 @@ const DiscussionManager = {
         const current = contentDiv.innerHTML;
 
         contentDiv.innerHTML = `
-            <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px; display:none">${current}</textarea>
+            <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px">${UI.htmlToPlainText(current)}</textarea>
             <div style="margin-top:8px; display:flex; gap:8px">
                 <button class="button" style="padding:4px 8px; font-size:11px" id="save-disc-${id}">Save</button>
                 <button class="button secondary" style="padding:4px 8px; font-size:11px" id="cancel-disc-${id}">Cancel</button>
             </div>
         `;
-        UI.createRTE(`edit-disc-input-${id}`, { minHeight: '60px' });
 
         document.getElementById(`save-disc-${id}`).onclick = async () => {
             const content = document.getElementById(`edit-disc-input-${id}`).value;
