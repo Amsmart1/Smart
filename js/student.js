@@ -716,7 +716,7 @@ async function showAssignmentForm(assignmentId) {
     <div class="card">
       <div class="flex-between">
         <h3 class="m-0">${submission ? 'Review' : 'Submit'}: ${escapeHtml(a.title)}</h3>
-        <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy();">Close</button>
+        <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy(); StudyTracker.stop();">Close</button>
       </div>
 
       <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
