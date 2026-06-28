@@ -1256,6 +1256,11 @@ function formatDuration(seconds) {
 }
 
 function renderStudyCharts(sessions, courses) {
+    if (typeof Chart === 'undefined') {
+        console.warn('Chart.js not loaded. Skipping charts.');
+        return;
+    }
+
     // Chart 1: Time per Course
     const courseMap = {};
     sessions.forEach(s => {
