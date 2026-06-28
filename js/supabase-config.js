@@ -438,7 +438,7 @@ class SupabaseDB {
             .delete()
             .eq('id', id);
         if (error) throw error;
-        _cache.invalidate();
+        _cache.invalidate('discussions');
     }
 
     static async getUser(email, bypassCache = false) {
@@ -1079,18 +1079,46 @@ class SupabaseDB {
         return this._request(async () => {
             const { data, count, error } = await supabaseClient
                 .from('discussions')
-                .select('*', { count: 'exact' })
+                .select('*, discussion_views(count)', { count: 'exact' })
                 .eq('course_id', courseId)
                 .order('created_at', { ascending: true });
             if (error) throw error;
-            return { data: data || [], total: count || 0 };
+
+            const transformed = (data || []).map(d => ({
+                ...d,
+                view_count: d.discussion_views?.[0]?.count || 0
+            }));
+
+            return { data: transformed, total: count || 0 };
         });
     }
 
     static async saveDiscussion(discussion) {
         const data = await this._upsert('discussions', discussion);
-        _cache.invalidate('materials');
+        _cache.invalidate('discussions');
         return data?.[0];
+    }
+
+    static async recordDiscussionView(discussionId, userEmail) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient
+                .from('discussion_views')
+                .upsert({ discussion_id: discussionId, user_email: userEmail }, { onConflict: 'discussion_id,user_email' });
+            if (error) throw error;
+            return data;
+        });
+    }
+
+    static async getDiscussionViews(discussionId) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient
+                .from('discussion_views')
+                .select('user_email, viewed_at, users(full_name)')
+                .eq('discussion_id', discussionId)
+                .order('viewed_at', { ascending: false });
+            if (error) throw error;
+            return data || [];
+        });
     }
 
     // Quiz operations

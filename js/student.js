@@ -1293,40 +1293,7 @@ async function renderDiscussions() {
 }
 
 async function viewStudentDiscussions(courseId) {
-  const renderId = ++window.currentRenderId;
-  try {
-  const user = await SessionManager.getCurrentUser();
-  if (renderId !== window.currentRenderId) return;
-  const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-  if (renderId !== window.currentRenderId) return;
-  const container = document.getElementById('pageContent');
-  if (!container) return;
-
-  container.innerHTML = `<button class="button secondary w-auto mb-10" onclick="renderDiscussions()">← Back</button><div id="discussionArea"></div>`;
-
-  UI.renderDiscussion('discussionArea', disc, user.email, {
-      onPost: async (content, parentId) => {
-          if (await DiscussionManager.post(courseId, content, parentId)) viewStudentDiscussions(courseId);
-      },
-      onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
-          const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-          const existing = disc.find(d => d.id === id);
-          await SupabaseDB.saveDiscussion({ ...existing, content });
-          viewStudentDiscussions(courseId);
-          return true;
-      }),
-      onDelete: (id) => DiscussionManager.delete(id, () => viewStudentDiscussions(courseId))
-  });
-  } catch (error) {
-    console.error('Discussions error:', error);
-    if (container) {
-      container.innerHTML = `<div class="stat-card danger">
-        <h3>Error Loading Discussions</h3>
-        <div class="small danger-text">${escapeHtml(error.message)}</div>
-        <button class="button w-auto mt-10" onclick="viewStudentDiscussions('${escapeAttr(courseId)}')">Retry</button>
-      </div>`;
-    }
-  }
+  DiscussionManager.render('pageContent', courseId);
 }
 window.enroll = enroll;
 window.viewCourse = viewCourse;
