@@ -4,15 +4,147 @@ const StudentState = {
   isStartingQuiz: false,
   isSubmittingQuiz: false,
   isSubmittingAssignment: false,
-  studyInterval: null,
-  studyStartTime: null,
-  currentStudyCourseId: null,
   currentQuiz: null,
   currentSubmission: null,
   currentQuestionIndex: 0,
   currentQuizQuestions: [],
   quizDebounceTimer: null
 };
+
+/**
+ * StudyTracker Singleton
+ * Centralizes all study tracking logic with heartbeats to prevent data loss.
+ */
+const StudyTracker = {
+    currentSessionId: null,
+    courseId: null,
+    startTime: null,
+    heartbeatInterval: null,
+    lastDuration: 0,
+
+    async start(courseId) {
+        if (this.courseId === courseId) return;
+        if (this.heartbeatInterval) await this.stop();
+
+        this.courseId = courseId;
+        this.startTime = new Date();
+        // Fallback for crypto.randomUUID() in non-secure or legacy environments
+        this.currentSessionId = (typeof crypto.randomUUID === 'function')
+            ? crypto.randomUUID()
+            : 's_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        this.lastDuration = 0;
+
+        // Show UI indicator
+        const display = document.getElementById('studyTimerDisplay');
+        if (display) display.style.display = 'block';
+        const headerIndicator = document.getElementById('studyIndicator');
+        if (headerIndicator) headerIndicator.classList.remove('hidden');
+
+        // Initial save to establish record
+        await this.heartbeat();
+
+        // Start UI update interval (every second)
+        this.uiInterval = setInterval(() => this.updateUI(), 1000);
+
+        // Start heartbeat mechanism (every 30 seconds)
+        this.heartbeatInterval = setInterval(() => this.heartbeat(), 30000);
+    },
+
+    async heartbeat() {
+        if (!this.courseId || !this.currentSessionId) return;
+
+        const now = new Date();
+        const duration = Math.max(1, Math.floor((now - this.startTime) / 1000));
+
+        // Sync with DB every 30 seconds to save bandwidth, or at the very start (duration 1)
+        const shouldSync = (duration === 1 || duration - this.lastDuration >= 30);
+
+        if (shouldSync) {
+            const user = await SessionManager.getCurrentUser();
+            if (!user) return;
+
+            try {
+                await SupabaseDB.saveStudySession({
+                    id: this.currentSessionId,
+                    user_email: user.email,
+                    course_id: this.courseId,
+                    duration: duration,
+                    started_at: this.startTime.toISOString(),
+                    ended_at: now.toISOString()
+                });
+                this.lastDuration = duration;
+            } catch (e) {
+                console.warn('[StudyTracker] Heartbeat failed:', e);
+            }
+        }
+    },
+
+    updateUI() {
+        const elapsed = Math.floor((new Date() - this.startTime) / 1000);
+        const h = Math.floor(elapsed / 3600).toString().padStart(2, '0');
+        const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, '0');
+        const s = (elapsed % 60).toString().padStart(2, '0');
+
+        const display = document.getElementById('studyTimerDisplay');
+        if (display) display.textContent = `${h}:${m}:${s}`;
+
+        const headerTimer = document.getElementById('headerStudyTimer');
+        if (headerTimer) headerTimer.textContent = `${h}:${m}:${s}`;
+    },
+
+    async stop() {
+        if (!this.uiInterval && !this.heartbeatInterval) return;
+
+        if (this.uiInterval) clearInterval(this.uiInterval);
+        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+
+        this.uiInterval = null;
+        this.heartbeatInterval = null;
+
+        const user = await SessionManager.getCurrentUser();
+        const now = new Date();
+        const duration = Math.floor((now - this.startTime) / 1000);
+
+        // Minimum 2 seconds to record a session
+        if (duration >= 2 && user && this.courseId) {
+            try {
+                await SupabaseDB.saveStudySession({
+                    id: this.currentSessionId,
+                    user_email: user.email,
+                    course_id: this.courseId,
+                    duration: duration,
+                    started_at: this.startTime.toISOString(),
+                    ended_at: now.toISOString()
+                });
+                // Final Progress update
+                await SupabaseDB.updateCourseProgress(this.courseId, user.email);
+            } catch (e) {
+                console.warn('[StudyTracker] Final save failed:', e);
+            }
+        }
+
+        // Cleanup state
+        this.currentSessionId = null;
+        this.courseId = null;
+        this.startTime = null;
+        this.lastDuration = 0;
+
+        // Hide UI indicators
+        const display = document.getElementById('studyTimerDisplay');
+        if (display) {
+            display.style.display = 'none';
+            display.textContent = '00:00:00';
+        }
+        const headerIndicator = document.getElementById('studyIndicator');
+        if (headerIndicator) headerIndicator.classList.add('hidden');
+    },
+
+    isActive() {
+        return !!this.uiInterval;
+    }
+};
+
+window.StudyTracker = StudyTracker;
 
 function clearActiveCountdowns() {
     UI.clearCountdowns(StudentState.activeCountdowns, StudentState.quizTimer);
@@ -237,7 +369,7 @@ async function enroll(courseId) {
 async function viewCourse(courseId, fromMyCourses = false) {
   const renderId = ++window.currentRenderId;
   // Ensure any active study session is stopped if navigating to course view
-  if (StudentState.studyInterval) await stopStudySession();
+  await StudyTracker.stop();
 
   try {
   const course = await SupabaseDB.getCourse(courseId);
@@ -346,7 +478,7 @@ async function showLesson(lessonId, courseId, fromMyCourses = false) {
   if (!container) return;
 
   // Automate Focus Timer: Start session when lesson is viewed
-  startStudySession(courseId);
+  StudyTracker.start(courseId);
 
   // Track lesson completion
   const user = await SessionManager.getCurrentUser();
@@ -389,7 +521,7 @@ async function showLesson(lessonId, courseId, fromMyCourses = false) {
 }
 
 async function stopAndNavigateToViewCourse(courseId, fromMyCourses) {
-  if (StudentState.studyInterval) await stopStudySession();
+  await StudyTracker.stop();
   viewCourse(courseId, fromMyCourses);
 }
 window.stopAndNavigateToViewCourse = stopAndNavigateToViewCourse;
@@ -398,6 +530,7 @@ async function renderAssignments(openId = null){
   const container = document.getElementById('pageContent');
   if (!container) return;
   clearActiveCountdowns();
+  await StudyTracker.stop();
 
   try {
     const user = await SessionManager.getCurrentUser();
@@ -554,6 +687,8 @@ async function showAssignmentForm(assignmentId) {
     SupabaseDB.getAssignment(assignmentId),
     SupabaseDB.getSubmission(assignmentId, user.email)
   ]);
+
+  if (a) StudyTracker.start(a.course_id);
   if (renderId !== window.currentRenderId) return;
 
   const now = new Date();
@@ -584,7 +719,7 @@ async function showAssignmentForm(assignmentId) {
     <div class="card">
       <div class="flex-between">
         <h3 class="m-0">${submission ? 'Review' : 'Submit'}: ${escapeHtml(a.title)}</h3>
-        <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy();">Close</button>
+        <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy(); StudyTracker.stop();">Close</button>
       </div>
 
       <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
@@ -856,6 +991,7 @@ async function renderDashboardOverview() {
   clearActiveCountdowns();
   const container = document.getElementById('pageContent');
   if (!container) return;
+  await StudyTracker.stop();
 
   try {
     const user = await SessionManager.getCurrentUser();
@@ -938,128 +1074,271 @@ async function renderDashboardOverview() {
   }
 }
 
-async function renderProgress() {
+async function renderProgress(page = 1) {
   const renderId = ++window.currentRenderId;
   clearActiveCountdowns();
   const container = document.getElementById('pageContent');
   if (!container) return;
 
+  UI.showLoading('pageContent', 'Calculating your progress...');
+
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
-    const [sessionsRes, enrollRes, { data: courses }] = await Promise.all([
-      SupabaseDB.getStudySessions(user.email),
+
+    // Fetch all historical sessions for analytics, but paginated sessions for the list
+    const [{ data: allSessions }, sessionsRes, enrollRes, { data: courses }] = await Promise.all([
+      SupabaseDB.getStudySessions(user.email, { all: true }),
+      SupabaseDB.getStudySessions(user.email, { page, pageSize: 10 }),
       SupabaseDB.getEnrollments(user.email),
-      SupabaseDB.getCourses(null, null)
+      SupabaseDB.getCourses(null, null, { all: true })
     ]);
     if (renderId !== window.currentRenderId) return;
+
     const sessions = sessionsRes.data || [];
     const enrollments = enrollRes.data || [];
+    const totalSessions = sessionsRes.total || 0;
 
-  const totalSeconds = sessions.reduce((acc, s) => acc + s.duration, 0);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
+    // Stats Calculation
+    const metrics = calculateStudyMetrics(allSessions, courses);
+    const totalSec = allSessions.reduce((acc, s) => acc + s.duration, 0);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
 
-  container.innerHTML = `
-    <h2 class="m-0">My Progress & Study Tracking</h2>
-    <div class="grid-2 mt-20 mb-20">
+    container.innerHTML = `
+      <div class="flex-between mb-20">
+        <h2 class="m-0">My Progress & Study Tracking</h2>
+        <div class="badge badge-purple">Study Streak: ${metrics.streak} Days 🔥</div>
+      </div>
+
+      <div class="grid-3 mb-20">
+        <div class="card">
+          <h4 class="text-muted tiny uppercase mb-10">Total Learning Time</h4>
+          <div class="bold" style="font-size:2rem; color:var(--purple);">${h}h ${m}m</div>
+          <p class="tiny text-muted mt-5">${allSessions.length} sessions recorded</p>
+        </div>
+        <div class="card">
+          <h4 class="text-muted tiny uppercase mb-10">Daily Average</h4>
+          <div class="bold" style="font-size:2rem;">${metrics.avgDaily}m</div>
+          <p class="tiny text-muted mt-5">Based on last 30 days</p>
+        </div>
+        <div class="card">
+          <h4 class="text-muted tiny uppercase mb-10">Most Studied</h4>
+          <div class="bold" style="font-size:1.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeAttr(metrics.topCourse)}">${escapeHtml(metrics.topCourse)}</div>
+          <p class="tiny text-muted mt-5">${Math.round(metrics.topCourseTime / 60)}m total</p>
+        </div>
+      </div>
+
+      <div class="grid-2 mb-20">
+        <div class="card">
+          <h3 class="m-0 small mb-15">Study Time per Course</h3>
+          <div style="height: 250px"><canvas id="studyTimeByCourseChart"></canvas></div>
+        </div>
+        <div class="card">
+          <h3 class="m-0 small mb-15">Daily Activity (Last 30 Days)</h3>
+          <div style="height: 250px"><canvas id="studyActivityTrendChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card mb-20">
+        <h3 class="m-0 small mb-15">Course Completion & Engagement</h3>
+        <div style="overflow-x: auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Course</th>
+                <th>Progress</th>
+                <th>Total Time</th>
+                <th>Last Studied</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${enrollments.map(e => {
+                const c = courses.find(x => x.id === e.course_id);
+                const courseSessions = allSessions.filter(s => s.course_id === e.course_id);
+                const courseTime = courseSessions.reduce((acc, s) => acc + s.duration, 0);
+                const lastSession = courseSessions[0]; // Already sorted by started_at DESC
+
+                return `
+                  <tr>
+                    <td><div class="bold">${escapeHtml(c?.title || 'Unknown')}</div></td>
+                    <td>
+                      <div class="flex-center-y gap-10">
+                        <div class="progress-container" style="flex:1; height:6px; background:#edf2f7; border-radius:3px; overflow:hidden">
+                          <div class="progress-bar" style="width:${e.progress}%; height:100%; background:var(--ok)"></div>
+                        </div>
+                        <span class="tiny bold">${e.progress}%</span>
+                      </div>
+                    </td>
+                    <td class="small">${formatDuration(courseTime)}</td>
+                    <td class="tiny text-muted">${lastSession ? new Date(lastSession.ended_at).toLocaleDateString() : 'Never'}</td>
+                  </tr>
+                `;
+              }).join('') || '<tr><td colspan="4" class="empty">Enroll in courses to track progress.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
-        <h3 class="m-0">Total Study Time</h3>
-        <div class="bold mt-10" style="font-size:32px; color:var(--purple);">${h}h ${m}m</div>
-        <p class="small mt-5">Logged across ${sessions.length} sessions</p>
+        <div class="flex-between mb-15">
+            <h3 class="m-0 small">Session History</h3>
+            <div id="historyPagination"></div>
+        </div>
+        <div class="flex-column gap-10">
+          ${sessions.map(s => {
+            const c = courses.find(x => x.id === s.course_id);
+            return `
+              <div class="flex-between list-item p-10">
+                <div>
+                  <div class="bold small">${escapeHtml(c?.title || 'Course Activity')}</div>
+                  <div class="tiny text-muted">${new Date(s.started_at).toLocaleString()}</div>
+                </div>
+                <div class="text-right">
+                  <div class="badge secondary tiny">${formatDuration(s.duration)}</div>
+                </div>
+              </div>
+            `;
+          }).join('') || '<div class="empty">No sessions logged yet.</div>'}
+        </div>
       </div>
-    </div>
+    `;
 
-    <div class="card">
-      <h3 class="m-0">Focus Tracking</h3>
-      <p class="small mt-5">Your study time is automatically tracked while viewing lessons.</p>
-      <div id="studyTimerDisplay" class="bold mt-10" style="font-size:24px; display:none">00:00:00</div>
-    </div>
+    renderStudyCharts(allSessions, courses);
+    UI.renderPagination('historyPagination', totalSessions, page, 10, (p) => renderProgress(p));
 
-    <div class="card mt-20">
-      <h3 class="m-0">Recent Sessions</h3>
-      <div class="mt-15">
-        ${sessions.slice(0, 5).map(s => {
-          const c = courses.find(x => x.id === s.course_id);
-          return `<div class="flex-between list-item">
-            <span>${escapeHtml(c?.title || 'Course')}</span>
-            <span class="small">${Math.floor(s.duration / 60)}m logged on ${new Date(s.started_at).toLocaleDateString()}</span>
-          </div>`;
-        }).join('') || '<div class="empty">No sessions logged yet.</div>'}
-      </div>
-    </div>
-  `;
   } catch (e) {
     console.error('Progress render error:', e);
-    container.innerHTML = `<div class="empty">Error loading progress.</div>`;
+    container.innerHTML = `<div class="stat-card danger"><h3>Error loading progress tracking</h3><p class="small">${escapeHtml(e.message)}</p></div>`;
   }
+}
+
+function calculateStudyMetrics(sessions, courses) {
+    const now = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const recentSessions = sessions.filter(s => new Date(s.started_at) >= thirtyDaysAgo);
+
+    // Streak
+    let streak = 0;
+    const sessionDates = new Set(sessions.map(s => new Date(s.started_at).toDateString()));
+    let checkDate = new Date();
+    while (sessionDates.has(checkDate.toDateString())) {
+        streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+    }
+
+    // Top Course
+    const courseTimes = {};
+    sessions.forEach(s => {
+        courseTimes[s.course_id] = (courseTimes[s.course_id] || 0) + s.duration;
+    });
+    let topId = null;
+    let maxTime = 0;
+    for (const id in courseTimes) {
+        if (courseTimes[id] > maxTime) {
+            maxTime = courseTimes[id];
+            topId = id;
+        }
+    }
+    const topCourse = courses.find(c => c.id === topId)?.title || 'None';
+
+    // Avg Daily
+    const dailyTotal = recentSessions.reduce((acc, s) => acc + s.duration, 0);
+    const avgDaily = Math.round((dailyTotal / 30) / 60);
+
+    return { streak, topCourse, topCourseTime: maxTime, avgDaily };
+}
+
+function formatDuration(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h > 0 ? h + 'h ' : ''}${m}m ${s}s`;
+}
+
+function renderStudyCharts(sessions, courses) {
+    if (typeof Chart === 'undefined') {
+        console.warn('Chart.js not loaded. Skipping charts.');
+        return;
+    }
+
+    // Chart 1: Time per Course
+    const courseMap = {};
+    sessions.forEach(s => {
+        const c = courses.find(x => x.id === s.course_id);
+        const name = c?.title || 'Unknown';
+        courseMap[name] = (courseMap[name] || 0) + (s.duration / 60); // minutes
+    });
+
+    const ctx1 = document.getElementById('studyTimeByCourseChart').getContext('2d');
+    new Chart(ctx1, {
+        type: 'bar',
+        data: {
+            labels: Object.keys(courseMap),
+            datasets: [{
+                label: 'Minutes Studied',
+                data: Object.values(courseMap),
+                backgroundColor: 'rgba(91, 46, 166, 0.6)',
+                borderColor: 'rgb(91, 46, 166)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: { y: { beginAtZero: true } }
+        }
+    });
+
+    // Chart 2: 30 Day Trend
+    const trendMap = {};
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        trendMap[d.toLocaleDateString()] = 0;
+    }
+
+    sessions.forEach(s => {
+        const dateStr = new Date(s.started_at).toLocaleDateString();
+        if (trendMap[dateStr] !== undefined) {
+            trendMap[dateStr] += (s.duration / 60);
+        }
+    });
+
+    const ctx2 = document.getElementById('studyActivityTrendChart').getContext('2d');
+    new Chart(ctx2, {
+        type: 'line',
+        data: {
+            labels: Object.keys(trendMap),
+            datasets: [{
+                label: 'Minutes/Day',
+                data: Object.values(trendMap),
+                borderColor: 'var(--purple)',
+                backgroundColor: 'rgba(91, 46, 166, 0.1)',
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { ticks: { maxTicksLimit: 7 } },
+                y: { beginAtZero: true }
+            }
+        }
+    });
 }
 
 
 async function startStudySession(courseId) {
-    if (StudentState.studyInterval) {
-        if (StudentState.currentStudyCourseId === courseId) return;
-        await stopStudySession();
-    }
-
-    StudentState.currentStudyCourseId = courseId;
-    StudentState.studyStartTime = new Date();
-
-    if (!StudentState.studyInterval) {
-        // Start
-        StudentState.studyStartTime = new Date();
-        const display = document.getElementById('studyTimerDisplay');
-        if (display) display.style.display = 'block';
-    }
-
-    StudentState.studyInterval = setInterval(() => {
-        const elapsed = Math.floor((new Date() - StudentState.studyStartTime) / 1000);
-        const h = Math.floor(elapsed / 3600).toString().padStart(2, '0');
-        const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, '0');
-        const s = (elapsed % 60).toString().padStart(2, '0');
-        const display = document.getElementById('studyTimerDisplay');
-        if (display) display.textContent = `${h}:${m}:${s}`;
-    }, 1000);
+    return StudyTracker.start(courseId);
 }
 
 async function stopStudySession() {
-    if (!StudentState.studyInterval) return;
-
-    const _startTime = StudentState.studyStartTime;
-    const _courseId = StudentState.currentStudyCourseId;
-
-    clearInterval(StudentState.studyInterval);
-    StudentState.studyInterval = null;
-    StudentState.studyStartTime = null;
-    StudentState.currentStudyCourseId = null;
-
-    const endTime = new Date();
-    const duration = Math.floor((endTime - _startTime) / 1000);
-
-    if (duration > 10) { // Only save if more than 10 seconds
-        const user = await SessionManager.getCurrentUser();
-        if (user && _courseId) {
-            try {
-                const payload = {
-                    user_email: user.email,
-                    course_id: _courseId,
-                    duration: duration,
-                    started_at: _startTime.toISOString(),
-                    ended_at: endTime.toISOString()
-                };
-
-                // If browser supports sendBeacon and we're unloading, use it
-                // Otherwise, normal save
-                await SupabaseDB.saveStudySession(payload);
-                UI.showNotification(`Study session saved: ${Math.floor(duration/60)} minutes logged!`, 'success');
-
-                // Update Progress
-                await SupabaseDB.updateCourseProgress(_courseId, user.email);
-            } catch (e) {
-                console.warn('Failed to save study session:', e);
-            }
-        }
-    }
+    return StudyTracker.stop();
 }
 
 window.startStudySession = startStudySession;
@@ -2192,6 +2471,8 @@ async function startQuiz(quizId) {
     const quiz = await SupabaseDB.getQuiz(quizId);
     if (renderId !== window.currentRenderId) return;
 
+    if (quiz) StudyTracker.start(quiz.course_id);
+
     const now = TimerManager.getTime();
     const startAt = quiz.start_at ? new Date(quiz.start_at).getTime() : 0;
     const endAt = quiz.end_at ? new Date(quiz.end_at).getTime() : Infinity;
@@ -2517,6 +2798,8 @@ async function submitQuiz(isAuto = false) {
       return;
   }
 
+  await StudyTracker.stop();
+
   const btn = document.getElementById('finalSubmitBtn');
   if (btn) {
       btn.disabled = true;
@@ -2760,6 +3043,8 @@ async function deleteSubmissionById(assignmentId, studentEmail) {
 async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
   const renderId = window.currentRenderId;
   if (StudentState.isSubmittingAssignment) return;
+
+  if (!isDraft) await StudyTracker.stop();
   StudentState.isSubmittingAssignment = true;
 
   const btn = isDraft ? document.getElementById('saveDraftBtn') : document.getElementById('submitAssignBtn');
@@ -2879,16 +3164,16 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
   }
 }
 
-window.addEventListener('beforeunload', async (e) => {
+window.addEventListener('beforeunload', (e) => {
   if (StudentState.currentQuiz && StudentState.currentSubmission) {
     e.preventDefault();
     e.returnValue = 'You have an active quiz. Are you sure you want to leave?';
   }
-  if (StudentState.studyInterval) {
-      // Browsers may not allow async in beforeunload, but we try a sync-like save or just let it go
-      // In many cases, it's better to use beacon or just accept loss on hard close.
-      // But we can try to call stopStudySession.
-      stopStudySession();
+
+  // Note: Modern browsers restrict async calls in beforeunload.
+  // Heartbeats minimize data loss.
+  if (StudyTracker.isActive()) {
+      StudyTracker.stop();
   }
 });
 
@@ -2900,7 +3185,7 @@ function initNav() {
         studentNav.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         button.classList.add('active');
         const page = button.dataset.page;
-        if (StudentState.studyInterval) await stopStudySession();
+        await StudyTracker.stop();
         if(page === 'courses') renderCourses();
         else if(page === 'my-courses') renderMyCourses();
         else if(page === 'assignments') renderAssignments();
@@ -2951,7 +3236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
       logoutBtn.addEventListener('click', async () => {
-        if (typeof stopStudySession === 'function') await stopStudySession();
+        await StudyTracker.stop();
         await SessionManager.clearCurrentUser('manual_logout');
         window.location.href = 'index.html'; 
       });

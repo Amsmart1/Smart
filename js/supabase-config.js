@@ -863,46 +863,28 @@ class SupabaseDB {
 
     static async updateCourseProgress(courseId, studentEmail) {
         try {
-            const [{ data: lessons }, { data: courseAssignments }, { data: courseQuizzes }, { data: submissions }, { data: quizSubs }] = await Promise.all([
-                this.getLessons(courseId),
-                this.getAssignments(null, courseId),
-                this.getQuizzes(courseId),
-                this.getSubmissions(null, studentEmail),
-                this.getQuizSubmissions(null, studentEmail)
+            // Optimized Scalable Calculation: Use counts instead of fetching full arrays
+            const [
+                totalLessons,
+                totalAssignments,
+                totalQuizzes,
+                { data: enrollment },
+                completedAssignments,
+                completedQuizzes
+            ] = await Promise.all([
+                this.getCount('lessons', q => q.eq('course_id', courseId)),
+                this.getCount('assignments', q => q.eq('course_id', courseId).eq('status', 'published')),
+                this.getCount('quizzes', q => q.eq('course_id', courseId).eq('status', 'published')),
+                supabaseClient.from('enrollments').select('completed_lessons').match({ course_id: courseId, student_email: studentEmail }).maybeSingle(),
+                this.getCount('submissions', q => q.eq('course_id', courseId).eq('student_email', studentEmail).in('status', ['submitted', 'graded'])),
+                this.getCount('quiz_submissions', q => q.eq('course_id', courseId).eq('student_email', studentEmail).eq('status', 'submitted'))
             ]);
 
-            // Filter for published only as they count towards progress
-            const activeAssignments = courseAssignments.filter(a => a.status === 'published');
-            const activeQuizzes = courseQuizzes.filter(q => q.status === 'published');
-
-            const totalItems = lessons.length + activeAssignments.length + activeQuizzes.length;
+            const totalItems = totalLessons + totalAssignments + totalQuizzes;
             if (totalItems === 0) return;
 
-            let completedItems = 0;
-
-            // Lessons: Use completed_lessons tracker
-            const { data: enrollment } = await supabaseClient
-                .from('enrollments')
-                .select('completed_lessons')
-                .match({ course_id: courseId, student_email: studentEmail })
-                .maybeSingle();
-
-            const completedLessonIds = enrollment?.completed_lessons || [];
-            completedItems += lessons.filter(l => completedLessonIds.includes(l.id)).length;
-
-            // Assignments
-            activeAssignments.forEach(a => {
-                if (submissions.some(s => s.assignment_id === a.id && (s.status === 'submitted' || s.status === 'graded'))) {
-                    completedItems++;
-                }
-            });
-
-            // Quizzes
-            activeQuizzes.forEach(q => {
-                if (quizSubs.some(s => s.quiz_id === q.id && s.status === 'submitted')) {
-                    completedItems++;
-                }
-            });
+            const completedLessonCount = (enrollment?.completed_lessons || []).length;
+            const completedItems = completedLessonCount + completedAssignments + completedQuizzes;
 
             const progress = Math.min(100, Math.round((completedItems / totalItems) * 100));
 
@@ -1691,7 +1673,9 @@ class SupabaseDB {
 
     // Study session operations
     static async saveStudySession(session) {
-        const data = await this._upsert('study_sessions', session);
+        // Use 'id' as onConflict if present to support heartbeat updates
+        const onConflict = session.id ? 'id' : 'user_email,course_id,started_at';
+        const data = await this._upsert('study_sessions', session, onConflict);
         _cache.invalidate('study_sessions');
         return data?.[0];
     }
@@ -1701,7 +1685,13 @@ class SupabaseDB {
             let query = supabaseClient.from('study_sessions').select('*', { count: 'exact' });
             if (email) query = query.eq('user_email', email);
 
-            return this._getPaginated(query.order('started_at', { ascending: false }), options);
+            query = query.order('started_at', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
