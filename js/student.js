@@ -1088,7 +1088,7 @@ async function renderProgress(page = 1) {
       SupabaseDB.getStudySessions(user.email, { all: true }),
       SupabaseDB.getStudySessions(user.email, { page, pageSize: 10 }),
       SupabaseDB.getEnrollments(user.email),
-      SupabaseDB.getCourses(null, null, null, { all: true })
+      SupabaseDB.getCourses(null, null, { all: true })
     ]);
     if (renderId !== window.currentRenderId) return;
 
