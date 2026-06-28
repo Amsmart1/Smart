@@ -28,10 +28,7 @@ const StudyTracker = {
 
         this.courseId = courseId;
         this.startTime = new Date();
-        // Fallback for crypto.randomUUID() in non-secure or legacy environments
-        this.currentSessionId = (typeof crypto.randomUUID === 'function')
-            ? crypto.randomUUID()
-            : 's_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        this.currentSessionId = crypto.randomUUID();
         this.lastDuration = 0;
 
         // Show UI indicator
