@@ -1,6 +1,14 @@
 // Global Utilities
 window.currentRenderId = 0;
 
+window.debounce = function(func, wait) {
+    let timeout;
+    return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
 window.isAccountLocked = function(user) {
     return !!(user && user.locked_until && Date.now() < new Date(user.locked_until).getTime());
 };
@@ -1948,16 +1956,25 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
         onReply = (parentId) => {},
         onEdit = (id) => {},
         onDelete = (id) => {},
-        onPost = (content, parentId) => {}
+        onPost = (content, parentId) => {},
+        onViewDetails = (id) => {}
     } = options;
 
     const renderThread = (parentId = null, depth = 0) => {
         return discussions.filter(d => d.parent_id === parentId).map(d => {
             const isMine = d.user_email === currentUserEmail;
             return `
-                <div class="question mb-10" style="margin-left:${depth * 20}px" id="disc-${d.id}">
+                <div class="question mb-10 discussion-post" style="margin-left:${depth * 20}px" id="disc-${d.id}" data-id="${d.id}">
                     <div class="flex-between" style="align-items:start">
-                        <div class="small"><strong>${escapeHtml(d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}</div>
+                        <div class="small">
+                            <strong>${escapeHtml(d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}
+                            <div class="mt-5">
+                                <span class="badge secondary tiny">Views: ${d.view_count || 0}</span>
+                                ${isMine || (options.isTeacher) ? `
+                                    <a href="javascript:void(0)" class="small ml-10 text-link" onclick="UI._dispatchDiscussionAction('${containerId}', 'viewDetails', '${d.id}')">Viewed by</a>
+                                ` : ''}
+                            </div>
+                        </div>
                         <div class="flex gap-5">
                             <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'reply', '${d.id}')">Reply</button>
                             ${isMine ? `
@@ -1977,7 +1994,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     container.innerHTML = `
         <div class="card">
             <h3 class="m-0">Course Discussion</h3>
-            <div id="disc-list" class="mt-20 mb-20" style="max-height:500px; overflow-y:auto">
+            <div id="disc-list" class="mt-20 mb-20" style="max-height:600px; overflow-y:auto">
                 ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
             </div>
             <div class="flex-column gap-10">
@@ -1986,6 +2003,33 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
             </div>
         </div>
     `;
+
+    // Record views for posts currently in viewport
+    const recordVisibleViews = () => {
+        const posts = container.querySelectorAll('.discussion-post');
+        const listArea = document.getElementById('disc-list');
+        const listRect = listArea.getBoundingClientRect();
+
+        posts.forEach(post => {
+            const rect = post.getBoundingClientRect();
+            // Partial visibility check within the scrollable area
+            const isVisible = rect.top < listRect.bottom && rect.bottom > listRect.top;
+            if (isVisible) {
+                const id = post.dataset.id;
+                if (id && !post.dataset.viewed) {
+                    post.dataset.viewed = 'true';
+                    SupabaseDB.recordDiscussionView(id, currentUserEmail).catch(console.error);
+                }
+            }
+        });
+    };
+
+    const listArea = document.getElementById('disc-list');
+    if (listArea) {
+        listArea.addEventListener('scroll', debounce(recordVisibleViews, 500));
+        // Initial check
+        setTimeout(recordVisibleViews, 1000);
+    }
 
     // Internal action dispatcher
     UI._discussionOptions = UI._discussionOptions || {};
@@ -2001,8 +2045,10 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         area.innerHTML = `
             <div class="flex-column gap-10 mt-10">
                 <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10"></textarea>
-                <button class="button small w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
-                <button class="button secondary small w-auto" onclick="this.parentElement.remove()">Cancel</button>
+                <div class="flex gap-10">
+                    <button class="button small w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
+                    <button class="button secondary small w-auto" onclick="this.parentElement.parentElement.remove()">Cancel</button>
+                </div>
             </div>
         `;
     } else if (action === 'post') {
@@ -2013,6 +2059,8 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         opts.onEdit(id);
     } else if (action === 'delete') {
         opts.onDelete(id);
+    } else if (action === 'viewDetails') {
+        opts.onViewDetails(id);
     }
 };
 
@@ -2476,6 +2524,67 @@ const HelpSystem = {
 window.HelpSystem = HelpSystem;
 
 const DiscussionManager = {
+    async render(containerId, courseId) {
+        const renderId = ++window.currentRenderId;
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        try {
+            const user = await SessionManager.getCurrentUser();
+            if (renderId !== window.currentRenderId) return;
+
+            const { data: discussions } = await SupabaseDB.getDiscussions(courseId);
+            if (renderId !== window.currentRenderId) return;
+
+            const isTeacher = user.role === 'teacher' || user.role === 'admin';
+
+            container.innerHTML = `
+                <div class="flex-between mb-20">
+                    <button class="button secondary w-auto" onclick="renderDiscussions()">← Back to Courses</button>
+                    <button class="button secondary w-auto" onclick="DiscussionManager.render('${containerId}', '${courseId}')">Refresh</button>
+                </div>
+                <div id="discussionContent"></div>
+            `;
+
+            UI.renderDiscussion('discussionContent', discussions, user.email, {
+                isTeacher,
+                onPost: async (content, parentId) => {
+                    if (await DiscussionManager.post(courseId, content, parentId)) {
+                        DiscussionManager.render(containerId, courseId);
+                    }
+                },
+                onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
+                    const { data: disc } = await SupabaseDB.getDiscussions(courseId);
+                    const existing = disc.find(d => d.id === id);
+                    if (!existing) return false;
+                    await SupabaseDB.saveDiscussion({ ...existing, content });
+                    DiscussionManager.render(containerId, courseId);
+                    return true;
+                }),
+                onDelete: (id) => DiscussionManager.delete(id, () => DiscussionManager.render(containerId, courseId)),
+                onViewDetails: async (id) => {
+                    const views = await SupabaseDB.getDiscussionViews(id);
+                    const list = views.map(v => `
+                        <div class="flex-between py-5 border-bottom">
+                            <span>${escapeHtml(v.users?.full_name || 'N/A')} <small class="text-muted">(${escapeHtml(v.user_email)})</small></span>
+                            <small class="text-muted">${new Date(v.viewed_at).toLocaleString()}</small>
+                        </div>
+                    `).join('') || '<div class="empty">No views recorded yet.</div>';
+
+                    UI.showModal('Post Views', `<div style="max-height:400px; overflow-y:auto">${list}</div>`);
+                }
+            });
+        } catch (e) {
+            console.error('Discussion render error:', e);
+            UI.showNotification('Error loading discussions: ' + e.message, 'error');
+            container.innerHTML = `<div class="card danger-border">
+                <h3>Error Loading Discussions</h3>
+                <p class="danger-text">${escapeHtml(e.message)}</p>
+                <button class="button w-auto" onclick="DiscussionManager.render('${containerId}', '${courseId}')">Retry</button>
+            </div>`;
+        }
+    },
+
     async post(courseId, content, parentId = null) {
         if (!content) return;
         const user = await SessionManager.getCurrentUser();
@@ -2502,25 +2611,31 @@ const DiscussionManager = {
         const current = contentDiv.innerHTML;
 
         contentDiv.innerHTML = `
-            <textarea id="edit-disc-input-${id}" class="input" style="margin-top:10px">${UI.htmlToPlainText(current)}</textarea>
-            <div style="margin-top:8px; display:flex; gap:8px">
-                <button class="button" style="padding:4px 8px; font-size:11px" id="save-disc-${id}">Save</button>
-                <button class="button secondary" style="padding:4px 8px; font-size:11px" id="cancel-disc-${id}">Cancel</button>
+            <textarea id="edit-disc-input-${id}" class="input mt-10">${UI.htmlToPlainText(current)}</textarea>
+            <div class="flex gap-10 mt-10">
+                <button class="button small" id="save-disc-${id}">Save</button>
+                <button class="button secondary small" id="cancel-disc-${id}">Cancel</button>
             </div>
         `;
 
         document.getElementById(`save-disc-${id}`).onclick = async () => {
+            const btn = document.getElementById(`save-disc-${id}`);
             const content = document.getElementById(`edit-disc-input-${id}`).value;
             if (!content) return;
+
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
             try {
-                // Fetching individual record for consistency check if needed,
-                // but typically we just need the ID and new content for save.
-                // We'll trust the current UI flow which already has course info via closure in callers.
                 if (await onSave(id, content)) {
                     // Success handled by caller re-rendering
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = 'Save';
                 }
             } catch (e) {
                 UI.showNotification('Error updating: ' + e.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Save';
             }
         };
 

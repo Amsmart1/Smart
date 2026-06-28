@@ -376,6 +376,14 @@ CREATE TABLE IF NOT EXISTS discussions (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS discussion_views (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  discussion_id UUID REFERENCES discussions(id) ON DELETE CASCADE,
+  user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
+  viewed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(discussion_id, user_email)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
@@ -1681,6 +1689,8 @@ CREATE INDEX IF NOT EXISTS idx_materials_teacher_email ON materials(teacher_emai
 CREATE INDEX IF NOT EXISTS idx_discussions_course_id ON discussions(course_id);
 CREATE INDEX IF NOT EXISTS idx_discussions_user_email ON discussions(user_email);
 CREATE INDEX IF NOT EXISTS idx_discussions_teacher_email ON discussions(teacher_email);
+CREATE INDEX IF NOT EXISTS idx_discussion_views_disc_id ON discussion_views(discussion_id);
+CREATE INDEX IF NOT EXISTS idx_discussion_views_user_email ON discussion_views(user_email);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_course_id ON broadcasts(course_id);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_teacher_email ON broadcasts(teacher_email);
 CREATE INDEX IF NOT EXISTS idx_certificates_course_id ON certificates(course_id);
@@ -2802,6 +2812,21 @@ CREATE POLICY "Discussions: Delete" ON discussions FOR DELETE USING (
   is_admin() OR
   teacher_email = get_auth_email() OR
   (user_email = get_auth_email() AND EXISTS (SELECT 1 FROM courses WHERE id = discussions.course_id AND status = 'published'))
+);
+
+-- discussion_views RLS
+ALTER TABLE discussion_views ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Discussion Views: Select" ON discussion_views;
+CREATE POLICY "Discussion Views: Select" ON discussion_views FOR SELECT USING (
+  is_admin() OR
+  user_email = get_auth_email() OR
+  EXISTS (SELECT 1 FROM discussions WHERE id = discussion_views.discussion_id AND (user_email = get_auth_email() OR teacher_email = get_auth_email()))
+);
+
+DROP POLICY IF EXISTS "Discussion Views: Insert" ON discussion_views;
+CREATE POLICY "Discussion Views: Insert" ON discussion_views FOR INSERT WITH CHECK (
+  user_email = get_auth_email()
 );
 
 -- 13. Notifications Table

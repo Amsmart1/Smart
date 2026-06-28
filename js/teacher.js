@@ -14,13 +14,7 @@ function clearActiveCountdowns() {
     TeacherState.liveClassTimer = null;
 }
 
-function debounce(func, wait) {
-    let timeout;
-    return function(...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-}
+
 
 async function renderDashboard() {
   const renderId = ++window.currentRenderId;
@@ -1547,41 +1541,7 @@ async function renderDiscussions() {
 }
 
 async function viewCourseDiscussions(courseId) {
-  const renderId = ++window.currentRenderId;
-  const container = document.getElementById('pageContent');
-  try {
-    const user = await SessionManager.getCurrentUser();
-    if (renderId !== window.currentRenderId) return;
-    const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-    if (renderId !== window.currentRenderId) return;
-    if (!container) return;
-
-    container.innerHTML = `<button class="button secondary w-auto mb-10" onclick="renderDiscussions()">← Back</button><div id="discussionArea"></div>`;
-
-    UI.renderDiscussion('discussionArea', disc, user.email, {
-        onPost: async (content, parentId) => {
-            if (await DiscussionManager.post(courseId, content, parentId)) viewCourseDiscussions(courseId);
-        },
-        onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
-            const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-            const existing = disc.find(d => d.id === id);
-            await SupabaseDB.saveDiscussion({ ...existing, content });
-            viewCourseDiscussions(courseId);
-            return true;
-        }),
-        onDelete: (id) => DiscussionManager.delete(id, () => viewCourseDiscussions(courseId))
-    });
-  } catch (e) {
-    console.error('Discussions error:', e);
-    UI.showNotification('Error loading discussions: ' + e.message, 'error');
-    if (container) {
-        container.innerHTML = `<div class="card danger-border">
-            <h3>Error Loading Discussions</h3>
-            <div class="small danger-text">${escapeHtml(e.message)}</div>
-            <button class="button w-auto mt-10" onclick="viewCourseDiscussions('${escapeAttr(courseId)}')">Retry</button>
-        </div>`;
-    }
-  }
+  DiscussionManager.render('pageContent', courseId);
 }
 
 async function renderHelp() {
