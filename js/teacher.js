@@ -3347,6 +3347,7 @@ function initNav() {
         teacherNav.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         button.classList.add('active');
         const page = button.dataset.page;
+        DiscussionManager.cleanup();
         if(page === 'dashboard') renderDashboard();
         else if(page === 'courses') renderCourses();
         else if(page === 'materials') renderMaterials();

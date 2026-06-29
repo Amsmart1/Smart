@@ -273,10 +273,13 @@ const UI = {
 
     renderRichText(content) {
         if (!content) return '';
+        let html;
         if (/<(b|i|u|strong|em|br|div|p|ul|ol|li)/i.test(content)) {
-            return this.safeHTML(content);
+            html = this.safeHTML(content);
+        } else {
+            html = escapeHtml(content);
         }
-        return escapeHtml(content).replace(/\n/g, '<br>');
+        return html.replace(/\n/g, '<br>');
     },
 
     /**
@@ -1991,12 +1994,15 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
         return discussions.filter(d => d.parent_id === parentId).map(d => {
             const isMine = d.user_email === currentUserEmail;
             const canDelete = isMine || options.isTeacher;
+            const isStaff = d.users?.role === 'teacher' || d.users?.role === 'admin';
 
             return `
                 <div class="question mb-10 discussion-post" style="margin-left:${depth * 20}px" id="disc-${d.id}" data-id="${d.id}">
                     <div class="flex-between" style="align-items:start">
                         <div class="small">
-                            <strong>${escapeHtml(d.users?.full_name || d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}
+                            <strong>${escapeHtml(d.users?.full_name || d.user_email)}</strong>
+                            ${isStaff ? '<span class="badge badge-purple tiny ml-5">STAFF</span>' : ''}
+                            <span class="text-muted ml-5">- ${new Date(d.created_at).toLocaleString()}</span>
                             <div class="mt-5">
                                 <span class="badge secondary tiny">Views: ${d.view_count || 0}</span>
                                 ${isMine || (options.isTeacher) ? `
@@ -2560,14 +2566,38 @@ const HelpSystem = {
 window.HelpSystem = HelpSystem;
 
 const DiscussionManager = {
+    _activeChannel: null,
+
+    cleanup() {
+        if (this._activeChannel) {
+            window.supabaseClient?.removeChannel(this._activeChannel);
+            this._activeChannel = null;
+        }
+    },
+
     async render(containerId, courseId) {
         const renderId = ++window.currentRenderId;
         const container = document.getElementById(containerId);
         if (!container) return;
 
+        UI.showLoading(containerId, 'Loading discussions...');
+
         try {
             const user = await SessionManager.getCurrentUser();
             if (renderId !== window.currentRenderId) return;
+
+            // Handle real-time subscription lifecycle
+            if (this._activeChannel) {
+                window.supabaseClient?.removeChannel(this._activeChannel);
+            }
+            this._activeChannel = SupabaseDB.subscribeToDiscussions(courseId, (payload) => {
+                // To avoid interrupting the user while typing, we only auto-refresh if they aren't interacting with an input
+                const activeEl = document.activeElement;
+                const isInteracting = activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT');
+                if (!isInteracting) {
+                    this.render(containerId, courseId);
+                }
+            });
 
             const { data: discussions } = await SupabaseDB.getDiscussions(courseId);
             if (renderId !== window.currentRenderId) return;
@@ -2576,7 +2606,7 @@ const DiscussionManager = {
 
             container.innerHTML = `
                 <div class="flex-between mb-20">
-                    <button class="button secondary w-auto" onclick="renderDiscussions()">← Back to Courses</button>
+                    <button class="button secondary w-auto" onclick="DiscussionManager.cleanup(); renderDiscussions()">← Back to Courses</button>
                     <button class="button secondary w-auto" onclick="DiscussionManager.render('${containerId}', '${courseId}')">Refresh</button>
                 </div>
                 <div id="discussionContent"></div>
