@@ -78,7 +78,7 @@ async function renderCourses() {
       ${courses.map(c => `
         <div class="card">
           <h3 class="m-0">${escapeHtml(c.title)}</h3>
-          <div class="small">${UI.renderRichText(c.description)}</div>
+          <div class="small">${UI.renderText(c.description)}</div>
           <div class="mt-10"><span class="badge ${c.status === 'published' ? 'badge-active' : 'badge-lock'}">${escapeHtml(c.status)}</span></div>
           <div class="flex gap-10 mt-15">
             <button class="button w-auto small" onclick="editCourse('${escapeAttr(c.id)}')">Manage Lessons</button>
@@ -235,7 +235,7 @@ async function editCourse(id) {
               <div class="flex-between p-10 bg-light border-radius-sm mb-5">
                 <div style="flex:1">
                   <strong class="small d-block">${escapeHtml(t.title)}</strong>
-                  <div class="tiny text-muted mt-2">${UI.renderRichText(t.description)}</div>
+                  <div class="tiny text-muted mt-2">${UI.renderText(t.description)}</div>
                 </div>
                 <div class="flex gap-5">
                   <button class="button tiny w-auto secondary" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">Edit Topic</button>
@@ -521,7 +521,7 @@ async function renderAssignments() {
         <div class="card">
           <h3 class="m-0">${escapeHtml(a.title)}</h3>
           <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-          <div class="small">${UI.renderRichText(a.description)}</div>
+          <div class="small">${UI.renderText(a.description)}</div>
           <div class="mt-10">
             <p class="small m-0 mb-5">Due: ${new Date(a.due_date).toLocaleString()}</p>
             ${new Date(a.due_date).getTime() > now ? `
@@ -1350,7 +1350,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
               let displayAnswer = '<div class="small p-10 mt-5 text-muted italic">No answer provided.</div>';
               if (value) {
                   if (type === 'essay') {
-                      displayAnswer = `<div class="small p-10 mt-5" style="background: #f7fafc; border-radius: 4px;">${UI.renderRichText(value)}</div>`;
+                      displayAnswer = `<div class="small p-10 mt-5" style="background: #f7fafc; border-radius: 4px;">${UI.renderText(value)}</div>`;
                   } else {
                       displayAnswer = `<div class="mt-5 flex gap-10">
                         <span class="badge badge-purple tiny">${type.toUpperCase()}</span>
@@ -1360,7 +1360,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
               }
 
               return `<div class="list-item mb-20 card border-light">
-                <div class="bold mb-5">Question ${idx + 1}: ${UI.renderRichText(q.text)}</div>
+                <div class="bold mb-5">Question ${idx + 1}: ${UI.renderText(q.text)}</div>
                 <div class="mt-5">${displayAnswer}</div>
                 <div class="mt-10 flex-center-y gap-10 p-10 bg-light border-radius-sm">
                     <label class="small m-0">Points Earned (max ${q.points}):</label>
@@ -1459,9 +1459,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
           questionFeedback[input.dataset.qIdx] = input.value;
       });
 
-      // Explicitly sync RTE if it exists to ensure latest value is captured before save
       const feedbackEl = document.getElementById('feedback');
-      if (feedbackEl?._rte) feedbackEl._rte.sync();
 
       const updatedSubmission = {
         ...submission,
@@ -2409,7 +2407,7 @@ async function renderQuizzes() {
         <div class="card">
           <h3 class="m-0">${escapeHtml(q.title)}</h3>
           <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-          <div class="small mb-5">${UI.renderRichText(q.description)}</div>
+          <div class="small mb-5">${UI.renderText(q.description)}</div>
           <p class="small">Status: ${q.status}</p>
           <p class="small">Questions: ${q.questions?.length || 0}</p>
           ${q.start_at || q.end_at ? `
@@ -2835,16 +2833,16 @@ async function gradeQuizSubmission(submissionId, quizId) {
             return `
               <div class="question" style="border-left: 5px solid ${statusColor}">
                 <div class="flex-between">
-                  <div class="bold">Q${idx + 1}: ${UI.renderRichText(q.text)}</div>
+                  <div class="bold">Q${idx + 1}: ${UI.renderText(q.text)}</div>
                   <div class="badge ${isCorrect ? 'badge-active' : 'badge-warn'}">${currentPoints} / ${q.points} pts ${!isAutoGraded ? '(Manual)' : ''}</div>
                 </div>
                 <div class="mt-5">
                   <span class="small">Type: ${q.type.toUpperCase()}</span>
                 </div>
                 <div class="small p-10 mt-10" style="background:white; border:1px solid var(--border); border-radius:4px">
-                  <strong class="text-muted">Student Answer:</strong> <span class="bold ${isCorrect ? 'success-text' : 'danger-text'}">${UI.renderRichText(studentDisplay)}</span>
+                  <strong class="text-muted">Student Answer:</strong> <span class="bold ${isCorrect ? 'success-text' : 'danger-text'}">${UI.renderText(studentDisplay)}</span>
                 </div>
-                ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
+                ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderText(correctDisplay)}</div>` : ''}
 
                 ${!isAutoGraded ? `
                   <div class="mt-10 flex-center-y gap-10">

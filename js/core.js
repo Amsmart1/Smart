@@ -271,7 +271,7 @@ const UI = {
         return doc.body.innerHTML;
     },
 
-    renderRichText(content) {
+    renderText(content) {
         if (!content) return '';
         let html;
         if (/<(b|i|u|strong|em|br|div|p|ul|ol|li)/i.test(content)) {
@@ -2020,7 +2020,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                             ` : ''}
                         </div>
                     </div>
-                    <div class="mt-5 disc-content" data-raw="${escapeHtml(d.content)}">${UI.renderRichText(d.content)}</div>
+                    <div class="mt-5 disc-content" data-raw="${escapeHtml(d.content)}">${UI.renderText(d.content)}</div>
                     <div id="reply-area-${d.id}"></div>
                     ${renderThread(d.id, depth + 1)}
                 </div>
