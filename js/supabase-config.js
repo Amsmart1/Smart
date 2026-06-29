@@ -140,7 +140,9 @@ class SupabaseDB {
         const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data'];
         VIRTUAL_FIELDS.forEach(field => {
             // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets table
-            if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data')) return;
+            // Also preserve session_id during migration/restoration
+            const isMigration = sessionStorage.getItem('migrationMode') === 'true';
+            if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data' || isMigration)) return;
             delete sanitized[field];
         });
 

@@ -37,7 +37,8 @@ const BACKUP_CONFIG = {
         { name: 'broadcasts', optional: true, onConflict: 'id', orderBy: 'created_at', dependencies: [{ table: 'courses', field: 'course_id', optional: true }, { table: 'users', field: 'teacher_email', optional: true }] },
         { name: 'violations', onConflict: 'id', orderBy: 'timestamp', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'user_email' }, { table: ['assignments', 'quizzes'], field: 'assessment_id' }, { table: 'users', field: 'teacher_email', optional: true }] },
         { name: 'certificates', onConflict: 'id', orderBy: 'issued_at', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'student_email' }, { table: 'users', field: 'teacher_email', optional: true }] },
-        { name: 'discussions', onConflict: 'id', orderBy: 'created_at', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'user_email' }, { table: 'users', field: 'teacher_email', optional: true }, { table: 'discussions', field: 'parent_id', optional: true, self: true }] }
+        { name: 'discussions', onConflict: 'id', orderBy: 'created_at', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'user_email' }, { table: 'users', field: 'teacher_email', optional: true }, { table: 'discussions', field: 'parent_id', optional: true, self: true }] },
+        { name: 'discussion_views', onConflict: 'discussion_id,user_email', orderBy: 'viewed_at', dependencies: [{ table: 'discussions', field: 'discussion_id' }, { table: 'users', field: 'user_email' }] }
     ]
 };
 
@@ -2111,7 +2112,7 @@ async function exportBackup() {
     const requestedOrder = [
         'maintenance', 'submissions', 'lessons', 'courses', 'assignments', 'materials',
         'support_tickets', 'quizzes', 'topics', 'live_classes', 'notifications', 'users',
-        'enrollments', 'attendance', 'certificates', 'discussions', 'study_sessions',
+        'enrollments', 'attendance', 'certificates', 'discussions', 'discussion_views', 'study_sessions',
         'invites', 'quiz_submissions', 'violations', 'user_secrets', 'planner', 'broadcasts'
     ];
     const orderedTables = {};
@@ -2226,6 +2227,14 @@ async function importBackup(event) {
       sessionStorage.setItem('migrationMode', 'true');
       UI.showLoading('mgt-area', 'Initializing restoration...');
 
+      // Capture current admin credentials to prevent self-deauthentication during restore
+      let currentAdminEmail = null;
+      let currentSessionId = sessionStorage.getItem('sessionId');
+      try {
+          const user = JSON.parse(sessionStorage.getItem('currentUser'));
+          currentAdminEmail = user?.email;
+      } catch (e) {}
+
       // 1. Pre-Restore Integrity Audit & Auto-Fix
       let issues = BackupAuditManager.audit(backupData);
       if (issues.length > 0) {
@@ -2270,6 +2279,20 @@ async function importBackup(event) {
           const processBatch = async (batchRecords) => {
               const batch = batchRecords.map(r => {
                   const sanitized = SupabaseDB._sanitizePayload(r, table);
+
+                  // Authentication Preservation Logic:
+                  // If we are restoring the current admin's record, we MUST preserve their
+                  // active session and role to prevent the restoration process from cutting
+                  // off its own access.
+                  if (table === 'users' && sanitized.email === currentAdminEmail) {
+                      sanitized.role = 'admin'; // Force admin role
+                      sanitized.active = true;
+                      sanitized.flagged = false;
+                  }
+                  if (table === 'user_secrets' && sanitized.email === currentAdminEmail && currentSessionId) {
+                      sanitized.session_id = currentSessionId;
+                  }
+
                   // Critical logic for updating existing records correctly:
                   // If onConflict is NOT 'id' (meaning we match by natural key like email),
                   // we remove the surrogate 'id' to prevent UniqueViolation during restoration
@@ -2286,13 +2309,13 @@ async function importBackup(event) {
                   .upsert(batch, { onConflict: config.onConflict });
 
               if (error) {
-                  const firstId = batch[0].id || batch[0].email || 'unknown';
+                  const firstId = batch[0].id || batch[0].email || batch[0].student_email || batch[0].user_email || 'unknown';
                   console.error(`Restore failed at table "${table}":`, error);
-                  throw new Error(`[Table: ${table}] [Record ID: ${firstId}] ${error.message} (Code: ${error.code})`);
+                  throw new Error(`[Table: ${table}] [Record identifier: ${firstId}] ${error.message} (Code: ${error.code})`);
               }
           };
 
-          const batchSize = 50;
+          const batchSize = 100;
 
           if (hasSelfDep) {
               console.log(`Using two-pass restore for self-referencing table: ${table}`);

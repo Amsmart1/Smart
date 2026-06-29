@@ -2590,9 +2590,25 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    END LOOP;
+END $$;
+
+-- Migration/Restoration Policy (Authorized Admin Bypass)
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOR t IN
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+    LOOP
+        EXECUTE format('DROP POLICY IF EXISTS "Migration: Admin ALL" ON %I', t);
+        EXECUTE format('CREATE POLICY "Migration: Admin ALL" ON %I FOR ALL USING (_is_migration_mode())', t);
     END LOOP;
 END $$;
 
@@ -2815,7 +2831,6 @@ CREATE POLICY "Discussions: Delete" ON discussions FOR DELETE USING (
 );
 
 -- discussion_views RLS
-ALTER TABLE discussion_views ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Discussion Views: Select" ON discussion_views;
 CREATE POLICY "Discussion Views: Select" ON discussion_views FOR SELECT USING (
