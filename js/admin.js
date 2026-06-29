@@ -704,6 +704,10 @@ window.executePurge = executePurge;
 window.saveAutoTask = saveAutoTask;
 window.exportBackup = exportBackup;
 window.importBackup = importBackup;
+window.performCloudBackup = performCloudBackup;
+window.deleteCloudBackup = deleteCloudBackup;
+window.downloadCloudBackup = downloadCloudBackup;
+window.restoreFromCloud = restoreFromCloud;
 
 async function editUser(email) {
   const user = await SupabaseDB.getUser(email);
@@ -1792,6 +1796,8 @@ async function renderManagement() {
     if (renderId !== window.currentRenderId) return;
     const autoSettings = maintenance.metadata?.autoTasks || {};
 
+    const backups = await SupabaseDB.listFiles('backups');
+
     content.innerHTML = `
       <section>
         <div class="flex-between mb-20">
@@ -1809,9 +1815,10 @@ async function renderManagement() {
           <div class="card">
             <h4>System Backup</h4>
             <p class="small">Export or Restore complete system data.</p>
-            <div class="flex gap-10" style="margin-top:10px">
-              <button class="button" onclick="exportBackup()">Export Backup</button>
-              <button class="button secondary" onclick="document.getElementById('importFile').click()">Import/Restore</button>
+            <div class="flex flex-wrap gap-10" style="margin-top:10px">
+              <button class="button" style="width:auto" onclick="exportBackup()">Export Backup</button>
+              <button class="button secondary" style="width:auto" onclick="performCloudBackup()">Cloud Snapshot</button>
+              <button class="button secondary" style="width:auto" onclick="document.getElementById('importFile').click()">Restore File</button>
               <input type="file" id="importFile" class="hidden" onchange="importBackup(event)">
             </div>
           </div>
@@ -1830,7 +1837,46 @@ async function renderManagement() {
             </div>
           </div>
         </div>
+
+        <div class="mt-30">
+          <h4>Cloud Backups</h4>
+          <div class="card p-0 overflow-x-auto">
+            <table class="w-100">
+              <thead>
+                <tr>
+                  <th>Snapshot Name</th>
+                  <th>Date</th>
+                  <th>Size</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${backups.length === 0 ? '<tr><td colspan="4" class="empty">No cloud snapshots found.</td></tr>' :
+                  backups.map(b => `
+                    <tr>
+                      <td class="small bold">${escapeHtml(b.name)}</td>
+                      <td class="small">${new Date(b.created_at).toLocaleString()}</td>
+                      <td class="small">${(b.metadata?.size / 1024 / 1024).toFixed(2)} MB</td>
+                      <td>
+                        <div class="flex gap-5">
+                          <button class="button tiny w-auto" onclick="downloadCloudBackup('${escapeAttr(b.name)}')">Download</button>
+                          <button class="button tiny secondary w-auto" onclick="restoreFromCloud('${escapeAttr(b.name)}')">Restore</button>
+                          <button class="button tiny danger w-auto" onclick="deleteCloudBackup('${escapeAttr(b.name)}')">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('')
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div id="mgt-area" style="margin-top:20px"></div>
+        <div id="mgt-logs" class="card mt-20 bg-light small" style="max-height: 200px; overflow-y: auto; font-family: monospace; display: none;">
+            <div class="bold mb-10 border-bottom pb-5">Operation Logs</div>
+            <div id="log-content"></div>
+        </div>
       </section>
     `;
   } catch (error) {
@@ -1890,10 +1936,10 @@ async function executeCleanup() {
   }
 }
 
-async function executePurge() {
-    if (!await UI.confirm('This will permanently delete all EXPIRED broadcasts, notifications, and security violations. Proceed?', 'System Purge')) return;
+async function executePurge(isAuto = false) {
+    if (!isAuto && !await UI.confirm('This will permanently delete all EXPIRED broadcasts, notifications, and security violations. Proceed?', 'System Purge')) return;
 
-    UI.showLoading('mgt-area', 'Purging expired records...');
+    if (!isAuto) UI.showLoading('mgt-area', 'Purging expired records...');
     try {
         const now = new Date().toISOString();
         const results = await Promise.all([
@@ -1905,12 +1951,58 @@ async function executePurge() {
         const errors = results.filter(r => r.error);
         if (errors.length > 0) throw new Error(errors[0].error.message);
 
-        UI.showNotification('System purge completed successfully.', 'success');
+        if (!isAuto) UI.showNotification('System purge completed successfully.', 'success');
+        return true;
     } catch (e) {
-        UI.showNotification('Purge failed: ' + e.message, 'error');
+        if (!isAuto) UI.showNotification('Purge failed: ' + e.message, 'error');
+        return false;
     } finally {
-        UI.hideLoading('mgt-area');
-        renderManagement();
+        if (!isAuto) {
+            UI.hideLoading('mgt-area');
+            renderManagement();
+        }
+    }
+}
+
+async function runAutomatedTasks() {
+    const user = await SessionManager.getCurrentUser();
+    if (!user || user.role !== 'admin') return;
+
+    try {
+        const maintenance = await SupabaseDB.getMaintenance();
+        const autoSettings = maintenance.metadata?.autoTasks || {};
+        const lastRuns = maintenance.metadata?.lastAutoRuns || {};
+        const now = new Date();
+        let updated = false;
+
+        // 1. Daily Auto-Cleanup (Purge Expired Records)
+        if (autoSettings.autoCleanup) {
+            const lastCleanup = lastRuns.autoCleanup ? new Date(lastRuns.autoCleanup) : null;
+            if (!lastCleanup || (now - lastCleanup > 24 * 60 * 60 * 1000)) {
+                console.log('Running automated daily cleanup...');
+                await executePurge(true);
+                lastRuns.autoCleanup = now.toISOString();
+                updated = true;
+            }
+        }
+
+        // 2. Weekly Cloud Backup
+        if (autoSettings.autoBackup) {
+            const lastBackup = lastRuns.autoBackup ? new Date(lastRuns.autoBackup) : null;
+            if (!lastBackup || (now - lastBackup > 7 * 24 * 60 * 60 * 1000)) {
+                console.log('Running automated weekly cloud backup...');
+                await performCloudBackup(true);
+                lastRuns.autoBackup = now.toISOString();
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            maintenance.metadata = { ...maintenance.metadata, lastAutoRuns: lastRuns };
+            await SupabaseDB.saveMaintenance(maintenance);
+        }
+    } catch (e) {
+        console.warn('Automated tasks failed:', e);
     }
 }
 
@@ -2082,10 +2174,24 @@ class BackupAuditManager {
     }
 }
 
-async function exportBackup() {
-  const container = document.getElementById('mgt-area');
-  UI.showLoading('mgt-area', 'Preparing full system backup...');
-  try {
+function addMgtLog(msg, type = 'info') {
+    const logs = document.getElementById('mgt-logs');
+    const content = document.getElementById('log-content');
+    if (!logs || !content) return;
+
+    logs.style.display = 'block';
+    const entry = document.createElement('div');
+    entry.className = type === 'error' ? 'danger-text' : (type === 'warn' ? 'warn-text' : '');
+    entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${escapeHtml(msg)}`;
+    content.appendChild(entry);
+    logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * Core logic to generate a full system backup object.
+ */
+async function generateBackupData(statusCallback = null) {
+    addMgtLog('Starting system backup generation...');
     const backupData = {
         exportedAt: new Date().toISOString(),
         version: BACKUP_CONFIG.version,
@@ -2097,18 +2203,19 @@ async function exportBackup() {
         const config = BACKUP_CONFIG.tables[i];
         const orderBy = config.orderBy || 'created_at';
 
-        UI.showLoading('mgt-area', `Exporting table ${i + 1}/${totalTables}: ${config.name}...`);
+        const msg = `Exporting table ${i + 1}/${totalTables}: ${config.name}...`;
+        if (statusCallback) statusCallback(msg);
+        addMgtLog(msg);
         try {
             backupData.tables[config.name] = await SupabaseDB.getAllTableData(config.name, orderBy);
         } catch (err) {
             console.warn(`Failed to export table ${config.name}:`, err);
+            addMgtLog(`Error exporting ${config.name}: ${err.message}`, 'error');
             backupData.tables[config.name] = [];
         }
     }
 
     // Align with strictly requested format and table order as per user JSON.
-    // Note: Restoration always follows the topological order defined in BACKUP_CONFIG.tables
-    // to ensure referential integrity regardless of the JSON file structure.
     const requestedOrder = [
         'maintenance', 'submissions', 'lessons', 'courses', 'assignments', 'materials',
         'support_tickets', 'quizzes', 'topics', 'live_classes', 'notifications', 'users',
@@ -2116,20 +2223,25 @@ async function exportBackup() {
         'invites', 'quiz_submissions', 'violations', 'user_secrets', 'planner', 'broadcasts'
     ];
     const orderedTables = {};
-    // 1. First, include requested tables in specific order
     requestedOrder.forEach(tableName => {
         if (Object.prototype.hasOwnProperty.call(backupData.tables, tableName)) {
             orderedTables[tableName] = backupData.tables[tableName];
         }
     });
-    // 2. Then, include any other tables present in backupData but NOT in requestedOrder
-    // This ensures no data is lost even if requestedOrder is incomplete.
     Object.keys(backupData.tables).forEach(tableName => {
         if (!orderedTables[tableName]) {
             orderedTables[tableName] = backupData.tables[tableName];
         }
     });
     backupData.tables = orderedTables;
+
+    return backupData;
+}
+
+async function exportBackup() {
+  UI.showLoading('mgt-area', 'Preparing full system backup...');
+  try {
+    const backupData = await generateBackupData((msg) => UI.showLoading('mgt-area', msg));
 
     // Perform Integrity Audit
     UI.showLoading('mgt-area', 'Auditing data integrity...');
@@ -2181,6 +2293,74 @@ async function exportBackup() {
   }
 }
 
+async function performCloudBackup(isAuto = false) {
+    if (!isAuto) UI.showLoading('mgt-area', 'Generating cloud snapshot...');
+    try {
+        const backupData = await generateBackupData();
+        const json = JSON.stringify(backupData);
+        const blob = new Blob([json], { type: 'application/json' });
+        const fileName = `snapshot_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+
+        await SupabaseDB.uploadFile('backups', fileName, blob);
+
+        if (!isAuto) UI.showNotification('Cloud snapshot created successfully.', 'success');
+        return true;
+    } catch (e) {
+        console.error('Cloud backup failed:', e);
+        if (!isAuto) UI.showNotification('Cloud backup failed: ' + e.message, 'error');
+        return false;
+    } finally {
+        if (!isAuto) {
+            UI.hideLoading('mgt-area');
+            renderManagement();
+        }
+    }
+}
+
+async function deleteCloudBackup(name) {
+    if (!await UI.confirm(`Are you sure you want to delete the snapshot "${name}"?`, 'Delete Cloud Backup')) return;
+    try {
+        await SupabaseDB.deleteFile('backups', name);
+        UI.showNotification('Backup deleted.', 'success');
+        renderManagement();
+    } catch (e) {
+        UI.showNotification('Failed to delete: ' + e.message, 'error');
+    }
+}
+
+async function downloadCloudBackup(name) {
+    UI.showNotification('Downloading...', 'info');
+    try {
+        const blob = await SupabaseDB.downloadFile('backups', name);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+    } catch (e) {
+        UI.showNotification('Download failed: ' + e.message, 'error');
+    }
+}
+
+async function restoreFromCloud(name) {
+    if (!await UI.confirm(`Restore system state from snapshot "${name}"? This will overwrite existing data.`, 'Cloud Restore')) return;
+
+    UI.showLoading('mgt-area', 'Fetching cloud snapshot...');
+    try {
+        const blob = await SupabaseDB.downloadFile('backups', name);
+        const text = await blob.text();
+        const backupData = JSON.parse(text);
+
+        // Use existing import logic
+        await performRestoreOperation(backupData);
+    } catch (e) {
+        UI.showNotification('Cloud restore failed: ' + e.message, 'error');
+    } finally {
+        UI.hideLoading('mgt-area');
+        renderManagement();
+    }
+}
+
 function validateBackup(data) {
     if (!data || typeof data !== 'object') return 'Invalid backup format: Not an object.';
     if (!data.tables || typeof data.tables !== 'object') return 'Invalid backup format: Missing tables data.';
@@ -2202,6 +2382,153 @@ function validateBackup(data) {
 }
 
 let _isRestoring = false;
+
+/**
+ * Shared logic for performing a restoration from a backup object.
+ */
+async function performRestoreOperation(backupData) {
+    if (_isRestoring) return;
+
+    const validationError = validateBackup(backupData);
+    if (validationError) throw new Error(validationError);
+
+    const tableList = Object.keys(backupData.tables);
+
+    _isRestoring = true;
+    sessionStorage.setItem('migrationMode', 'true');
+    UI.showLoading('mgt-area', 'Initializing restoration...');
+
+    try {
+        // Capture current admin credentials to prevent self-deauthentication during restore
+        let currentAdminEmail = null;
+        let currentSessionId = sessionStorage.getItem('sessionId');
+        try {
+            const user = JSON.parse(sessionStorage.getItem('currentUser'));
+            currentAdminEmail = user?.email;
+        } catch (e) {}
+
+        // 1. Pre-Restore Integrity Audit & Auto-Fix
+        let issues = BackupAuditManager.audit(backupData);
+        if (issues.length > 0) {
+            const fixableCount = issues.filter(i => i.isOptional).length;
+            const fatalCount = issues.length - fixableCount;
+
+            let auditMsg = `The backup data has ${issues.length} integrity issues.`;
+            if (fixableCount > 0) auditMsg += `\n\n- ${fixableCount} optional orphans can be auto-fixed (nullified).`;
+            if (fatalCount > 0) auditMsg += `\n- ${fatalCount} fatal issues may cause database errors.`;
+
+            const userChoice = await UI.confirm(auditMsg + '\n\nAttempt auto-fix for optional orphans before restoring?', 'Integrity Audit');
+
+            if (userChoice) {
+                const fixed = BackupAuditManager.sanitizeOrphans(backupData, issues);
+                UI.showNotification(`Auto-fixed ${fixed} orphaned references.`, 'info');
+                // Re-audit after fix
+                issues = BackupAuditManager.audit(backupData);
+            }
+
+            if (issues.some(i => !i.isOptional)) {
+                const proceed = await UI.confirm('Remaining fatal issues found. Database errors are likely. Proceed anyway?', 'Warning');
+                if (!proceed) throw new Error('Restore cancelled by user.');
+            }
+        }
+
+    addMgtLog(`Starting restoration from ${tableList.length} tables.`);
+    // 2. Perform Restore using strictly ordered tables from BACKUP_CONFIG
+        const sortedConfigs = BACKUP_CONFIG.tables.filter(config => tableList.includes(config.name));
+        const totalSteps = sortedConfigs.length;
+
+        for (let step = 0; step < totalSteps; step++) {
+            const config = sortedConfigs[step];
+            const table = config.name;
+            const records = backupData.tables[table] || [];
+
+        if (records.length === 0) {
+            addMgtLog(`Skipping empty table: ${table}`);
+            continue;
+        }
+
+        addMgtLog(`Restoring table [${step+1}/${totalSteps}]: ${table} (${records.length} records)`);
+
+            // 2.1 Multi-pass logic for self-referencing tables (e.g. discussions)
+            const hasSelfDep = config.dependencies?.some(d => d.self);
+
+            const processBatch = async (batchRecords) => {
+                const batch = batchRecords.map(r => {
+                    const sanitized = SupabaseDB._sanitizePayload(r, table);
+
+                    // Authentication Preservation Logic:
+                    if (table === 'users' && sanitized.email === currentAdminEmail) {
+                        sanitized.role = 'admin'; // Force admin role
+                        sanitized.active = true;
+                        sanitized.flagged = false;
+                    }
+                    if (table === 'user_secrets' && sanitized.email === currentAdminEmail && currentSessionId) {
+                        sanitized.session_id = currentSessionId;
+                    }
+
+                    // Surrogate ID handling
+                    if (config.onConflict !== 'id' && Object.prototype.hasOwnProperty.call(sanitized, 'id')) {
+                        delete sanitized.id;
+                    }
+                    return sanitized;
+                });
+                const { error } = await supabaseClient
+                    .from(table)
+                    .upsert(batch, { onConflict: config.onConflict });
+
+                if (error) {
+                    const firstId = batch[0].id || batch[0].email || batch[0].student_email || batch[0].user_email || 'unknown';
+                    console.error(`Restore failed at table "${table}":`, error);
+                    throw new Error(`[Table: ${table}] [Record identifier: ${firstId}] ${error.message} (Code: ${error.code})`);
+                }
+            };
+
+            const batchSize = 100;
+
+            if (hasSelfDep) {
+                const selfFields = config.dependencies.filter(d => d.self).map(d => d.field);
+                // Pass 1: Restore with self-references nullified
+                for (let i = 0; i < records.length; i += batchSize) {
+                    const progress = Math.round((i / records.length) * 50);
+                    UI.showLoading('mgt-area', `Restoring table [${step+1}/${totalSteps}]: ${table} - Pass 1/2 (${progress}%)`);
+                    const batch = records.slice(i, i + batchSize).map(r => {
+                        const temp = { ...r };
+                        selfFields.forEach(f => temp[f] = null);
+                        return temp;
+                    });
+                    await processBatch(batch);
+                }
+                // Pass 2: Restore with real self-references
+                for (let i = 0; i < records.length; i += batchSize) {
+                    const progress = 50 + Math.round((i / records.length) * 50);
+                    UI.showLoading('mgt-area', `Restoring table [${step+1}/${totalSteps}]: ${table} - Pass 2/2 (${progress}%)`);
+                    const batch = records.slice(i, i + batchSize);
+                    await processBatch(batch);
+                }
+            } else {
+                // Regular single pass restore
+                for (let i = 0; i < records.length; i += batchSize) {
+                    const progress = Math.round((i / records.length) * 100);
+                    UI.showLoading('mgt-area', `Restoring table [${step+1}/${totalSteps}]: ${table} (${progress}%)`);
+                    const batch = records.slice(i, i + batchSize);
+                    await processBatch(batch);
+                }
+            }
+        }
+
+        addMgtLog('System Restore completed successfully.', 'success');
+        UI.showNotification('System Restore completed successfully.', 'success');
+        renderManagement();
+    } catch (e) {
+        addMgtLog(`Restoration Failed: ${e.message}`, 'error');
+        throw e;
+    } finally {
+        _isRestoring = false;
+        sessionStorage.removeItem('migrationMode');
+        UI.hideLoading('mgt-area');
+    }
+}
+
 async function importBackup(event) {
   if (_isRestoring) return UI.showNotification('A restore operation is already in progress.', 'warn');
 
@@ -2213,146 +2540,18 @@ async function importBackup(event) {
     try {
       const backupData = JSON.parse(e.target.result);
 
-      const validationError = validateBackup(backupData);
-      if (validationError) return UI.showNotification(validationError, 'error');
-
       const tableList = Object.keys(backupData.tables);
-
       if (!await UI.confirm(`Restore data from ${tableList.length} tables? Existing records with matching IDs will be OVERWRITTEN.`, 'Critical System Restore')) {
           event.target.value = '';
           return;
       }
 
-      _isRestoring = true;
-      sessionStorage.setItem('migrationMode', 'true');
-      UI.showLoading('mgt-area', 'Initializing restoration...');
-
-      // Capture current admin credentials to prevent self-deauthentication during restore
-      let currentAdminEmail = null;
-      let currentSessionId = sessionStorage.getItem('sessionId');
-      try {
-          const user = JSON.parse(sessionStorage.getItem('currentUser'));
-          currentAdminEmail = user?.email;
-      } catch (e) {}
-
-      // 1. Pre-Restore Integrity Audit & Auto-Fix
-      let issues = BackupAuditManager.audit(backupData);
-      if (issues.length > 0) {
-          const fixableCount = issues.filter(i => i.isOptional).length;
-          const fatalCount = issues.length - fixableCount;
-
-          let auditMsg = `The backup file has ${issues.length} integrity issues.`;
-          if (fixableCount > 0) auditMsg += `\n\n- ${fixableCount} optional orphans can be auto-fixed (nullified).`;
-          if (fatalCount > 0) auditMsg += `\n- ${fatalCount} fatal issues may cause database errors.`;
-
-          const userChoice = await UI.confirm(auditMsg + '\n\nAttempt auto-fix for optional orphans before restoring?', 'Integrity Audit');
-
-          if (userChoice) {
-              const fixed = BackupAuditManager.sanitizeOrphans(backupData, issues);
-              UI.showNotification(`Auto-fixed ${fixed} orphaned references.`, 'info');
-              // Re-audit after fix
-              issues = BackupAuditManager.audit(backupData);
-          }
-
-          if (issues.some(i => !i.isOptional)) {
-              const proceed = await UI.confirm('Remaining fatal issues found. Database errors are likely. Proceed anyway?', 'Warning');
-              if (!proceed) throw new Error('Restore cancelled by user.');
-          }
-      }
-
-      // 2. Perform Restore using strictly ordered tables from BACKUP_CONFIG
-      const sortedConfigs = BACKUP_CONFIG.tables.filter(config => tableList.includes(config.name));
-      const totalSteps = sortedConfigs.length;
-
-      for (let step = 0; step < totalSteps; step++) {
-          const config = sortedConfigs[step];
-          const table = config.name;
-          const records = backupData.tables[table] || [];
-
-          if (records.length === 0) continue;
-
-          UI.showLoading('mgt-area', `Restoring table [${step+1}/${totalSteps}]: ${table} (${records.length} records)...`);
-
-          // 2.1 Multi-pass logic for self-referencing tables (e.g. discussions)
-          const hasSelfDep = config.dependencies?.some(d => d.self);
-
-          const processBatch = async (batchRecords) => {
-              const batch = batchRecords.map(r => {
-                  const sanitized = SupabaseDB._sanitizePayload(r, table);
-
-                  // Authentication Preservation Logic:
-                  // If we are restoring the current admin's record, we MUST preserve their
-                  // active session and role to prevent the restoration process from cutting
-                  // off its own access.
-                  if (table === 'users' && sanitized.email === currentAdminEmail) {
-                      sanitized.role = 'admin'; // Force admin role
-                      sanitized.active = true;
-                      sanitized.flagged = false;
-                  }
-                  if (table === 'user_secrets' && sanitized.email === currentAdminEmail && currentSessionId) {
-                      sanitized.session_id = currentSessionId;
-                  }
-
-                  // Critical logic for updating existing records correctly:
-                  // If onConflict is NOT 'id' (meaning we match by natural key like email),
-                  // we remove the surrogate 'id' to prevent UniqueViolation during restoration
-                  // when a record with the same natural key already exists but with a different UUID.
-                  // Note: This is safe because relationships in this schema are either email-based
-                  // (for users) or reference parent IDs that are preserved (courses, assignments, etc.).
-                  if (config.onConflict !== 'id' && Object.prototype.hasOwnProperty.call(sanitized, 'id')) {
-                      delete sanitized.id;
-                  }
-                  return sanitized;
-              });
-              const { error } = await supabaseClient
-                  .from(table)
-                  .upsert(batch, { onConflict: config.onConflict });
-
-              if (error) {
-                  const firstId = batch[0].id || batch[0].email || batch[0].student_email || batch[0].user_email || 'unknown';
-                  console.error(`Restore failed at table "${table}":`, error);
-                  throw new Error(`[Table: ${table}] [Record identifier: ${firstId}] ${error.message} (Code: ${error.code})`);
-              }
-          };
-
-          const batchSize = 100;
-
-          if (hasSelfDep) {
-              console.log(`Using two-pass restore for self-referencing table: ${table}`);
-              const selfFields = config.dependencies.filter(d => d.self).map(d => d.field);
-
-              // Pass 1: Restore with self-references nullified
-              for (let i = 0; i < records.length; i += batchSize) {
-                  const batch = records.slice(i, i + batchSize).map(r => {
-                      const temp = { ...r };
-                      selfFields.forEach(f => temp[f] = null);
-                      return temp;
-                  });
-                  await processBatch(batch);
-              }
-              // Pass 2: Restore with real self-references
-              for (let i = 0; i < records.length; i += batchSize) {
-                  const batch = records.slice(i, i + batchSize);
-                  await processBatch(batch);
-              }
-          } else {
-              // Regular single pass restore
-              for (let i = 0; i < records.length; i += batchSize) {
-                  const batch = records.slice(i, i + batchSize);
-                  await processBatch(batch);
-              }
-          }
-      }
-
-      UI.showNotification('System Restore completed successfully.', 'success');
-      renderManagement();
+      await performRestoreOperation(backupData);
     } catch (err) {
       console.error('Restore failed:', err);
+      // addMgtLog is already called inside performRestoreOperation catch block
       UI.showNotification('Restoration Failed: ' + err.message, 'error');
     } finally {
-      _isRestoring = false;
-      sessionStorage.removeItem('migrationMode');
-      UI.hideLoading('mgt-area');
       event.target.value = '';
     }
   };
@@ -2740,6 +2939,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (user) {
     initNav();
     NotificationManager.init();
+    runAutomatedTasks();
     NotificationManager.initRealtimeSubscriptions(user.email, 'admin', () => {
         const activeEl = document.activeElement;
         const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT');

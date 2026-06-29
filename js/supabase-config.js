@@ -2050,6 +2050,24 @@ class SupabaseDB {
         return data.publicUrl;
     }
 
+    /**
+     * Lists files in a storage bucket path.
+     */
+    static async listFiles(bucket, path = '', options = {}) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient.storage
+                .from(bucket)
+                .list(path, {
+                    limit: 100,
+                    offset: 0,
+                    sortBy: { column: 'created_at', order: 'desc' },
+                    ...options
+                });
+            if (error) throw error;
+            return data || [];
+        });
+    }
+
     static async deleteFile(bucket, path) {
         const { error } = await supabaseClient.storage
             .from(bucket)
@@ -2072,6 +2090,19 @@ class SupabaseDB {
         } catch (e) {
             console.warn('Failed to parse and delete file from URL:', url, e);
         }
+    }
+
+    /**
+     * Downloads a file from a storage bucket as a Blob.
+     */
+    static async downloadFile(bucket, path) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient.storage
+                .from(bucket)
+                .download(path);
+            if (error) throw error;
+            return data;
+        });
     }
 }
 
