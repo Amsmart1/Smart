@@ -554,6 +554,34 @@ const UI = {
         document.body.appendChild(backdrop);
     },
 
+    showModal(title, html, options = {}) {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal-backdrop';
+        backdrop.style.display = 'flex';
+        backdrop.style.zIndex = '1000';
+
+        const { maxWidth = '600px' } = options;
+
+        backdrop.innerHTML = `
+            <div class="modal" style="width:95%; max-width:${maxWidth}; max-height:90vh; display:flex; flex-direction:column">
+                <div class="flex-between mb-20">
+                    <h3 class="m-0">${escapeHtml(title)}</h3>
+                    <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+                </div>
+                <div style="flex:1; overflow-y:auto">
+                    ${html}
+                </div>
+            </div>
+        `;
+
+        backdrop.onclick = (e) => {
+            if (e.target === backdrop) backdrop.remove();
+        };
+
+        document.body.appendChild(backdrop);
+        return backdrop;
+    },
+
     renderHelp(containerId, role) {
         const container = document.getElementById(containerId);
         if (!container) return;
@@ -1963,6 +1991,8 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     const renderThread = (parentId = null, depth = 0) => {
         return discussions.filter(d => d.parent_id === parentId).map(d => {
             const isMine = d.user_email === currentUserEmail;
+            const canDelete = isMine || options.isTeacher;
+
             return `
                 <div class="question mb-10 discussion-post" style="margin-left:${depth * 20}px" id="disc-${d.id}" data-id="${d.id}">
                     <div class="flex-between" style="align-items:start">
@@ -1979,7 +2009,9 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                             <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'reply', '${d.id}')">Reply</button>
                             ${isMine ? `
                                 <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'edit', '${d.id}')">Edit</button>
-                                <button class="button danger tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'delete', '${d.id}')">Delete</button>
+                            ` : ''}
+                            ${canDelete ? `
+                                <button class="button danger tiny" id="del-disc-${d.id}" onclick="UI._dispatchDiscussionAction('${containerId}', 'delete', '${d.id}')">Delete</button>
                             ` : ''}
                         </div>
                     </div>
@@ -1999,7 +2031,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
             </div>
             <div class="flex-column gap-10">
                 <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0"></textarea>
-                <button class="button w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
+                <button class="button w-auto" id="post-main-btn" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
             </div>
         </div>
     `;
@@ -2046,7 +2078,7 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
             <div class="flex-column gap-10 mt-10">
                 <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10"></textarea>
                 <div class="flex gap-10">
-                    <button class="button small w-auto" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
+                    <button class="button small w-auto" id="post-reply-${id}" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
                     <button class="button secondary small w-auto" onclick="this.parentElement.parentElement.remove()">Cancel</button>
                 </div>
             </div>
@@ -2554,24 +2586,38 @@ const DiscussionManager = {
                     }
                 },
                 onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
-                    const { data: disc } = await SupabaseDB.getDiscussions(courseId);
-                    const existing = disc.find(d => d.id === id);
-                    if (!existing) return false;
-                    await SupabaseDB.saveDiscussion({ ...existing, content });
-                    DiscussionManager.render(containerId, courseId);
-                    return true;
+                    try {
+                        const existing = await SupabaseDB.getDiscussion(id);
+                        if (!existing) return false;
+                        await SupabaseDB.saveDiscussion({ ...existing, content });
+                        DiscussionManager.render(containerId, courseId);
+                        return true;
+                    } catch (e) {
+                        UI.showNotification('Error updating: ' + e.message, 'error');
+                        return false;
+                    }
                 }),
                 onDelete: (id) => DiscussionManager.delete(id, () => DiscussionManager.render(containerId, courseId)),
                 onViewDetails: async (id) => {
-                    const views = await SupabaseDB.getDiscussionViews(id);
-                    const list = views.map(v => `
-                        <div class="flex-between py-5 border-bottom">
-                            <span>${escapeHtml(v.users?.full_name || 'N/A')} <small class="text-muted">(${escapeHtml(v.user_email)})</small></span>
-                            <small class="text-muted">${new Date(v.viewed_at).toLocaleString()}</small>
-                        </div>
-                    `).join('') || '<div class="empty">No views recorded yet.</div>';
+                    try {
+                        const views = await SupabaseDB.getDiscussionViews(id);
+                        const list = views.map(v => `
+                            <div class="flex-between py-10 border-bottom">
+                                <div>
+                                    <div class="bold small">${escapeHtml(v.users?.full_name || 'N/A')}</div>
+                                    <div class="tiny text-muted">${escapeHtml(v.user_email)}</div>
+                                </div>
+                                <div class="text-right">
+                                    <div class="tiny text-muted">${new Date(v.viewed_at).toLocaleDateString()}</div>
+                                    <div class="tiny text-muted">${new Date(v.viewed_at).toLocaleTimeString()}</div>
+                                </div>
+                            </div>
+                        `).join('') || '<div class="empty">No views recorded yet.</div>';
 
-                    UI.showModal('Post Views', `<div style="max-height:400px; overflow-y:auto">${list}</div>`);
+                        UI.showModal('Viewed by Students', `<div class="p-10" style="max-height:400px; overflow-y:auto">${list}</div>`);
+                    } catch (e) {
+                        UI.showNotification('Error loading views: ' + e.message, 'error');
+                    }
                 }
             });
         } catch (e) {
@@ -2587,6 +2633,14 @@ const DiscussionManager = {
 
     async post(courseId, content, parentId = null) {
         if (!content) return;
+
+        const btnId = parentId ? `post-reply-${parentId}` : 'post-main-btn';
+        const btn = document.getElementById(btnId);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Posting...';
+        }
+
         const user = await SessionManager.getCurrentUser();
         try {
             await SupabaseDB.saveDiscussion({
@@ -2600,6 +2654,10 @@ const DiscussionManager = {
             return true;
         } catch (e) {
             UI.showNotification('Error posting message: ' + e.message, 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = parentId ? 'Reply' : 'Post';
+            }
             return false;
         }
     },
@@ -2646,12 +2704,23 @@ const DiscussionManager = {
 
     async delete(id, onDelete) {
         if (!await UI.confirm('Delete this message?', 'Delete Discussion')) return;
+
+        const btn = document.getElementById(`del-disc-${id}`);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Deleting...';
+        }
+
         try {
             await SupabaseDB.deleteDiscussion(id);
             if (onDelete) onDelete();
             return true;
         } catch (e) {
             UI.showNotification('Error deleting: ' + e.message, 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Delete';
+            }
             return false;
         }
     }

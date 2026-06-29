@@ -1057,6 +1057,18 @@ class SupabaseDB {
     }
 
     // Discussion operations
+    static async getDiscussion(id) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient
+                .from('discussions')
+                .select('*, users(full_name)')
+                .eq('id', id)
+                .single();
+            if (error) throw error;
+            return data;
+        });
+    }
+
     static async getDiscussions(courseId, options = {}) {
         return this._request(async () => {
             const { data, count, error } = await supabaseClient
