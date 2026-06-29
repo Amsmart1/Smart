@@ -1073,7 +1073,7 @@ class SupabaseDB {
         return this._request(async () => {
             const { data, count, error } = await supabaseClient
                 .from('discussions')
-                .select('*, discussion_views(count)', { count: 'exact' })
+                .select('*, users!user_email(full_name), discussion_views(count)', { count: 'exact' })
                 .eq('course_id', courseId)
                 .order('created_at', { ascending: true });
             if (error) throw error;
@@ -1107,7 +1107,7 @@ class SupabaseDB {
         return this._request(async () => {
             const { data, error } = await supabaseClient
                 .from('discussion_views')
-                .select('user_email, viewed_at, users(full_name)')
+                .select('user_email, viewed_at, users!user_email(full_name)')
                 .eq('discussion_id', discussionId)
                 .order('viewed_at', { ascending: false });
             if (error) throw error;

@@ -1981,7 +1981,6 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     if (!container) return;
 
     const {
-        onReply = (parentId) => {},
         onEdit = (id) => {},
         onDelete = (id) => {},
         onPost = (content, parentId) => {},
@@ -1997,7 +1996,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                 <div class="question mb-10 discussion-post" style="margin-left:${depth * 20}px" id="disc-${d.id}" data-id="${d.id}">
                     <div class="flex-between" style="align-items:start">
                         <div class="small">
-                            <strong>${escapeHtml(d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}
+                            <strong>${escapeHtml(d.users?.full_name || d.user_email)}</strong> - ${new Date(d.created_at).toLocaleString()}
                             <div class="mt-5">
                                 <span class="badge secondary tiny">Views: ${d.view_count || 0}</span>
                                 ${isMine || (options.isTeacher) ? `
@@ -2015,7 +2014,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                             ` : ''}
                         </div>
                     </div>
-                    <div class="mt-5 disc-content">${UI.renderRichText(d.content)}</div>
+                    <div class="mt-5 disc-content" data-raw="${escapeHtml(d.content)}">${UI.renderRichText(d.content)}</div>
                     <div id="reply-area-${d.id}"></div>
                     ${renderThread(d.id, depth + 1)}
                 </div>
@@ -2085,8 +2084,13 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
         `;
     } else if (action === 'post') {
         const inputId = id ? `replyInput-${id}` : 'discInputMain';
-        const content = document.getElementById(inputId).value;
-        if (content) opts.onPost(content, id);
+        const input = document.getElementById(inputId);
+        const content = input?.value?.trim();
+        if (content) {
+            opts.onPost(content, id);
+        } else {
+            UI.showNotification('Please enter a message.', 'warn');
+        }
     } else if (action === 'edit') {
         opts.onEdit(id);
     } else if (action === 'delete') {
@@ -2580,24 +2584,9 @@ const DiscussionManager = {
 
             UI.renderDiscussion('discussionContent', discussions, user.email, {
                 isTeacher,
-                onPost: async (content, parentId) => {
-                    if (await DiscussionManager.post(courseId, content, parentId)) {
-                        DiscussionManager.render(containerId, courseId);
-                    }
-                },
-                onEdit: (id) => DiscussionManager.edit(id, async (id, content) => {
-                    try {
-                        const existing = await SupabaseDB.getDiscussion(id);
-                        if (!existing) return false;
-                        await SupabaseDB.saveDiscussion({ ...existing, content });
-                        DiscussionManager.render(containerId, courseId);
-                        return true;
-                    } catch (e) {
-                        UI.showNotification('Error updating: ' + e.message, 'error');
-                        return false;
-                    }
-                }),
-                onDelete: (id) => DiscussionManager.delete(id, () => DiscussionManager.render(containerId, courseId)),
+                onPost: (content, parentId) => DiscussionManager.post(containerId, courseId, content, parentId),
+                onEdit: (id) => DiscussionManager.edit(containerId, courseId, id),
+                onDelete: (id) => DiscussionManager.delete(containerId, courseId, id),
                 onViewDetails: async (id) => {
                     try {
                         const views = await SupabaseDB.getDiscussionViews(id);
@@ -2605,7 +2594,6 @@ const DiscussionManager = {
                             <div class="flex-between py-10 border-bottom">
                                 <div>
                                     <div class="bold small">${escapeHtml(v.users?.full_name || 'N/A')}</div>
-                                    <div class="tiny text-muted">${escapeHtml(v.user_email)}</div>
                                 </div>
                                 <div class="text-right">
                                     <div class="tiny text-muted">${new Date(v.viewed_at).toLocaleDateString()}</div>
@@ -2631,7 +2619,7 @@ const DiscussionManager = {
         }
     },
 
-    async post(courseId, content, parentId = null) {
+    async post(containerId, courseId, content, parentId = null) {
         if (!content) return;
 
         const btnId = parentId ? `post-reply-${parentId}` : 'post-main-btn';
@@ -2651,7 +2639,7 @@ const DiscussionManager = {
                 parent_id: parentId,
                 created_at: new Date().toISOString()
             });
-            return true;
+            return this.render(containerId, courseId);
         } catch (e) {
             UI.showNotification('Error posting message: ' + e.message, 'error');
             if (btn) {
@@ -2662,14 +2650,15 @@ const DiscussionManager = {
         }
     },
 
-    async edit(id, onSave) {
+    async edit(containerId, courseId, id) {
         const div = document.getElementById(`disc-${id}`);
         if (!div) return;
         const contentDiv = div.querySelector('.disc-content');
-        const current = contentDiv.innerHTML;
+        const currentHTML = contentDiv.innerHTML;
+        const raw = contentDiv.getAttribute('data-raw') || UI.htmlToPlainText(currentHTML);
 
         contentDiv.innerHTML = `
-            <textarea id="edit-disc-input-${id}" class="input mt-10">${UI.htmlToPlainText(current)}</textarea>
+            <textarea id="edit-disc-input-${id}" class="input mt-10">${escapeHtml(raw)}</textarea>
             <div class="flex gap-10 mt-10">
                 <button class="button small" id="save-disc-${id}">Save</button>
                 <button class="button secondary small" id="cancel-disc-${id}">Cancel</button>
@@ -2684,12 +2673,10 @@ const DiscussionManager = {
             btn.disabled = true;
             btn.textContent = 'Saving...';
             try {
-                if (await onSave(id, content)) {
-                    // Success handled by caller re-rendering
-                } else {
-                    btn.disabled = false;
-                    btn.textContent = 'Save';
-                }
+                const existing = await SupabaseDB.getDiscussion(id);
+                if (!existing) throw new Error('Post not found');
+                await SupabaseDB.saveDiscussion({ ...existing, content });
+                this.render(containerId, courseId);
             } catch (e) {
                 UI.showNotification('Error updating: ' + e.message, 'error');
                 btn.disabled = false;
@@ -2698,11 +2685,11 @@ const DiscussionManager = {
         };
 
         document.getElementById(`cancel-disc-${id}`).onclick = () => {
-            contentDiv.innerHTML = current;
+            contentDiv.innerHTML = currentHTML;
         };
     },
 
-    async delete(id, onDelete) {
+    async delete(containerId, courseId, id) {
         if (!await UI.confirm('Delete this message?', 'Delete Discussion')) return;
 
         const btn = document.getElementById(`del-disc-${id}`);
@@ -2713,7 +2700,7 @@ const DiscussionManager = {
 
         try {
             await SupabaseDB.deleteDiscussion(id);
-            if (onDelete) onDelete();
+            this.render(containerId, courseId);
             return true;
         } catch (e) {
             UI.showNotification('Error deleting: ' + e.message, 'error');
