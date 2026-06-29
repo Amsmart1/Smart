@@ -2829,6 +2829,21 @@ CREATE POLICY "Discussion Views: Insert" ON discussion_views FOR INSERT WITH CHE
   user_email = get_auth_email()
 );
 
+DROP POLICY IF EXISTS "Discussion Views: Update" ON discussion_views;
+CREATE POLICY "Discussion Views: Update" ON discussion_views FOR UPDATE USING (
+  user_email = get_auth_email()
+);
+
+DROP POLICY IF EXISTS "Discussion Views: Delete" ON discussion_views;
+CREATE POLICY "Discussion Views: Delete" ON discussion_views FOR DELETE USING (
+  is_admin() OR
+  EXISTS (
+    SELECT 1 FROM discussions d
+    JOIN courses c ON d.course_id = c.id
+    WHERE d.id = discussion_views.discussion_id AND c.teacher_email = get_auth_email()
+  )
+);
+
 -- 13. Notifications Table
 DROP POLICY IF EXISTS "Notifications: User Access" ON notifications;
 DROP POLICY IF EXISTS "Notifications: SELECT" ON notifications;
