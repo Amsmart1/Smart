@@ -3010,7 +3010,7 @@ DROP PUBLICATION IF EXISTS supabase_realtime;
 -- 11. Storage Initialization & Policies
 
 INSERT INTO storage.buckets (id, name, public)
-VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true)
+VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true), ('backups', 'backups', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Enable RLS on storage.objects
@@ -3067,4 +3067,10 @@ CREATE POLICY "Certificates: Management" ON storage.objects FOR ALL USING (
 DROP POLICY IF EXISTS "Certificates: Student Read Own" ON storage.objects;
 CREATE POLICY "Certificates: Student Read Own" ON storage.objects FOR SELECT USING (
     bucket_id = 'certificates' AND (storage.foldername(name))[2] = get_auth_email()
+);
+
+-- 11.4 Backups Bucket Policies (Strict Admin-Only)
+DROP POLICY IF EXISTS "Backups: Admin Manage" ON storage.objects;
+CREATE POLICY "Backups: Admin Manage" ON storage.objects FOR ALL USING (
+    bucket_id = 'backups' AND is_admin()
 );
