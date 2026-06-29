@@ -3183,6 +3183,7 @@ function initNav() {
         button.classList.add('active');
         const page = button.dataset.page;
         await StudyTracker.stop();
+        DiscussionManager.cleanup();
         if(page === 'courses') renderCourses();
         else if(page === 'my-courses') renderMyCourses();
         else if(page === 'assignments') renderAssignments();

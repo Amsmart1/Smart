@@ -435,12 +435,23 @@ class SupabaseDB {
     }
 
     static async deleteDiscussion(id) {
-        const { error } = await supabaseClient
-            .from('discussions')
-            .delete()
-            .eq('id', id);
-        if (error) throw error;
-        _cache.invalidate('discussions');
+        try {
+            // We fetch the record first to identify which course cache to invalidate
+            const { data: disc } = await supabaseClient.from('discussions').select('course_id').eq('id', id).maybeSingle();
+
+            const { error } = await supabaseClient
+                .from('discussions')
+                .delete()
+                .eq('id', id);
+            if (error) throw error;
+
+            _cache.invalidate('discussions');
+            _cache.invalidate(`discussion_${id}`);
+            if (disc?.course_id) _cache.invalidate(`discussions_${disc.course_id}`);
+        } catch (e) {
+            console.warn('Cache invalidation during delete failed:', e);
+            throw e;
+        }
     }
 
     static async getUser(email, bypassCache = false) {
@@ -1060,38 +1071,44 @@ class SupabaseDB {
 
     // Discussion operations
     static async getDiscussion(id) {
-        return this._request(async () => {
-            const { data, error } = await supabaseClient
-                .from('discussions')
-                .select('*, users(full_name)')
-                .eq('id', id)
-                .single();
-            if (error) throw error;
-            return data;
+        return _cache.fetch(`discussion_${id}`, async () => {
+            return this._request(async () => {
+                const { data, error } = await supabaseClient
+                    .from('discussions')
+                    .select('*, users!user_email(full_name, role)')
+                    .eq('id', id)
+                    .single();
+                if (error) throw error;
+                return data;
+            });
         });
     }
 
     static async getDiscussions(courseId, options = {}) {
-        return this._request(async () => {
-            const { data, count, error } = await supabaseClient
-                .from('discussions')
-                .select('*, users!user_email(full_name), discussion_views(count)', { count: 'exact' })
-                .eq('course_id', courseId)
-                .order('created_at', { ascending: true });
-            if (error) throw error;
+        return _cache.fetch(`discussions_${courseId}`, async () => {
+            return this._request(async () => {
+                const { data, count, error } = await supabaseClient
+                    .from('discussions')
+                    .select('*, users!user_email(full_name, role), discussion_views(count)', { count: 'exact' })
+                    .eq('course_id', courseId)
+                    .order('created_at', { ascending: true });
+                if (error) throw error;
 
-            const transformed = (data || []).map(d => ({
-                ...d,
-                view_count: d.discussion_views?.[0]?.count || 0
-            }));
+                const transformed = (data || []).map(d => ({
+                    ...d,
+                    view_count: d.discussion_views?.[0]?.count || 0
+                }));
 
-            return { data: transformed, total: count || 0 };
+                return { data: transformed, total: count || 0 };
+            });
         });
     }
 
     static async saveDiscussion(discussion) {
         const data = await this._upsert('discussions', discussion);
         _cache.invalidate('discussions');
+        _cache.invalidate(`discussions_${discussion.course_id}`);
+        if (discussion.id) _cache.invalidate(`discussion_${discussion.id}`);
         return data?.[0];
     }
 
@@ -1101,6 +1118,11 @@ class SupabaseDB {
                 .from('discussion_views')
                 .upsert({ discussion_id: discussionId, user_email: userEmail }, { onConflict: 'discussion_id,user_email' });
             if (error) throw error;
+
+            // Invalidate discussions cache to ensure view counts are updated on next fetch
+            // We fetch the course_id if we want to be specific, or just broad invalidate.
+            // Since views are high-frequency, a broad invalidation of the 'discussions' prefix is safer.
+            _cache.invalidate('discussions');
             return data;
         });
     }
@@ -1109,7 +1131,7 @@ class SupabaseDB {
         return this._request(async () => {
             const { data, error } = await supabaseClient
                 .from('discussion_views')
-                .select('user_email, viewed_at, users!user_email(full_name)')
+                .select('user_email, viewed_at, users!user_email(full_name, role)')
                 .eq('discussion_id', discussionId)
                 .order('viewed_at', { ascending: false });
             if (error) throw error;
@@ -1441,6 +1463,41 @@ class SupabaseDB {
 
     static async invalidateCache(key = null) {
         _cache.invalidate(key);
+    }
+
+    /**
+     * Subscribes to real-time changes for discussions in a specific course.
+     */
+    static subscribeToDiscussions(courseId, callback) {
+        if (!supabaseClient) return null;
+
+        const channelId = `discussions-${courseId}`;
+        const channel = supabaseClient.channel(channelId);
+
+        channel
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'discussions',
+                filter: `course_id=eq.${courseId}`
+            }, (payload) => {
+                _cache.invalidate(`discussions_${courseId}`);
+                if (payload.new?.id) _cache.invalidate(`discussion_${payload.new.id}`);
+                callback(payload);
+            })
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'discussion_views',
+                // Filter by discussion_id is not directly possible here easily because it's many.
+                // We'll broad invalidate discussions for any view change.
+            }, () => {
+                _cache.invalidate(`discussions_${courseId}`);
+                callback({ type: 'view_update' });
+            })
+            .subscribe();
+
+        return channel;
     }
 
     // Certificate operations
