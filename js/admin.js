@@ -66,7 +66,8 @@ async function renderDashboard() {
       quizzes,
       enrollments,
       violations,
-      openTickets
+      openTickets,
+      activeBroadcasts
     ] = await Promise.all([
       SupabaseDB.getCount('users'),
       SupabaseDB.getCount('users', q => q.eq('role', 'student')),
@@ -82,7 +83,8 @@ async function renderDashboard() {
       SupabaseDB.getCount('quizzes'),
       SupabaseDB.getCount('enrollments'),
       SupabaseDB.getCount('violations'),
-      SupabaseDB.getCount('support_tickets', q => q.or('status.eq.open,status.eq.pending'))
+      SupabaseDB.getCount('support_tickets', q => q.or('status.eq.open,status.eq.pending')),
+      SupabaseDB.getCount('broadcasts', q => q.gt('expires_at', new Date().toISOString()))
     ]);
     if (renderId !== window.currentRenderId) return;
     const stats = {
@@ -100,6 +102,7 @@ async function renderDashboard() {
       enrollments,
       violations,
       openTickets,
+      activeBroadcasts,
       maintStatus: isActiveMaintenance(maintenance) ? 'Active' : 'Off'
     };
 
@@ -117,12 +120,18 @@ async function renderDashboard() {
       </div>
       <div class="grid-2 mt-10">
         <textarea id="bcMsg" placeholder="Message content..." rows="2" class="no-margin"></textarea>
-        <div class="flex-column gap-5">
-            <label class="tiny m-0">Expiry (days)</label>
-            <input type="number" id="bcExpiry" value="30" min="1" class="no-margin">
+        <div class="flex-column gap-10">
+            <div>
+                <label class="tiny m-0">Action Link (optional)</label>
+                <input type="text" id="bcLink" placeholder="https://..." class="no-margin">
+            </div>
+            <div>
+                <label class="tiny m-0">Expiry (days)</label>
+                <input type="number" id="bcExpiry" value="30" min="1" class="no-margin">
+            </div>
         </div>
       </div>
-      <button class="button mt-10" onclick="broadcastNotif()">Send Broadcast</button>
+      <button class="button mt-10" id="sendBroadcastBtn" onclick="broadcastNotif()">Send Broadcast</button>
     </div>
 
     <h3 class="mb-15 mt-30">Academic Management & Support</h3>
@@ -133,6 +142,7 @@ async function renderDashboard() {
       </div>
       <div class="stat-card"><h4>Active Courses</h4><div class="value">${escapeHtml(stats.courses)}</div></div>
       <div class="stat-card"><h4>Enrollments</h4><div class="value">${escapeHtml(stats.enrollments)}</div></div>
+      <div class="stat-card"><h4>Active Broadcasts</h4><div class="value">${escapeHtml(stats.activeBroadcasts)}</div></div>
       <div class="stat-card" style="border-left-color: var(--warn)"><h4>Support Tickets</h4><div class="value">${escapeHtml(stats.openTickets)}</div></div>
     </div>
 
@@ -858,6 +868,7 @@ async function broadcastNotif() {
   const title = document.getElementById('bcTitle').value.trim();
   const role = document.getElementById('bcRole').value;
   const msg = document.getElementById('bcMsg').value.trim();
+  const link = document.getElementById('bcLink')?.value.trim() || null;
   const expiryDays = parseInt(document.getElementById('bcExpiry').value) || 30;
 
   const vTitle = Validator.required(title, 'Title');
@@ -866,12 +877,17 @@ async function broadcastNotif() {
   const vMsg = Validator.required(msg, 'Message');
   if (!vMsg.valid) return UI.showNotification(vMsg.message, 'warn');
 
+  const btn = document.getElementById('sendBroadcastBtn');
+  if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+  }
+
   try {
-    // Utilize centralized createBroadcast which leverages the secure SQL RPC
-    // to handle business logic (expiry, role normalization) server-side.
     await SupabaseDB.createBroadcast({
         title,
         message: msg,
+        link: link,
         targetRole: role,
         expiresInDays: expiryDays
     });
@@ -879,12 +895,22 @@ async function broadcastNotif() {
     UI.showNotification(`Broadcast sent successfully.`, 'success');
     document.getElementById('bcTitle').value = '';
     document.getElementById('bcMsg').value = '';
+    if (document.getElementById('bcLink')) document.getElementById('bcLink').value = '';
 
-    // Refresh dashboard if visible to show local broadcast count update
+    // Refresh current view
     if (document.querySelector('[data-page="dashboard"].active')) {
         renderDashboard();
+    } else if (document.querySelector('[data-page="broadcasts"].active')) {
+        renderBroadcasts(_broadcastPage);
     }
-  } catch (e) { UI.showNotification('Broadcast failed: ' + e.message, 'error'); }
+  } catch (e) {
+    UI.showNotification('Broadcast failed: ' + e.message, 'error');
+  } finally {
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Send Broadcast';
+    }
+  }
 }
 
 async function removeSchedule(idx) {
@@ -1105,14 +1131,18 @@ async function revokeInvite(token) {
 }
 window.revokeInvite = revokeInvite;
 
-async function renderBroadcasts() {
+let _broadcastPage = 1;
+async function renderBroadcasts(page = 1) {
   const renderId = ++window.currentRenderId;
+  _broadcastPage = page;
   const content = document.getElementById('pageContent');
   if (!content) return;
 
+  const pageSize = 15;
+
   try {
     if (renderId !== window.currentRenderId) return;
-    const { data: broadcasts, total } = await SupabaseDB.getBroadcasts();
+    const { data: broadcasts, total } = await SupabaseDB.getBroadcasts({ page, pageSize });
     if (renderId !== window.currentRenderId) return;
 
     content.innerHTML = `
@@ -1121,31 +1151,33 @@ async function renderBroadcasts() {
         <h3 class="m-0">Active Broadcasts</h3>
         <button class="button w-auto" onclick="renderDashboard()">+ New Broadcast</button>
       </div>
-      ${broadcasts.length === 0 ? '<p class="empty">No active broadcasts found.</p>' : `
-        <div class="card" style="padding:0; overflow-x:auto">
-          <table>
-            <thead><tr><th>Message</th><th>Target</th><th>Sent At</th><th>Expires</th><th>Action</th></tr></thead>
-            <tbody>
-              ${broadcasts.map(b => `
-                <tr>
-                  <td>
-                    <div class="bold small">${escapeHtml(b.title)}</div>
-                    <div class="tiny text-muted">${escapeHtml(b.message.substring(0, 50))}${b.message.length > 50 ? '...' : ''}</div>
-                  </td>
-                  <td><span class="badge" style="background:#edf2f7; color:#4a5568">${(b.target_role || 'ALL').toUpperCase()}</span></td>
-                  <td><div class="tiny">${new Date(b.created_at).toLocaleString()}</div></td>
-                  <td><div class="tiny">${new Date(b.expires_at).toLocaleString()}</div></td>
-                  <td>
-                    <button class="button danger tiny w-auto" onclick="deleteBroadcast('${escapeAttr(b.id)}')">Delete</button>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      `}
+      <div id="broadcastsTable"></div>
+      <div id="broadcastsPagination"></div>
     </section>
     `;
+
+    UI.renderTable('broadcastsTable', ['Message', 'Link', 'Target', 'Sent At', 'Expires', 'Action'], broadcasts, (b) => {
+        return `
+            <tr>
+              <td>
+                <div class="bold small">${escapeHtml(b.title)}</div>
+                <div class="tiny text-muted">${escapeHtml(b.message.substring(0, 50))}${b.message.length > 50 ? '...' : ''}</div>
+              </td>
+              <td>
+                ${b.link ? `<button class="button secondary tiny w-auto" onclick="window.open('${escapeAttr(b.link)}', '_blank')">View Link</button>` : '<span class="text-muted small">-</span>'}
+              </td>
+              <td><span class="badge" style="background:#edf2f7; color:#4a5568">${(b.target_role || 'ALL').toUpperCase()}</span></td>
+              <td><div class="tiny">${new Date(b.created_at).toLocaleString()}</div></td>
+              <td><div class="tiny">${new Date(b.expires_at).toLocaleString()}</div></td>
+              <td>
+                <button class="button danger tiny w-auto" onclick="deleteBroadcast('${escapeAttr(b.id)}')">Delete</button>
+              </td>
+            </tr>
+        `;
+    });
+
+    UI.renderPagination('broadcastsPagination', total, page, pageSize, (newPage) => renderBroadcasts(newPage));
+
   } catch (error) {
     console.error('Broadcasts error:', error);
     content.innerHTML = `<div class="card danger-border"><h3>Error Loading Broadcasts</h3><p class="small">${escapeHtml(error.message)}</p></div>`;
@@ -1157,12 +1189,20 @@ async function deleteBroadcast(id) {
     try {
         await SupabaseDB.deleteBroadcast(id);
         UI.showNotification('Broadcast deleted.', 'info');
-        renderBroadcasts();
+
+        // Refresh current view and dashboard stats
+        if (document.querySelector('[data-page="broadcasts"].active')) {
+            renderBroadcasts(_broadcastPage);
+        }
+
+        // Always attempt to update badges/stats if possible, but dashboard specifically if active
+        if (document.querySelector('[data-page="dashboard"].active')) {
+            renderDashboard();
+        }
     } catch (e) {
         UI.showNotification('Failed to delete: ' + e.message, 'error');
     }
 }
-window.deleteBroadcast = deleteBroadcast;
 
 let _violationPage = 1;
 async function renderViolations(page = 1) {
