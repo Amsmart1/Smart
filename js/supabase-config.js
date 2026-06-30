@@ -1360,25 +1360,57 @@ class SupabaseDB {
     }
 
     static async getBroadcasts(options = {}) {
-        const { targetRole = null } = options;
-        const cacheKey = targetRole ? `broadcasts_active_${targetRole}` : `broadcasts_active`;
+        const { targetRole = null, page, pageSize } = options;
 
-        return _cache.fetch(cacheKey, async () => {
-            return this._request(async () => {
-                let query = supabaseClient
-                    .from('broadcasts')
-                    .select('*', { count: 'exact' })
-                    .gt('expires_at', new Date().toISOString());
+        // Use cache only for non-paginated requests (standard user notifications)
+        if (!page && !pageSize) {
+            const cacheKey = targetRole ? `broadcasts_active_${targetRole}` : `broadcasts_active`;
+            return _cache.fetch(cacheKey, async () => {
+                return this._request(async () => {
+                    let query = supabaseClient
+                        .from('broadcasts')
+                        .select('*', { count: 'exact' })
+                        .gt('expires_at', new Date().toISOString());
 
-                // Server-side filtering by role for performance and security
-                if (targetRole) {
-                    query = query.or(`target_role.is.null,target_role.eq.${targetRole}`);
-                }
+                    if (targetRole) {
+                        query = query.or(`target_role.is.null,target_role.eq.${targetRole}`);
+                    }
 
-                const { data, count, error } = await query.order('created_at', { ascending: false });
-                if (error) throw error;
-                return { data: data || [], total: count || 0 };
+                    const { data, count, error } = await query.order('created_at', { ascending: false });
+                    if (error) throw error;
+                    return { data: data || [], total: count || 0 };
+                });
             });
+        }
+
+        // Paginated requests (Admin/Management) bypass cache for accuracy
+        return this._request(async () => {
+            let query = supabaseClient
+                .from('broadcasts')
+                .select('*', { count: 'exact' })
+                .gt('expires_at', new Date().toISOString());
+
+            if (targetRole) {
+                query = query.or(`target_role.is.null,target_role.eq.${targetRole}`);
+            }
+
+            return this._getPaginated(query.order('created_at', { ascending: false }), options);
+        });
+    }
+
+    static async deleteBroadcast(id) {
+        return this._request(async () => {
+            const { error } = await supabaseClient
+                .from('broadcasts')
+                .delete()
+                .eq('id', id);
+            if (error) throw error;
+            // Invalidate all potential broadcast cache keys
+            _cache.invalidate('broadcasts_active');
+            _cache.invalidate('broadcasts_active_student');
+            _cache.invalidate('broadcasts_active_teacher');
+            _cache.invalidate('broadcasts_active_admin');
+            return true;
         });
     }
 
@@ -1396,9 +1428,10 @@ class SupabaseDB {
      */
     static async createBroadcast(params) {
         return this._request(async () => {
+            const targetRole = params.targetRole === 'all' ? null : params.targetRole;
             const { error } = await supabaseClient.rpc('create_broadcast', {
                 p_course_id: params.courseId || null,
-                p_target_role: params.targetRole || null,
+                p_target_role: targetRole,
                 p_title: params.title,
                 p_message: params.message,
                 p_link: params.link || null,
@@ -1406,7 +1439,11 @@ class SupabaseDB {
                 p_expires_in: params.expiresInDays ? `${params.expiresInDays} days` : '30 days'
             });
             if (error) throw error;
+            // Invalidate all potential broadcast cache keys
             _cache.invalidate('broadcasts_active');
+            _cache.invalidate('broadcasts_active_student');
+            _cache.invalidate('broadcasts_active_teacher');
+            _cache.invalidate('broadcasts_active_admin');
             return true;
         });
     }
