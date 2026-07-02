@@ -1726,10 +1726,14 @@ function openAntiCheatModal(type) {
         { key: 'MULTI_TAB_LOCK', label: 'Multi-Tab Lock', desc: 'Prevents the assessment from being opened in multiple tabs.', category: 'Environment' },
 
         { key: 'BLOCK_LONG_PRESS', label: 'Block Long Press', desc: 'Prevents long-press actions on touch devices.', category: 'Input' },
-        { key: 'BLOCK_TEXT_SELECTION', label: 'Block Text Selection', desc: 'Disables the ability to highlight/select text.', category: 'Input' }
+        { key: 'BLOCK_TEXT_SELECTION', label: 'Block Text Selection', desc: 'Disables the ability to highlight/select text.', category: 'Input' },
+
+        { key: 'PROCTORING_WEBCAM', label: 'Webcam Monitoring', desc: 'Takes periodic snapshots of the student via webcam.', category: 'Proctoring & AI' },
+        { key: 'PROCTORING_SCREEN', label: 'Screen Recording', desc: 'Captures the student\'s screen during the assessment.', category: 'Proctoring & AI' },
+        { key: 'PROCTORING_FACE_DETECTION', label: 'Face Detection', desc: 'Uses AI to ensure the student stays in front of the camera.', category: 'Proctoring & AI' }
     ];
 
-    const categories = ['Interaction', 'Environment', 'Input'];
+    const categories = ['Interaction', 'Environment', 'Input', 'Proctoring & AI'];
 
     backdrop.innerHTML = `
         <div class="modal" style="max-width: 800px">
@@ -1747,7 +1751,7 @@ function openAntiCheatModal(type) {
                 ${categories.map(cat => `
                     <div class="mb-30">
                         <h4 class="mb-15" style="border-bottom: 2px solid var(--purple-light); padding-bottom: 8px; color: var(--purple); display: flex; align-items: center; gap: 8px">
-                            ${cat === 'Interaction' ? '🖱️' : cat === 'Environment' ? '🌐' : '⌨️'} ${cat} Control
+                            ${cat === 'Interaction' ? '🖱️' : cat === 'Environment' ? '🌐' : cat === 'Input' ? '⌨️' : '🤖'} ${cat}
                         </h4>
                         <div class="grid-2">
                             ${flags.filter(f => f.category === cat).map(f => {

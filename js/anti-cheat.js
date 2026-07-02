@@ -22,6 +22,11 @@
                 BLOCK_DEVTOOLS: false,
                 BLOCK_TAB_SWITCH: false,
 
+                PROCTORING_WEBCAM: false,
+                PROCTORING_SCREEN: false,
+                PROCTORING_FACE_DETECTION: false,
+                PROCTORING_CONFIG: {},
+
                 LONG_PRESS_THRESHOLD: 500,
                 DEVTOOLS_THRESHOLD: 160,
                 BLUR_THRESHOLD: 2000,
@@ -48,6 +53,7 @@
             };
 
             this.longPressTimers = new Map();
+            this.proctor = null;
             this.focusLossTimer = null;
             this.resizeTimeout = null;
             this.tabChannel = null;
@@ -87,8 +93,35 @@
             this.initInputControl();
             this.initVisibilityDetection();
             this.initDevToolsDetection();
+            this.initProctoring();
 
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
+        }
+
+        async initProctoring() {
+            if (!this.config.PROCTORING_WEBCAM && !this.config.PROCTORING_SCREEN) return;
+            if (typeof window.ProctorEngine === 'undefined') return;
+
+            try {
+                this.proctor = new window.ProctorEngine({
+                    attemptId: this.state.assessmentId,
+                    userId: this.state.userEmail,
+                    supabaseUrl: window.supabase_url || null,
+                    supabaseKey: window.supabase_key || null,
+                    webcam: { enabled: this.config.PROCTORING_WEBCAM },
+                    screen: { enabled: this.config.PROCTORING_SCREEN },
+                    faceDetection: { enabled: this.config.PROCTORING_FACE_DETECTION },
+                    ...this.config.PROCTORING_CONFIG,
+                    callbacks: {
+                        onViolation: (v) => this.logViolation(v.type, v.data),
+                    }
+                });
+
+                await this.proctor.start();
+            } catch (e) {
+                console.error('Anti-Cheat: Proctoring failed to start', e);
+                this.logViolation('PROCTORING_FAILURE', { error: e.message });
+            }
         }
 
         logViolation(type, metadata = {}) {
@@ -204,6 +237,17 @@
             };
             this.addGlobalListener(document, 'fullscreenchange', handler);
             this.addGlobalListener(document, 'webkitfullscreenchange', handler);
+
+            this.securityObserver = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                    for (const removedNode of mutation.removedNodes) {
+                        if (removedNode.id === 'anti-cheat-fullscreen-overlay' && !document.fullscreenElement && this.state.isActive) {
+                            this.showFullscreenOverlay();
+                        }
+                    }
+                }
+            });
+            this.securityObserver.observe(document.body, { childList: true });
         }
 
         async enforceFullscreen() {
@@ -362,6 +406,10 @@
                 violated = true; type = 'VIEW_SOURCE_ATTEMPT'; shortcut = 'Ctrl+U';
             } else if (key === 'PrintScreen') {
                 violated = true; type = 'SCREENSHOT_ATTEMPT'; shortcut = 'PrintScreen';
+            } else if (ctrl && key.toUpperCase() === 'P') {
+                violated = true; type = 'PRINT_ATTEMPT'; shortcut = 'Ctrl+P';
+            } else if (alt && key === 'Tab') {
+                violated = true; type = 'TAB_SWITCH_ATTEMPT'; shortcut = 'Alt+Tab';
             }
 
             if (violated) {
@@ -414,6 +462,8 @@
             if (!this.config.BLOCK_TEXT_SELECTION) return;
             const selectors = 'input:not([type="hidden"]), textarea, [contenteditable]';
             const setup = (el) => {
+                if (el._antiCheatSelectionHandler) return;
+                el._antiCheatSelectionHandler = true;
                 el.addEventListener('selectstart', (e) => {
                     e.preventDefault();
                     this.logViolation('TEXT_SELECTION', { target: e.target.tagName });
@@ -422,6 +472,16 @@
                 el.style.webkitUserSelect = 'none';
             };
             document.querySelectorAll(selectors).forEach(setup);
+
+            this.inputObserver = new MutationObserver((mutations) => {
+                mutations.forEach(m => m.addedNodes.forEach(node => {
+                    if (node.nodeType === 1) {
+                        if (node.matches(selectors)) setup(node);
+                        node.querySelectorAll(selectors).forEach(setup);
+                    }
+                }));
+            });
+            this.inputObserver.observe(document.body, { childList: true, subtree: true });
         }
 
         // Visibility
@@ -442,17 +502,33 @@
         // DevTools Detection
         initDevToolsDetection() {
             if (!this.config.BLOCK_DEVTOOLS) return;
-            const check = () => {
+
+            const checkSize = () => {
                 const threshold = this.config.DEVTOOLS_THRESHOLD;
                 if (Math.abs(window.outerWidth - window.innerWidth) > threshold || Math.abs(window.outerHeight - window.innerHeight) > threshold) {
-                    this.logViolation('DEVTOOLS_OPEN', {});
+                    this.logViolation('DEVTOOLS_OPEN', { method: 'resize' });
                 }
             };
+
+            const checkDebugger = () => {
+                const start = performance.now();
+                debugger;
+                if (performance.now() - start > 100) {
+                    this.logViolation('DEVTOOLS_OPEN', { method: 'debugger' });
+                }
+            };
+
             this.addGlobalListener(window, 'resize', () => {
                 if (this.resizeTimeout) clearTimeout(this.resizeTimeout);
-                this.resizeTimeout = setTimeout(check, 500);
+                this.resizeTimeout = setTimeout(checkSize, 500);
             });
-            setTimeout(check, 1000);
+
+            this._devtoolsInterval = setInterval(() => {
+                checkSize();
+                checkDebugger();
+            }, 3000);
+
+            setTimeout(checkSize, 1000);
         }
 
         getViolationSeverity(type) {
@@ -471,7 +547,11 @@
                 'EXIT_FULLSCREEN': 'HIGH',
                 'MULTIPLE_TABS': 'CRITICAL',
                 'LONG_PRESS': 'LOW',
-                'TEXT_SELECTION': 'LOW'
+                'TEXT_SELECTION': 'LOW',
+                'PROCTORING_FAILURE': 'HIGH',
+                'MULTIPLE_FACES': 'HIGH',
+                'PRINT_ATTEMPT': 'MEDIUM',
+                'TAB_SWITCH_ATTEMPT': 'HIGH'
             };
             return weights[type] || 'LOW';
         }
@@ -519,7 +599,16 @@
         destroy() {
             if (!this.state.isActive) return;
 
+            if (this.proctor) {
+                this.proctor.stop();
+                this.proctor = null;
+            }
+
             this.state.isActive = false;
+            if (this._devtoolsInterval) {
+                clearInterval(this._devtoolsInterval);
+                this._devtoolsInterval = null;
+            }
             if (this._tabInterval) {
                 clearInterval(this._tabInterval);
                 this._tabInterval = null;
@@ -531,6 +620,14 @@
             if (this.mutationObserver) {
                 this.mutationObserver.disconnect();
                 this.mutationObserver = null;
+            }
+            if (this.inputObserver) {
+                this.inputObserver.disconnect();
+                this.inputObserver = null;
+            }
+            if (this.securityObserver) {
+                this.securityObserver.disconnect();
+                this.securityObserver = null;
             }
             if (this.focusLossTimer) {
                 clearTimeout(this.focusLossTimer);

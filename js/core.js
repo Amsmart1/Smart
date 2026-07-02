@@ -676,6 +676,13 @@ const UI = {
                             </div>
                         </div>
 
+                    ${s.proctoring && (s.proctoring.snapshots > 0 || s.proctoring.chunks > 0) ? `
+                        <div class="flex gap-10 mt-10 p-8 bg-light border-radius-sm">
+                            ${s.proctoring.snapshots > 0 ? `<div class="tiny text-muted">📸 <strong>${s.proctoring.snapshots}</strong> Snapshots</div>` : ''}
+                            ${s.proctoring.chunks > 0 ? `<div class="tiny text-muted">📹 <strong>${s.proctoring.chunks}</strong> Video Chunks</div>` : ''}
+                        </div>
+                    ` : ''}
+
                         <button class="button secondary small mt-15" onclick="UI._dispatchACViewDetails('${containerId}', '${escapeAttr(s.id)}', '${escapeAttr(s.title)}')">
                             ${isStudent ? 'View Detailed Report' : 'View Affected Students'}
                         </button>

@@ -2092,15 +2092,13 @@ class SupabaseDB {
 
         // PostgREST doesn't support complex aggregation well, so we fetch and aggregate in JS for now
         // This is safe for thousands of records as it's just the violations table
-        const { data, error } = await supabaseClient
-            .from('violations')
-            .select('assessment_id, assessment_type, user_email, type, severity, score')
-            .in('assessment_id', assessmentIds);
-
-        if (error) throw error;
+        const [{ data: violations }, { data: proctorLogs }] = await Promise.all([
+            supabaseClient.from('violations').select('assessment_id, assessment_type, user_email, type, severity, score').in('assessment_id', assessmentIds),
+            supabaseClient.from('proctoring_logs').select('attempt_id, event_type').in('attempt_id', assessmentIds)
+        ]);
 
         const summaryMap = {};
-        (data || []).forEach(v => {
+        (violations || []).forEach(v => {
             const key = v.assessment_id;
             if (!summaryMap[key]) {
                 const assessment = [...(assignsRes.data || []), ...(quizzesRes.data || [])].find(a => a.id === key);
@@ -2111,13 +2109,23 @@ class SupabaseDB {
                     violationCount: 0,
                     studentCount: new Set(),
                     totalScore: 0,
-                    criticalCount: 0
+                    criticalCount: 0,
+                    proctoring: { snapshots: 0, chunks: 0 }
                 };
             }
             summaryMap[key].violationCount++;
             summaryMap[key].studentCount.add(v.user_email);
             summaryMap[key].totalScore += (v.score || 0);
             if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
+        });
+
+        // Add proctoring stats to summary
+        (proctorLogs || []).forEach(log => {
+            const key = log.attempt_id;
+            if (summaryMap[key]) {
+                if (log.event_type === 'snapshot') summaryMap[key].proctoring.snapshots++;
+                if (log.event_type === 'chunk') summaryMap[key].proctoring.chunks++;
+            }
         });
 
         const result = Object.values(summaryMap).map(s => ({

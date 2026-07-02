@@ -505,6 +505,19 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS proctoring_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id VARCHAR(255) NOT NULL,
+  attempt_id UUID NOT NULL,
+  user_id VARCHAR(255) NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
+  event_type VARCHAR(100) NOT NULL,
+  event_data JSONB DEFAULT '{}'::jsonb,
+  elapsed INTEGER,
+  device JSONB DEFAULT '{}'::jsonb,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- 2. Migrations for existing tables (Idempotent)
 
 DO $$
@@ -1666,6 +1679,10 @@ CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
 
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_session ON proctoring_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_attempt ON proctoring_logs(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_user ON proctoring_logs(user_id);
+
 -- Ensure uniqueness for certificates to prevent duplicates
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_unique_single ON certificates (student_email, course_id) WHERE (type = 'single');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_unique_consolidated ON certificates (student_email) WHERE (type = 'consolidated');
@@ -2475,6 +2492,7 @@ BEGIN
     -- Soft limit: Delete read notifications older than 30 days
     DELETE FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE;
     DELETE FROM violations WHERE expires_at < NOW();
+    DELETE FROM proctoring_logs WHERE created_at < v_expired_cutoff;
 
     -- Automatically clear expired password reset requests (24h window)
     UPDATE users
@@ -2543,6 +2561,9 @@ CREATE TRIGGER tr_purge_notifications AFTER INSERT ON notifications FOR EACH STA
 DROP TRIGGER IF EXISTS tr_purge_violations ON violations;
 CREATE TRIGGER tr_purge_violations AFTER INSERT ON violations FOR EACH STATEMENT EXECUTE PROCEDURE purge_expired_records();
 
+DROP TRIGGER IF EXISTS tr_purge_proctoring_logs ON proctoring_logs;
+CREATE TRIGGER tr_purge_proctoring_logs AFTER INSERT ON proctoring_logs FOR EACH STATEMENT EXECUTE PROCEDURE purge_expired_records();
+
 
 CREATE OR REPLACE FUNCTION enroll_in_course(p_course_id UUID, p_student_email VARCHAR, p_enrollment_id VARCHAR DEFAULT NULL)
 RETURNS VOID AS $$
@@ -2590,7 +2611,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -2605,7 +2626,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
     LOOP
         EXECUTE format('DROP POLICY IF EXISTS "Migration: Admin ALL" ON %I', t);
         EXECUTE format('CREATE POLICY "Migration: Admin ALL" ON %I FOR ALL USING (_is_migration_mode())', t);
@@ -2999,6 +3020,14 @@ CREATE POLICY "Support Tickets: Admin Delete" ON support_tickets FOR DELETE USIN
 DROP POLICY IF EXISTS "Support Tickets: Admin Manage" ON support_tickets;
 CREATE POLICY "Support Tickets: Admin Manage" ON support_tickets FOR ALL USING (is_admin());
 
+-- 23. Proctoring Logs Table
+DROP POLICY IF EXISTS "Proctoring: Student Insert Own" ON proctoring_logs;
+CREATE POLICY "Proctoring: Student Insert Own" ON proctoring_logs FOR INSERT WITH CHECK (user_id = get_auth_email());
+DROP POLICY IF EXISTS "Proctoring: Select Access" ON proctoring_logs;
+CREATE POLICY "Proctoring: Select Access" ON proctoring_logs FOR SELECT USING (is_admin() OR user_id = get_auth_email() OR is_teacher());
+DROP POLICY IF EXISTS "Proctoring: Admin Manage" ON proctoring_logs;
+CREATE POLICY "Proctoring: Admin Manage" ON proctoring_logs FOR ALL USING (is_admin());
+
 GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, postgres, service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, postgres, service_role;
 GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, postgres, service_role;
@@ -3010,7 +3039,7 @@ DROP PUBLICATION IF EXISTS supabase_realtime;
 -- 11. Storage Initialization & Policies
 
 INSERT INTO storage.buckets (id, name, public)
-VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true), ('backups', 'backups', false)
+VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true), ('backups', 'backups', false), ('proctoring', 'proctoring', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Enable RLS on storage.objects
@@ -3073,4 +3102,20 @@ CREATE POLICY "Certificates: Student Read Own" ON storage.objects FOR SELECT USI
 DROP POLICY IF EXISTS "Backups: Admin Manage" ON storage.objects;
 CREATE POLICY "Backups: Admin Manage" ON storage.objects FOR ALL USING (
     bucket_id = 'backups' AND is_admin()
+);
+
+-- 11.5 Proctoring Bucket Policies (Student Upload Own, Admin/Teacher Manage)
+DROP POLICY IF EXISTS "Proctoring Storage: Manage" ON storage.objects;
+CREATE POLICY "Proctoring Storage: Manage" ON storage.objects FOR ALL USING (
+    bucket_id = 'proctoring' AND (is_teacher() OR is_admin())
+);
+
+DROP POLICY IF EXISTS "Proctoring Storage: Student Upload Own" ON storage.objects;
+CREATE POLICY "Proctoring Storage: Student Upload Own" ON storage.objects FOR INSERT WITH CHECK (
+    bucket_id = 'proctoring' AND (storage.foldername(name))[2] = get_auth_email()
+);
+
+DROP POLICY IF EXISTS "Proctoring Storage: Student Read Own" ON storage.objects;
+CREATE POLICY "Proctoring Storage: Student Read Own" ON storage.objects FOR SELECT USING (
+    bucket_id = 'proctoring' AND (storage.foldername(name))[2] = get_auth_email()
 );

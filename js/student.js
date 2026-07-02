@@ -699,16 +699,8 @@ async function showAssignmentForm(assignmentId) {
   if (!formWrap) return;
 
   // Initialize Anti-Cheat if configured
-  if (a.anti_cheat_config && Object.values(a.anti_cheat_config).some(v => v === true)) {
-    AntiCheat.init(a.id, 'assignment', user.email, {
-        ...a.anti_cheat_config,
-        callbacks: {
-            onViolation: (v) => {
-                UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
-            }
-        }
-    });
-  }
+  const acConfig = a.anti_cheat_config || {};
+  const needsGesture = acConfig.FULLSCREEN_REQUIRED || acConfig.PROCTORING_WEBCAM || acConfig.PROCTORING_SCREEN;
   const dueDate = new Date(a.due_date);
   const isLate = now > dueDate;
 
@@ -758,7 +750,63 @@ async function showAssignmentForm(assignmentId) {
     </div>
   `;
 
-  const qwrap = formWrap.querySelector(`#qwrap-${a.id}`);
+  if (needsGesture) {
+      const qwrapId = `qwrap-${a.id}`;
+      const qwrap = document.getElementById(qwrapId);
+
+      qwrap.innerHTML = `
+          <div class="flex-center flex-column p-40 text-center" style="max-width: 600px; margin: 0 auto">
+              <div style="font-size: 3rem; margin-bottom: 20px;">🛡️</div>
+              <h3>Security & Proctoring Check</h3>
+              <p class="mb-20 small">This assignment requires enhanced security features.</p>
+              ${(acConfig.PROCTORING_WEBCAM || acConfig.PROCTORING_SCREEN) ?
+                  `<div class="card border-light bg-light p-15 mb-20">
+                      <div class="bold small mb-5">Proctoring Active:</div>
+                      <ul class="tiny text-left m-0" style="padding-left: 20px">
+                          ${acConfig.PROCTORING_WEBCAM ? '<li>Webcam snapshots will be taken periodically.</li>' : ''}
+                          ${acConfig.PROCTORING_SCREEN ? '<li>Your screen will be recorded during the attempt.</li>' : ''}
+                          ${acConfig.PROCTORING_FACE_DETECTION ? '<li>AI face detection is enabled.</li>' : ''}
+                      </ul>
+                  </div>` : ''}
+              <button class="button px-40" id="confirmAssignStartBtn">Secure & Continue</button>
+          </div>
+      `;
+
+      document.getElementById('confirmAssignStartBtn').onclick = async () => {
+          try {
+              await AntiCheat.init(a.id, 'assignment', user.email, {
+                  ...acConfig,
+                  callbacks: {
+                      onViolation: (v) => {
+                          UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                      }
+                  }
+              });
+              renderAssignmentQuestions(a, submission);
+          } catch (e) {
+              UI.showNotification('Security initialization failed: ' + e.message, 'error');
+          }
+      };
+  } else {
+    if (Object.values(acConfig).some(v => v === true)) {
+        AntiCheat.init(a.id, 'assignment', user.email, {
+            ...acConfig,
+            callbacks: {
+                onViolation: (v) => {
+                    UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                }
+            }
+        });
+    }
+    renderAssignmentQuestions(a, submission);
+  }
+}
+
+function renderAssignmentQuestions(a, submission) {
+  const qwrapId = `qwrap-${a.id}`;
+  const qwrap = document.getElementById(qwrapId);
+  if (!qwrap) return;
+  qwrap.innerHTML = '';
   const submissionAnswers = submission?.answers || {};
 
   (a.questions || []).forEach((q, idx) => {
@@ -2510,39 +2558,56 @@ async function startQuiz(quizId) {
     });
 
     // Handle Anti-Cheat initialization with gesture requirement
-    const needsGesture = quiz.anti_cheat_config?.FULLSCREEN_REQUIRED;
+    const acConfig = quiz.anti_cheat_config || {};
+    const needsGesture = acConfig.FULLSCREEN_REQUIRED || acConfig.PROCTORING_WEBCAM || acConfig.PROCTORING_SCREEN;
 
     if (needsGesture) {
         const qContainer = document.getElementById('questionContainer');
+        const proctoringNotice = (acConfig.PROCTORING_WEBCAM || acConfig.PROCTORING_SCREEN) ?
+            `<div class="card border-light bg-light p-15 mb-20">
+                <div class="bold small mb-5">Proctoring Active:</div>
+                <ul class="tiny text-left m-0" style="padding-left: 20px">
+                    ${acConfig.PROCTORING_WEBCAM ? '<li>Webcam snapshots will be taken periodically.</li>' : ''}
+                    ${acConfig.PROCTORING_SCREEN ? '<li>Your screen will be recorded during the attempt.</li>' : ''}
+                    ${acConfig.PROCTORING_FACE_DETECTION ? '<li>AI face detection is enabled.</li>' : ''}
+                </ul>
+            </div>` : '';
+
         qContainer.innerHTML = `
-            <div class="flex-center flex-column p-40 text-center">
+            <div class="flex-center flex-column p-40 text-center" style="max-width: 600px; margin: 0 auto">
                 <div style="font-size: 3rem; margin-bottom: 20px;">🛡️</div>
-                <h3>Security Check Required</h3>
-                <p class="mb-30">This quiz requires <strong>Fullscreen Mode</strong> and other security features. <br> Please click the button below to secure your browser and start the quiz.</p>
-                <button class="button px-40" id="confirmQuizStartBtn">Secure & Start Quiz</button>
+                <h3>Security & Proctoring Check</h3>
+                <p class="mb-20 small">This quiz requires enhanced security features to ensure integrity.</p>
+                ${proctoringNotice}
+                <p class="mb-30 tiny text-muted">By clicking the button below, you agree to the security measures and grant necessary permissions (Camera/Screen) if prompted.</p>
+                <button class="button px-40" id="confirmQuizStartBtn">Grant Permissions & Start</button>
             </div>
         `;
 
-        await new Promise((resolve) => {
+        await new Promise((resolve, reject) => {
             document.getElementById('confirmQuizStartBtn').onclick = async () => {
-                // Initialize Anti-Cheat within the user gesture
-                await AntiCheat.init(quiz.id, 'quiz', user.email, {
-                    ...quiz.anti_cheat_config,
-                    callbacks: {
-                        onViolation: (v) => {
-                            UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                try {
+                    await AntiCheat.init(quiz.id, 'quiz', user.email, {
+                        ...acConfig,
+                        callbacks: {
+                            onViolation: (v) => {
+                                UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                            }
                         }
-                    }
-                });
-                resolve();
+                    });
+                    resolve();
+                } catch (e) {
+                    UI.showNotification('Security initialization failed: ' + e.message, 'error');
+                    reject(e);
+                }
             };
         });
 
         UI.showLoading('questionContainer', 'Starting attempt...');
-    } else if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
+    } else if (Object.values(acConfig).some(v => v === true)) {
       // Initialize other anti-cheat features that don't strictly require a fresh gesture
       AntiCheat.init(quiz.id, 'quiz', user.email, {
-          ...quiz.anti_cheat_config,
+          ...acConfig,
           callbacks: {
               onViolation: (v) => {
                   UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
