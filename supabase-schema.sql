@@ -802,7 +802,7 @@ BEGIN
     -- Migrate quiz_submissions attempt numbers if needed
     -- (Used EXECUTE to ensure it works even if attempt_number was just added)
     EXECUTE '
-    UPDATE quiz_submissions SET attempt_number = NULL WHERE status = ''in-progress'';
+    UPDATE quiz_submissions SET attempt_number = NULL;
     WITH numbered_attempts AS (
         SELECT id, ROW_NUMBER() OVER (PARTITION BY quiz_id, student_email ORDER BY started_at ASC) as row_num
         FROM quiz_submissions
