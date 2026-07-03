@@ -2568,7 +2568,9 @@ async function startQuiz(quizId) {
         StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
     } catch (startErr) {
         // Handle 409 Conflict if an attempt already exists (idempotency fallback)
+        // We re-fetch without cache to ensure we get the latest state from the DB
         if (startErr.code === '23505' || startErr.message?.includes('already exists') || startErr.status === 409) {
+            await SupabaseDB.invalidateCache(`quiz_submissions`);
             const subsRes = await SupabaseDB.getQuizSubmissions(quizId, user.email, null, { status: 'in-progress' });
             if (subsRes.data && subsRes.data.length > 0) {
                 StudentState.currentSubmission = subsRes.data[0];
