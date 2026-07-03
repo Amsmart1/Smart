@@ -904,7 +904,8 @@
         });
 
         // Integration: notify AntiCheatSystem if available
-        this._notifyAntiCheat('SESSION_STARTED');
+        // Removed to prevent circular calls when managed by AntiCheatSystem
+        // this._notifyAntiCheat('SESSION_STARTED');
 
         this.emit('session:started', {
           attemptId: this.config.attemptId,
@@ -973,7 +974,8 @@
       });
 
       // Notify AntiCheat
-      this._notifyAntiCheat('SESSION_ENDED');
+      // Removed to prevent circular calls when managed by AntiCheatSystem
+      // this._notifyAntiCheat('SESSION_ENDED');
 
       const stats = {
         duration,
