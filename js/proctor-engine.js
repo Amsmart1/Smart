@@ -1051,10 +1051,6 @@
           },
         });
 
-        // Integration: notify AntiCheatSystem if available
-        // Removed to prevent circular calls when managed by AntiCheatSystem
-        // this._notifyAntiCheat('SESSION_STARTED');
-
         this.emit('session:started', {
           attemptId: this.config.attemptId,
           sessionId: this.state.sessionId,
@@ -1121,10 +1117,6 @@
         totalSnapshotSize: this.state.totalSnapshotSize,
         totalChunkSize: this.state.totalChunkSize,
       });
-
-      // Notify AntiCheat
-      // Removed to prevent circular calls when managed by AntiCheatSystem
-      // this._notifyAntiCheat('SESSION_ENDED');
 
       const stats = {
         duration,
@@ -2109,49 +2101,6 @@
       this.debug('Network offline, retry queue paused');
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Integration
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Notifies the AntiCheatSystem of session events.
-     * @private
-     * @param {string} eventType
-     */
-    _notifyAntiCheat(eventType) {
-      if (typeof window.AntiCheat === 'undefined') return;
-
-      const data = {
-        attemptId: this.config.attemptId,
-        assessmentType: this.config.userId,
-        sessionId: this.state.sessionId,
-        elapsed: Date.now() - (this.state.startTime || Date.now()),
-      };
-
-      switch (eventType) {
-        case 'SESSION_STARTED':
-          if (typeof window.AntiCheat.init === 'function') {
-            window.AntiCheat.init(this.config.attemptId, 'quiz', this.config.userId, {
-              BLOCK_TAB_SWITCH: true,
-              BLOCK_DEVTOOLS: true,
-              BLOCK_COPY: true,
-              callbacks: {
-                onViolation: (v) => this.injectViolation(v),
-                onBlocked: (type) => this.emit('anticheat:blocked', { type }),
-              },
-            });
-          }
-          break;
-
-        case 'SESSION_ENDED':
-          if (typeof window.AntiCheat.destroy === 'function') {
-            window.AntiCheat.destroy();
-          }
-          break;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     // Cleanup
     // ─────────────────────────────────────────────────────────────────────────
 
