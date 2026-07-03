@@ -700,7 +700,7 @@ async function showAssignmentForm(assignmentId) {
 
   // Initialize Anti-Cheat if configured
   if (a.anti_cheat_config && Object.values(a.anti_cheat_config).some(v => v === true)) {
-    AntiCheat.init(a.id, 'assignment', user.email, {
+    await AntiCheat.init(a.id, 'assignment', user.email, {
         ...a.anti_cheat_config,
         callbacks: {
             onViolation: (v) => {
@@ -2510,21 +2510,30 @@ async function startQuiz(quizId) {
     });
 
     // Handle Anti-Cheat initialization with gesture requirement
-    const needsGesture = quiz.anti_cheat_config?.FULLSCREEN_REQUIRED;
+    const ac = quiz.anti_cheat_config || {};
+    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_FACE_DETECTION;
 
     if (needsGesture) {
         const qContainer = document.getElementById('questionContainer');
+        const proctoringNote = (ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN) ?
+            `<p class="small text-muted mt-10">Note: You may be prompted for camera or screen-sharing permissions.</p>` : '';
+
         qContainer.innerHTML = `
             <div class="flex-center flex-column p-40 text-center">
                 <div style="font-size: 3rem; margin-bottom: 20px;">🛡️</div>
                 <h3>Security Check Required</h3>
-                <p class="mb-30">This quiz requires <strong>Fullscreen Mode</strong> and other security features. <br> Please click the button below to secure your browser and start the quiz.</p>
-                <button class="button px-40" id="confirmQuizStartBtn">Secure & Start Quiz</button>
+                <p class="mb-20">This quiz requires <strong>${ac.FULLSCREEN_REQUIRED ? 'Fullscreen Mode' : 'Advanced Proctoring'}</strong> and other security features. <br> Please click the button below to secure your browser and start the quiz.</p>
+                ${proctoringNote}
+                <button class="button px-40 mt-20" id="confirmQuizStartBtn">Secure & Start Quiz</button>
             </div>
         `;
 
         await new Promise((resolve) => {
             document.getElementById('confirmQuizStartBtn').onclick = async () => {
+                const btn = document.getElementById('confirmQuizStartBtn');
+                btn.disabled = true;
+                btn.textContent = 'Securing...';
+
                 // Initialize Anti-Cheat within the user gesture
                 await AntiCheat.init(quiz.id, 'quiz', user.email, {
                     ...quiz.anti_cheat_config,
@@ -2541,7 +2550,7 @@ async function startQuiz(quizId) {
         UI.showLoading('questionContainer', 'Starting attempt...');
     } else if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
       // Initialize other anti-cheat features that don't strictly require a fresh gesture
-      AntiCheat.init(quiz.id, 'quiz', user.email, {
+      await AntiCheat.init(quiz.id, 'quiz', user.email, {
           ...quiz.anti_cheat_config,
           callbacks: {
               onViolation: (v) => {
