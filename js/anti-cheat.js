@@ -106,8 +106,8 @@
                 this.proctor = new window.ProctorEngine({
                     attemptId: this.state.assessmentId,
                     userId: this.state.userEmail,
-                    supabaseUrl: window.supabase_url || null,
-                    supabaseKey: window.supabase_key || null,
+                    supabaseUrl: typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : null,
+                    supabaseKey: typeof SUPABASE_ANON_KEY !== 'undefined' ? SUPABASE_ANON_KEY : null,
                     webcam: { enabled: this.config.PROCTORING_WEBCAM },
                     screen: { enabled: this.config.PROCTORING_SCREEN },
                     faceDetection: { enabled: this.config.PROCTORING_FACE_DETECTION },

@@ -26,6 +26,7 @@
     blobUrls: true,
     broadcastChannel: !!window.BroadcastChannel,
     intersectionObserver: !!window.IntersectionObserver,
+    offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
   };
 
   /**
@@ -174,11 +175,13 @@
       switch (msg.type) {
         case 'compress': {
           try {
-            var canvas = new OffscreenCanvas(msg.width || msg.image.width, msg.height || msg.image.height);
+            var canvas = new OffscreenCanvas(msg.width, msg.height);
             var ctx = canvas.getContext('2d');
             ctx.drawImage(msg.image, 0, 0);
             canvas.convertToBlob({ type: msg.mimeType || 'image/jpeg', quality: msg.quality || 0.7 })
-              .then(function (blob) { self.postMessage({ id: msg.id, success: true, blob: blob }, [blob]); })
+              .then(function (blob) {
+                self.postMessage({ id: msg.id, success: true, blob: blob }, [blob]);
+              })
               .catch(function (err) { self.postMessage({ id: msg.id, success: false, error: err.message }); });
           } catch (err) {
             self.postMessage({ id: msg.id, success: false, error: err.message });
@@ -249,14 +252,17 @@
       if (this.paused || this.processingCount >= this.engine.config.upload.maxConcurrent) return;
       const item = this.queue.find(i => !this.activeIds.has(i.id));
       if (!item) return;
+
       this.activeIds.add(item.id);
       this.processingCount++;
       item.attempts++;
       item.lastAttempt = Date.now();
+
       try {
         const result = await this._upload(item);
         this.activeIds.delete(item.id);
         this.processingCount--;
+
         if (result.success) {
           this.queue = this.queue.filter(i => i.id !== item.id);
           this.engine.emit('retry:success', { id: item.id, type: item.type, path: result.path });
@@ -281,9 +287,9 @@
       const backoff = Math.min(baseDelay * Math.pow(2, item.attempts - 1), 60000);
       await delay(backoff);
       switch (item.type) {
-        case 'snapshot': return this.engine._doSnapshotUpload(item.path, item.data);
-        case 'chunk': return this.engine._doChunkUpload(item.path, item.data);
-        case 'log': return this.engine._doLogUpload(item.path, item.data);
+        case 'snapshot': return this.engine._doSnapshotUpload(item.path, item.data, item.meta);
+        case 'chunk': return this.engine._doChunkUpload(item.path, item.data, item.meta);
+        case 'log': return this.engine._doLogUpload(item.data);
         default: return { success: false, error: `Unknown type: ${item.type}`, attempts: item.attempts };
       }
     }
@@ -426,8 +432,6 @@
         reconnectAttempts: 0,
       };
       this._snapshotTimer = null;
-      this._connectionCheckTimer = null;
-      this._reconnectTimer = null;
       this._worker = null;
       this._workerPending = new Map();
       this.retryQueue = new RetryQueue(this);
@@ -471,7 +475,6 @@
       this.emit('session:stopping', { duration });
       this._stopSnapshots();
       this.faceDetector.stop();
-      this._stopConnectionMonitor();
       await this._finalizeScreenRecording();
       this._stopStreams();
       this._destroyWorker();
@@ -491,7 +494,7 @@
       const event = {
         sessionId: this.state.sessionId,
         attemptId: this.config.attemptId,
-        user_id: this.config.userId, // Map to DB field
+        user_id: this.config.userId,
         type: violation.type || 'CUSTOM_VIOLATION',
         source: violation.source || 'integration',
         severity: violation.severity || 'LOW',
@@ -552,11 +555,18 @@
       this.state.screenStream.getVideoTracks()[0].onended = () => this._finalizeScreenRecording();
       this.emit('screen:started', {});
     }
-    _handleRecordingChunk(blob) {
+    async _handleRecordingChunk(blob) {
       const idx = this.state.chunkIndex++;
       const meta = { sessionId: this.state.sessionId, attemptId: this.config.attemptId, userId: this.config.userId, chunkIndex: idx, size: blob.size, timestamp: new Date().toISOString() };
+      this.state.totalChunkSize += blob.size;
       const path = this._storagePath(`chunks/${this.state.sessionId}/chunk-${idx}.webm`);
-      this._uploadBlob(blob, path, 'chunk', meta);
+
+      if (blob.size > this.config.upload.chunkUploadSize) {
+          await this._chunkedBlobUpload(blob, path, 'chunk', meta);
+      } else {
+          await this._uploadBlob(blob, path, 'chunk', meta);
+      }
+      this.emit('chunk:recorded', meta);
     }
     async _finalizeScreenRecording() {
       if (this.state.mediaRecorder?.state !== 'inactive') this.state.mediaRecorder?.stop();
@@ -576,43 +586,181 @@
       const idx = this.state.snapshotIndex++;
       try {
         const blob = await this._compressSnapshot(this._webcamVideo);
+        this.state.totalSnapshotSize += blob.size;
         const meta = { sessionId: this.state.sessionId, attemptId: this.config.attemptId, userId: this.config.userId, snapshotIndex: idx, timestamp: new Date().toISOString() };
         await this._uploadBlob(blob, this._storagePath(`snapshots/${this.state.sessionId}/snap-${idx}.jpg`), 'snapshot', meta);
-      } catch (e) {}
+      } catch (e) {
+          this.emit('snapshot:error', { index: idx, error: e.message });
+      }
     }
     async _compressSnapshot(video) {
+      const { quality, width, height } = this.config.webcam;
+      const vw = width || video.videoWidth;
+      const vh = height || video.videoHeight;
+
+      if (this._worker && FEATURES.offscreenCanvas) {
+          return this._compressInWorker(video, vw, vh, quality);
+      }
+
       const canvas = document.createElement('canvas');
-      canvas.width = this.config.webcam.width || video.videoWidth;
-      canvas.height = this.config.webcam.height || video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      return new Promise(res => canvas.toBlob(res, 'image/jpeg', this.config.webcam.quality));
+      canvas.width = vw; canvas.height = vh;
+      canvas.getContext('2d').drawImage(video, 0, 0, vw, vh);
+      return new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+    }
+
+    _compressInWorker(video, width, height, quality) {
+        return new Promise((resolve, reject) => {
+            const id = uid();
+            const handler = (e) => {
+                if (e.data.id !== id) return;
+                this._worker.removeEventListener('message', handler);
+                if (e.data.success) resolve(e.data.blob);
+                else reject(new Error(e.data.error || 'Worker compression failed'));
+            };
+            this._worker.addEventListener('message', handler);
+            createImageBitmap(video).then(bitmap => {
+                this._worker.postMessage({ id, type: 'compress', image: bitmap, width, height, quality }, [bitmap]);
+            }).catch(e => {
+                this._worker.removeEventListener('message', handler);
+                reject(e);
+            });
+        });
     }
 
     // ── Data ───────────────────────────────────────────────────────────────
-    async _uploadBlob(blob, path, type, meta) {
-      if (!this._sb) return;
-      try {
-        const { error } = await this._sb.storage.from(this.config.upload.storageBucket).upload(path, blob, { upsert: true, contentType: blob.type });
-        if (error) throw error;
-        this.emit('upload:success', { type, path });
-      } catch (e) {
-        this.retryQueue.add({ type, data: blob, path });
-      }
+
+    async _performRawUpload(blob, path) {
+        if (!this._sb) return { data: null, error: { message: 'Supabase not initialized' } };
+        return this._sb.storage.from(this.config.upload.storageBucket).upload(path, blob, { upsert: true, contentType: blob.type });
     }
+
+    async _performRawLog(record) {
+        if (!this._sb) return { error: { message: 'Supabase not initialized' } };
+        return this._sb.from(this.config.database.table).insert(record);
+    }
+
+    async _uploadBlob(blob, path, type, meta = {}) {
+      const { data, error } = await this._performRawUpload(blob, path);
+      if (error) {
+        this.retryQueue.add({ type, data: blob, path, meta });
+        return { success: false, error: error.message, attempts: 1 };
+      }
+
+      if (type === 'snapshot' || type === 'chunk') {
+          await this._logEvent(type, meta);
+      }
+
+      this.emit('upload:success', { type, path });
+      return { success: true, path };
+    }
+
+    async _chunkedBlobUpload(blob, path, type, metadata) {
+      const chunkSize = this.config.upload.chunkUploadSize;
+      const totalChunks = Math.ceil(blob.size / chunkSize);
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, blob.size);
+        const chunkBlob = blob.slice(start, end);
+        const chunkPath = path + `.part-${i}`;
+        const res = await this._uploadBlob(chunkBlob, chunkPath, type, { ...metadata, partIndex: i });
+        if (!res.success) return res;
+      }
+      return { success: true, path, chunks: totalChunks };
+    }
+
     async _logEvent(type, data) {
-      if (!this._sb) return;
-      const record = { session_id: this.state.sessionId, attempt_id: this.config.attemptId, user_id: this.config.userId, event_type: type, event_data: data, elapsed: Date.now() - (this.state.startTime || Date.now()), device: this.state.deviceInfo };
-      try {
-        const { error } = await this._sb.from(this.config.database.table).insert(record);
-        if (error) throw error;
-      } catch (e) {
-        this.retryQueue.add({ type: 'log', data: record, path: `logs/${this.state.sessionId}/${type}.json` });
+      const record = {
+          session_id: this.state.sessionId,
+          attempt_id: this.config.attemptId,
+          user_id: this.config.userId,
+          event_type: type,
+          event_data: data,
+          elapsed: Date.now() - (this.state.startTime || Date.now()),
+          device: this.state.deviceInfo,
+          timestamp: new Date().toISOString()
+      };
+      const { error } = await this._performRawLog(record);
+      if (error) {
+        this.retryQueue.add({ type: 'log', data: record });
+        this.emit('log:error', { type, error: error.message });
+      } else {
+        this.emit('log:success', { type });
       }
     }
-    async _initSupabase() {
-      if (!this.config.supabaseUrl) return;
-      if (window.supabase) this._sb = window.supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey);
+
+    async _doSnapshotUpload(path, blob, meta) {
+        const { error } = await this._performRawUpload(blob, path);
+        if (error) return { success: false, error: error.message, attempts: 1 };
+        await this._performRawLog({
+            session_id: this.state.sessionId,
+            attempt_id: this.config.attemptId,
+            user_id: this.config.userId,
+            event_type: 'snapshot',
+            event_data: meta,
+            elapsed: Date.now() - (this.state.startTime || Date.now()),
+            device: this.state.deviceInfo,
+            timestamp: new Date().toISOString()
+        });
+        return { success: true, path };
     }
+
+    async _doChunkUpload(path, blob, meta) {
+        const { error } = await this._performRawUpload(blob, path);
+        if (error) return { success: false, error: error.message, attempts: 1 };
+        await this._performRawLog({
+            session_id: this.state.sessionId,
+            attempt_id: this.config.attemptId,
+            user_id: this.config.userId,
+            event_type: 'chunk',
+            event_data: meta,
+            elapsed: Date.now() - (this.state.startTime || Date.now()),
+            device: this.state.deviceInfo,
+            timestamp: new Date().toISOString()
+        });
+        return { success: true, path };
+    }
+
+    async _doLogUpload(record) {
+        const { error } = await this._performRawLog(record);
+        if (error) return { success: false, error: error.message, attempts: 1 };
+        return { success: true };
+    }
+
+    async _initSupabase() {
+      if (!this.config.supabaseUrl || !this.config.supabaseKey) return;
+      if (window.supabase) {
+        this._sb = window.supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey);
+      } else {
+        this._sb = {
+            storage: {
+                from: (bucket) => ({
+                    upload: async (path, blob, opts = {}) => {
+                        const res = await fetch(`${this.config.supabaseUrl}/storage/v1/object/${bucket}/${path}`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${this.config.supabaseKey}`, 'x-upsert': opts.upsert ? 'true' : 'false', 'Content-Type': opts.contentType || blob.type },
+                            body: blob
+                        });
+                        if (!res.ok) return { data: null, error: { message: 'REST Upload Failed' } };
+                        return { data: { path }, error: null };
+                    },
+                    getPublicUrl: (path) => ({ publicUrl: `${this.config.supabaseUrl}/storage/v1/object/public/${bucket}/${path}` })
+                })
+            },
+            from: (table) => ({
+                insert: async (record) => {
+                    const res = await fetch(`${this.config.supabaseUrl}/rest/v1/${table}`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${this.config.supabaseKey}`, 'apikey': this.config.supabaseKey, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+                        body: JSON.stringify(record)
+                    });
+                    if (!res.ok) return { data: null, error: { message: 'REST Insert Failed' } };
+                    return { data: record, error: null };
+                }
+            })
+        };
+      }
+    }
+
     _storagePath(rel) { return `${this.config.upload.storagePath}/${this.config.userId}/${this.config.attemptId}/${rel}`; }
 
     _startConnectionMonitor() {
@@ -635,14 +783,54 @@
       this._stopSnapshots();
       this.state.webcamStream?.getTracks().forEach(t => t.stop());
       this.state.screenStream?.getTracks().forEach(t => t.stop());
-      if (this._worker) this._worker.terminate();
+      this._destroyWorker();
     }
 
-    _initWorker() { try { this._worker = createInlineWorker(workerScript); } catch (e) {} }
-    _destroyWorker() { if (this._worker) this._worker.terminate(); }
-    _saveLocalLogs() {}
-    _checkBrowserSupport() { if (!navigator.mediaDevices?.getUserMedia) throw new Error('No MediaDevices'); }
-    _getDeviceInfo() { return { browser: navigator.userAgent, os: navigator.platform }; }
+    _initWorker() {
+        if (!FEATURES.workers) return;
+        try {
+            this._worker = createInlineWorker(workerScript);
+            this._worker.onmessage = (e) => {
+                if (e.data.type === 'pong') return;
+                const pending = this._workerPending.get(e.data.id);
+                if (pending) { pending(e.data); this._workerPending.delete(e.data.id); }
+            };
+        } catch (e) { this.debug('Worker init failed', e); }
+    }
+    _destroyWorker() { if (this._worker) { this._worker.terminate(); this._worker = null; } }
+
+    _saveLocalLogs(stats) {
+        try {
+            const logs = { engine: 'ProctorEngine', sessionId: this.state.sessionId, attemptId: this.config.attemptId, userId: this.config.userId, stats, deviceInfo: this.state.deviceInfo };
+            const blob = new Blob([safeSerialize(logs)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `proctor-log-${this.state.sessionId}.json`;
+            if (this.config.debug) a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {}
+    }
+
+    _checkBrowserSupport() {
+        const missing = [];
+        if (!FEATURES.getDisplayMedia) missing.push('getDisplayMedia');
+        if (!navigator.mediaDevices?.getUserMedia) missing.push('getUserMedia');
+        if (missing.length > 0) throw new Error('Missing features: ' + missing.join(', '));
+    }
+
+    _getDeviceInfo() {
+        return {
+            browser: navigator.userAgent,
+            os: navigator.userAgentData?.platform || navigator.platform || 'Unknown',
+            screen: { w: screen.width, h: screen.height },
+            memory: navigator.deviceMemory,
+            cores: navigator.hardwareConcurrency,
+            lang: navigator.language,
+            online: navigator.onLine
+        };
+    }
+
     _mergeConfig(b, u) {
       const r = { ...b };
       for (const k in u) {
@@ -652,10 +840,10 @@
       return r;
     }
     debug(...a) { if (this.config.debug) console.debug('[Proctor]', ...a); }
-    _doSnapshotUpload(p, d) { return this._uploadBlob(d, p, 'snapshot'); }
-    _doChunkUpload(p, d) { return this._uploadBlob(d, p, 'chunk'); }
-    _doLogUpload(p, d) { return this._logEvent('RETRY_LOG', d).then(() => ({ success: true })); }
-    async _drainRetryQueue() { while (this.retryQueue.getStatus().pending > 0) await delay(1000); }
+    async _drainRetryQueue() {
+        const start = Date.now();
+        while (this.retryQueue.getStatus().pending > 0 && Date.now() - start < 30000) await delay(1000);
+    }
   }
 
   global.ProctorEngine = ProctorEngine;

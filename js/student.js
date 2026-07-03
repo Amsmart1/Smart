@@ -782,7 +782,7 @@ async function showAssignmentForm(assignmentId) {
                       }
                   }
               });
-              renderAssignmentQuestions(a, submission);
+              renderAssignmentQuestions(a, submission, formWrap);
           } catch (e) {
               UI.showNotification('Security initialization failed: ' + e.message, 'error');
           }
@@ -798,11 +798,11 @@ async function showAssignmentForm(assignmentId) {
             }
         });
     }
-    renderAssignmentQuestions(a, submission);
+    renderAssignmentQuestions(a, submission, formWrap);
   }
 }
 
-function renderAssignmentQuestions(a, submission) {
+function renderAssignmentQuestions(a, submission, formWrap) {
   const qwrapId = `qwrap-${a.id}`;
   const qwrap = document.getElementById(qwrapId);
   if (!qwrap) return;
