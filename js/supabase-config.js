@@ -112,8 +112,13 @@ const _cache = {
     },
     invalidate(key) {
         if (key) {
-            delete this.data[key];
-            this.pending.delete(key);
+            // Support prefix invalidation
+            Object.keys(this.data).forEach(k => {
+                if (k.startsWith(key)) delete this.data[k];
+            });
+            this.pending.forEach((_, k) => {
+                if (k.startsWith(key)) this.pending.delete(k);
+            });
         } else {
             this.data = {};
             this.pending.clear();

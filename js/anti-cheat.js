@@ -73,7 +73,7 @@
         }
 
         async init(assessmentId, assessmentType, userEmail, config = {}) {
-            if (this.state.isActive) this.destroy();
+            if (this.state.isActive) await this.destroy();
 
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
@@ -118,6 +118,7 @@
                     supabaseUrl: window.supabaseClient?.supabaseUrl,
                     supabaseKey: window.supabaseClient?.supabaseKey,
                     attemptId: this.state.assessmentId,
+                    courseId: this.state.courseId,
                     userId: this.state.userEmail,
                     debug: this.config.DEBUG,
                     webcam: { enabled: webcam },
@@ -645,11 +646,13 @@
 
             this.state.isActive = false;
 
-            // Stop Proctoring
+            // Stop Proctoring session and streams
             if (this.proctor) {
                 try {
                     await this.proctor.stop();
-                } catch (e) { console.error('Anti-Cheat: Proctor stop failed', e); }
+                } catch (e) {
+                    console.error('Anti-Cheat: Proctor stop failed', e);
+                }
                 this.proctor = null;
             }
 

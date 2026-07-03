@@ -814,6 +814,7 @@ BEGIN
     WHERE quiz_submissions.id = numbered_attempts.id';
 
     -- Removed forced NOT NULL/DEFAULT for attempt_number to allow drafts to have NULL attempts
+    ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP DEFAULT;
 
     -- materials
     ALTER TABLE materials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
@@ -1491,14 +1492,14 @@ DECLARE
     v_attempts_allowed INTEGER;
     v_next_attempt INTEGER;
 BEGIN
-    -- Bypass logic for migration mode during restoration, or if attempt_number is already provided
-    IF _is_migration_mode() OR NEW.attempt_number IS NOT NULL THEN
-        RETURN NEW;
-    END IF;
-
     -- Force attempt_number to NULL if it's in-progress to ensure it doesn't count towards used attempts
     IF (NEW.status = 'in-progress') THEN
         NEW.attempt_number := NULL;
+    END IF;
+
+    -- Bypass logic for migration mode during restoration, or if attempt_number is already provided
+    IF _is_migration_mode() OR NEW.attempt_number IS NOT NULL THEN
+        RETURN NEW;
     END IF;
 
     -- Only allocate attempt number when status transition to 'submitted'
