@@ -101,6 +101,13 @@
    */
 
   /**
+   * @typedef {Object} NoiseDetectionConfig
+   * @property {boolean} [enabled=false] - Enable noise detection
+   * @property {number} [threshold=-50] - Noise threshold in decibels (RMS)
+   * @property {number} [minDuration=1000] - Minimum duration of noise to trigger violation (ms)
+   */
+
+  /**
    * @typedef {Object} RetryQueueItem
    * @property {string} id - Unique queue item ID
    * @property {'snapshot'|'chunk'|'log'|'blob'} type - Upload type
@@ -178,6 +185,12 @@
       interval: 5000,
       minConfidence: 0.5,
       maxFaces: 1,
+    },
+    /** @type {NoiseDetectionConfig} */
+    noiseDetection: {
+      enabled: false,
+      threshold: -50,
+      minDuration: 1000,
     },
     /** @type {string} */
     attemptId: null,
@@ -750,6 +763,129 @@
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
+   * NoiseDetector class.
+   * Monitors real-time audio levels and detects persistent noise violations.
+   */
+  class NoiseDetector {
+    /**
+     * @param {ProctorEngine} engine
+     */
+    constructor(engine) {
+      /** @type {ProctorEngine} */
+      this.engine = engine;
+      /** @type {AudioContext|null} */
+      this.audioCtx = null;
+      /** @type {AnalyserNode|null} */
+      this.analyser = null;
+      /** @type {MediaStreamAudioSourceNode|null} */
+      this.source = null;
+      /** @type {number|null} */
+      this._timer = null;
+      /** @type {boolean} */
+      this._running = false;
+      /** @type {number} */
+      this._noiseStartTime = null;
+    }
+
+    /**
+     * Initialize the noise detector.
+     * @param {MediaStream} stream - The audio stream to monitor
+     * @returns {boolean}
+     */
+    init(stream) {
+      if (!this.engine.config.noiseDetection.enabled || !FEATURES.audioContext) return false;
+      if (!stream || stream.getAudioTracks().length === 0) return false;
+
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new AudioContextClass();
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 2048;
+        this.source = this.audioCtx.createMediaStreamSource(stream);
+        this.source.connect(this.analyser);
+        this.engine.debug('NoiseDetector: Initialized');
+        return true;
+      } catch (e) {
+        this.engine.debug('NoiseDetector: Initialization failed', e);
+        return false;
+      }
+    }
+
+    /**
+     * Start monitoring audio levels.
+     */
+    start() {
+      if (!this.analyser) return;
+      this._running = true;
+      this._noiseStartTime = null;
+      this._tick();
+    }
+
+    /**
+     * Stop monitoring audio levels.
+     */
+    stop() {
+      this._running = false;
+      if (this._timer) { cancelAnimationFrame(this._timer); this._timer = null; }
+      if (this.audioCtx && this.audioCtx.state !== 'closed') {
+        this.audioCtx.close().catch(() => {});
+      }
+    }
+
+    /**
+     * Monitoring tick.
+     * @private
+     */
+    _tick() {
+      if (!this._running) return;
+
+      const bufferLength = this.analyser.frequencyBinCount;
+      const dataArray = new Float32Array(bufferLength);
+      this.analyser.getFloatTimeDomainData(dataArray);
+
+      // Calculate RMS (Root Mean Square) for volume level
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i] * dataArray[i];
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+      const db = 20 * Math.log10(rms || 1e-6); // Avoid log(0)
+
+      const cfg = this.engine.config.noiseDetection;
+      if (db > cfg.threshold) {
+        if (!this._noiseStartTime) {
+          this._noiseStartTime = Date.now();
+        } else if (Date.now() - this._noiseStartTime > cfg.minDuration) {
+          // Persistent noise detected
+          const noiseData = { db: Math.round(db), threshold: cfg.threshold, duration: Date.now() - this._noiseStartTime };
+
+          this.engine.emit('violation', {
+            source: 'proctor',
+            type: 'NOISE_DETECTED',
+            severity: 'MEDIUM',
+            data: noiseData,
+          });
+
+          // Log to proctoring_logs for summary stats
+          this.engine._logEvent('NOISE_DETECTED', {
+            sessionId: this.engine.state.sessionId,
+            attemptId: this.engine.config.attemptId,
+            user_email: this.engine.config.userId,
+            ...noiseData,
+            timestamp: new Date().toISOString()
+          });
+
+          this._noiseStartTime = Date.now(); // Reset to avoid continuous spamming, or handle cooldown
+        }
+      } else {
+        this._noiseStartTime = null;
+      }
+
+      this._timer = requestAnimationFrame(() => this._tick());
+    }
+  }
+
+  /**
    * Main ProctorEngine class.
    *
    * @example
@@ -818,6 +954,9 @@
       /** @type {FaceDetector} */
       this.faceDetector = new FaceDetector(this);
 
+      /** @type {NoiseDetector} */
+      this.noiseDetector = new NoiseDetector(this);
+
       // ── Supabase REST client (no external deps) ─────────────────────────────
       /** @type {Object|null} */
       this._sb = null;
@@ -884,6 +1023,13 @@
           }
         }
 
+        // Initialize noise detection
+        if (this.config.noiseDetection.enabled && this.state.webcamStream) {
+          if (this.noiseDetector.init(this.state.webcamStream)) {
+            this.noiseDetector.start();
+          }
+        }
+
         // Start periodic snapshots
         this._startSnapshots();
 
@@ -946,6 +1092,7 @@
       // Stop all subsystems
       this._stopSnapshots();
       this.faceDetector.stop();
+      this.noiseDetector.stop();
       this._stopConnectionMonitor();
 
       // Finalize screen recording
@@ -1806,10 +1953,18 @@
 
     /**
      * Initializes the Supabase client.
-     * Supports direct Supabase JS SDK or minimal REST API fallback.
+     * Supports using a global client, direct Supabase JS SDK, or minimal REST API fallback.
      * @private
      */
     async _initSupabase() {
+      // Prioritize global window.supabaseClient to avoid multiple GoTrueClient instances
+      // and ensure consistent authentication headers.
+      if (window.supabaseClient) {
+        this._sb = window.supabaseClient;
+        this.debug('Using global window.supabaseClient');
+        return;
+      }
+
       if (!this.config.supabaseUrl || !this.config.supabaseKey) {
         this.debug('Supabase credentials not provided — storage/DB disabled');
         this._sb = null;
@@ -2003,6 +2158,8 @@
      */
     _cleanup() {
       this._stopSnapshots();
+      this.faceDetector.stop();
+      this.noiseDetector.stop();
       this._stopConnectionMonitor();
       this._stopStreams();
       this._destroyWorker();

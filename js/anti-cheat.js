@@ -26,6 +26,7 @@
                 PROCTORING_WEBCAM: false,
                 PROCTORING_SCREEN: false,
                 PROCTORING_FACE_DETECTION: false,
+                PROCTORING_NOISE_DETECTION: false,
 
                 LONG_PRESS_THRESHOLD: 500,
                 DEVTOOLS_THRESHOLD: 160,
@@ -76,6 +77,7 @@
 
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
+            this.state.courseId = config.courseId || null;
             this.state.userEmail = userEmail;
             this.state.startTime = Date.now();
             this.state.isActive = true;
@@ -102,8 +104,9 @@
             const webcam = this.config.PROCTORING_WEBCAM;
             const screen = this.config.PROCTORING_SCREEN;
             const face = this.config.PROCTORING_FACE_DETECTION;
+            const noise = this.config.PROCTORING_NOISE_DETECTION;
 
-            if (!webcam && !screen && !face) return;
+            if (!webcam && !screen && !face && !noise) return;
 
             if (typeof ProctorEngine === 'undefined') {
                 console.error('Anti-Cheat: ProctorEngine not found. Ensure js/proctor-engine.js is loaded.');
@@ -120,6 +123,7 @@
                     webcam: { enabled: webcam },
                     screen: { enabled: screen },
                     faceDetection: { enabled: face },
+                    noiseDetection: { enabled: noise },
                     callbacks: {
                         onViolation: (v) => this.injectViolation(v)
                     }
@@ -155,6 +159,7 @@
                 user_email: this.state.userEmail,
                 assessment_id: this.state.assessmentId,
                 assessment_type: this.state.assessmentType,
+                course_id: this.state.courseId,
                 type,
                 browser: this.state.sessionInfo.browser || 'Unknown',
                 device: this.state.sessionInfo.device || 'Unknown',
@@ -258,7 +263,11 @@
             if (!this.config.FULLSCREEN_REQUIRED || !this.state.isActive) return;
 
             // Don't re-enforce if already in fullscreen
-            if (document.fullscreenElement || document.webkitFullscreenElement) return;
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                const overlay = document.getElementById('anti-cheat-fullscreen-overlay');
+                if (overlay) overlay.remove();
+                return;
+            }
 
             try {
                 const docEl = document.documentElement;
@@ -271,6 +280,8 @@
 
                 if (promise) {
                     await promise;
+                    const overlay = document.getElementById('anti-cheat-fullscreen-overlay');
+                    if (overlay) overlay.remove();
                 }
             } catch (err) {
                 // If it fails, it might need user interaction or permissions
@@ -474,12 +485,20 @@
 
             // Observer for dynamic elements
             this.mutationObserver = new MutationObserver((mutations) => {
-                mutations.forEach(m => m.addedNodes.forEach(node => {
-                    if (node.nodeType === 1) {
-                        if (node.matches(selectors)) setup(node);
-                        node.querySelectorAll(selectors).forEach(setup);
+                mutations.forEach(m => {
+                    // Re-enforce fullscreen if overlay was removed
+                    if (this.config.FULLSCREEN_REQUIRED && this.state.isActive && !document.fullscreenElement) {
+                        const overlay = document.getElementById('anti-cheat-fullscreen-overlay');
+                        if (!overlay) this.showFullscreenOverlay();
                     }
-                }));
+
+                    m.addedNodes.forEach(node => {
+                        if (node.nodeType === 1) {
+                            if (node.matches(selectors)) setup(node);
+                            node.querySelectorAll(selectors).forEach(setup);
+                        }
+                    });
+                });
             });
             this.mutationObserver.observe(document.body, { childList: true, subtree: true });
         }
@@ -575,6 +594,7 @@
                 'LONG_PRESS': 'LOW',
                 'TEXT_SELECTION': 'LOW',
                 'MULTIPLE_FACES': 'HIGH',
+                'NOISE_DETECTED': 'MEDIUM',
                 'PROCTORING_FAILURE': 'MEDIUM'
             };
             return weights[type] || 'LOW';
