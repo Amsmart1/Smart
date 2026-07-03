@@ -22,6 +22,10 @@
                 BLOCK_DEVTOOLS: false,
                 BLOCK_TAB_SWITCH: false,
 
+                PROCTORING_WEBCAM: false,
+                PROCTORING_SCREEN: false,
+                PROCTORING_FACE_DETECTION: false,
+
                 LONG_PRESS_THRESHOLD: 500,
                 DEVTOOLS_THRESHOLD: 160,
                 BLUR_THRESHOLD: 2000,
@@ -53,6 +57,7 @@
             this.tabChannel = null;
             this.mutationObserver = null;
             this.eventListeners = [];
+            this.proctor = null;
         }
 
         configure(options = {}) {
@@ -87,8 +92,50 @@
             this.initInputControl();
             this.initVisibilityDetection();
             this.initDevToolsDetection();
+            this.initProctoring();
 
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
+        }
+
+        async initProctoring() {
+            const webcam = this.config.PROCTORING_WEBCAM;
+            const screen = this.config.PROCTORING_SCREEN;
+            const face = this.config.PROCTORING_FACE_DETECTION;
+
+            if (!webcam && !screen && !face) return;
+
+            if (typeof ProctorEngine === 'undefined') {
+                console.error('Anti-Cheat: ProctorEngine not found. Ensure js/proctor-engine.js is loaded.');
+                return;
+            }
+
+            try {
+                this.proctor = new ProctorEngine({
+                    supabaseUrl: window.supabaseClient?.supabaseUrl,
+                    supabaseKey: window.supabaseClient?.supabaseKey,
+                    attemptId: this.state.assessmentId,
+                    userId: this.state.userEmail,
+                    debug: this.config.DEBUG,
+                    webcam: { enabled: webcam },
+                    screen: { enabled: screen },
+                    faceDetection: { enabled: face },
+                    callbacks: {
+                        onViolation: (v) => this.injectViolation(v)
+                    }
+                });
+
+                await this.proctor.start();
+                if (this.config.DEBUG) console.log('Anti-Cheat: Proctoring started');
+            } catch (err) {
+                console.error('Anti-Cheat: Failed to start proctoring', err);
+                this.logViolation('PROCTORING_FAILURE', { error: err.message });
+            }
+        }
+
+        async injectViolation(violation) {
+            // Forward from ProctorEngine to standard AntiCheat logging
+            const metadata = violation.event_data || violation.data || violation;
+            this.logViolation(violation.type, metadata);
         }
 
         logViolation(type, metadata = {}) {
@@ -209,6 +256,9 @@
         async enforceFullscreen() {
             if (!this.config.FULLSCREEN_REQUIRED || !this.state.isActive) return;
 
+            // Don't re-enforce if already in fullscreen
+            if (document.fullscreenElement || document.webkitFullscreenElement) return;
+
             try {
                 const docEl = document.documentElement;
                 let promise;
@@ -226,7 +276,7 @@
                 if (this.config.DEBUG) console.warn('Anti-Cheat: Fullscreen enforcement failed', err);
 
                 // Show overlay if fullscreen is required but failed
-                if (this.config.FULLSCREEN_REQUIRED && !document.fullscreenElement) {
+                if (this.config.FULLSCREEN_REQUIRED && !document.fullscreenElement && !document.webkitFullscreenElement) {
                     this.showFullscreenOverlay();
                 }
             }
@@ -372,32 +422,56 @@
             }
         }
 
-        // Long Press Detection
-        initLongPressDetection() {
-            if (!this.config.BLOCK_LONG_PRESS) return;
+        // Unified Observer for Long Press and Input Control
+        initDynamicElementHandling() {
+            if (this.mutationObserver) return;
+
+            const longPressEnabled = this.config.BLOCK_LONG_PRESS;
+            const textSelectionEnabled = this.config.BLOCK_TEXT_SELECTION;
+            if (!longPressEnabled && !textSelectionEnabled) return;
+
             const selectors = 'input:not([type="hidden"]), textarea, [contenteditable]';
 
             const setup = (el) => {
-                let timer = null;
-                const start = (e) => {
-                    if (!this.state.isActive) return;
-                    timer = setTimeout(() => {
-                        this.logViolation('LONG_PRESS', { target: e.target.tagName });
-                        if (this.config.callbacks.onBlocked) this.config.callbacks.onBlocked('LONG_PRESS');
-                        window.getSelection()?.removeAllRanges();
-                    }, this.config.LONG_PRESS_THRESHOLD);
-                };
-                const end = () => { if (timer) clearTimeout(timer); };
+                if (el.dataset.anticheatApplied) return;
+                el.dataset.anticheatApplied = 'true';
 
-                el.addEventListener('mousedown', start);
-                el.addEventListener('mouseup', end);
-                el.addEventListener('mouseleave', end);
-                el.addEventListener('touchstart', start);
-                el.addEventListener('touchend', end);
-                el.addEventListener('touchmove', end);
+                // Text Selection Blocking
+                if (textSelectionEnabled) {
+                    el.addEventListener('selectstart', (e) => {
+                        e.preventDefault();
+                        this.logViolation('TEXT_SELECTION', { target: e.target.tagName });
+                    });
+                    el.style.userSelect = 'none';
+                    el.style.webkitUserSelect = 'none';
+                }
+
+                // Long Press Detection
+                if (longPressEnabled) {
+                    let timer = null;
+                    const start = (e) => {
+                        if (!this.state.isActive) return;
+                        timer = setTimeout(() => {
+                            this.logViolation('LONG_PRESS', { target: e.target.tagName });
+                            if (this.config.callbacks.onBlocked) this.config.callbacks.onBlocked('LONG_PRESS');
+                            window.getSelection()?.removeAllRanges();
+                        }, this.config.LONG_PRESS_THRESHOLD);
+                    };
+                    const end = () => { if (timer) clearTimeout(timer); };
+
+                    el.addEventListener('mousedown', start);
+                    el.addEventListener('mouseup', end);
+                    el.addEventListener('mouseleave', end);
+                    el.addEventListener('touchstart', start);
+                    el.addEventListener('touchend', end);
+                    el.addEventListener('touchmove', end);
+                }
             };
 
+            // Initial setup
             document.querySelectorAll(selectors).forEach(setup);
+
+            // Observer for dynamic elements
             this.mutationObserver = new MutationObserver((mutations) => {
                 mutations.forEach(m => m.addedNodes.forEach(node => {
                     if (node.nodeType === 1) {
@@ -409,19 +483,12 @@
             this.mutationObserver.observe(document.body, { childList: true, subtree: true });
         }
 
-        // Input Control
+        initLongPressDetection() {
+            this.initDynamicElementHandling();
+        }
+
         initInputControl() {
-            if (!this.config.BLOCK_TEXT_SELECTION) return;
-            const selectors = 'input:not([type="hidden"]), textarea, [contenteditable]';
-            const setup = (el) => {
-                el.addEventListener('selectstart', (e) => {
-                    e.preventDefault();
-                    this.logViolation('TEXT_SELECTION', { target: e.target.tagName });
-                });
-                el.style.userSelect = 'none';
-                el.style.webkitUserSelect = 'none';
-            };
-            document.querySelectorAll(selectors).forEach(setup);
+            this.initDynamicElementHandling();
         }
 
         // Visibility
@@ -442,17 +509,49 @@
         // DevTools Detection
         initDevToolsDetection() {
             if (!this.config.BLOCK_DEVTOOLS) return;
-            const check = () => {
+
+            // Multi-layered detection
+            // Layer 1: Window size threshold
+            const checkSize = () => {
                 const threshold = this.config.DEVTOOLS_THRESHOLD;
-                if (Math.abs(window.outerWidth - window.innerWidth) > threshold || Math.abs(window.outerHeight - window.innerHeight) > threshold) {
-                    this.logViolation('DEVTOOLS_OPEN', {});
+                const widthDiff = Math.abs(window.outerWidth - window.innerWidth);
+                const heightDiff = Math.abs(window.outerHeight - window.innerHeight);
+
+                if (widthDiff > threshold || heightDiff > threshold) {
+                    this.logViolation('DEVTOOLS_OPEN', {
+                        method: 'size_check',
+                        widthDiff,
+                        heightDiff
+                    });
                 }
             };
+
+            // Layer 2: Debugger heartbeat (Heartbeat timing check)
+            const checkDebugger = () => {
+                const start = performance.now();
+                // This debugger statement will pause execution if DevTools is open
+                // and the "Pause on exceptions" or similar is active.
+                // If DevTools is NOT open, it completes instantly.
+                debugger;
+                const end = performance.now();
+                if (end - start > 100) { // If it took more than 100ms, execution was likely paused
+                    this.logViolation('DEVTOOLS_OPEN', {
+                        method: 'debugger_heartbeat',
+                        delay: Math.round(end - start)
+                    });
+                }
+            };
+
             this.addGlobalListener(window, 'resize', () => {
                 if (this.resizeTimeout) clearTimeout(this.resizeTimeout);
-                this.resizeTimeout = setTimeout(check, 500);
+                this.resizeTimeout = setTimeout(checkSize, 500);
             });
-            setTimeout(check, 1000);
+
+            // Initial check
+            setTimeout(checkSize, 1000);
+
+            // Periodic debugger check
+            this._devtoolsInterval = setInterval(checkDebugger, 2000);
         }
 
         getViolationSeverity(type) {
@@ -471,7 +570,9 @@
                 'EXIT_FULLSCREEN': 'HIGH',
                 'MULTIPLE_TABS': 'CRITICAL',
                 'LONG_PRESS': 'LOW',
-                'TEXT_SELECTION': 'LOW'
+                'TEXT_SELECTION': 'LOW',
+                'MULTIPLE_FACES': 'HIGH',
+                'PROCTORING_FAILURE': 'MEDIUM'
             };
             return weights[type] || 'LOW';
         }
@@ -516,10 +617,19 @@
             return "Unknown OS";
         }
 
-        destroy() {
+        async destroy() {
             if (!this.state.isActive) return;
 
             this.state.isActive = false;
+
+            // Stop Proctoring
+            if (this.proctor) {
+                try {
+                    await this.proctor.stop();
+                } catch (e) { console.error('Anti-Cheat: Proctor stop failed', e); }
+                this.proctor = null;
+            }
+
             if (this._tabInterval) {
                 clearInterval(this._tabInterval);
                 this._tabInterval = null;
@@ -539,6 +649,10 @@
             if (this.resizeTimeout) {
                 clearTimeout(this.resizeTimeout);
                 this.resizeTimeout = null;
+            }
+            if (this._devtoolsInterval) {
+                clearInterval(this._devtoolsInterval);
+                this._devtoolsInterval = null;
             }
 
             this.eventListeners.forEach(l => {

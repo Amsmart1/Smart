@@ -2066,12 +2066,32 @@ class SupabaseDB {
                     type: v.assessment_type,
                     violationCount: 0,
                     totalScore: 0,
-                    criticalCount: 0
+                    criticalCount: 0,
+                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0 }
                 };
             }
             summaryMap[key].violationCount++;
             summaryMap[key].totalScore += (v.score || 0);
             if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
+        });
+
+        // Add proctoring stats
+        const { data: proctorLogs } = await supabaseClient
+            .from('proctoring_logs')
+            .select('attempt_id, event_type, event_data')
+            .eq('user_email', studentEmail)
+            .in('attempt_id', assessmentIds);
+
+        (proctorLogs || []).forEach(log => {
+            const summary = summaryMap[log.attempt_id];
+            if (!summary) return;
+
+            if (log.event_type === 'snapshot:captured') summary.proctoringStats.snapshots++;
+            if (log.event_type === 'chunk:recorded') summary.proctoringStats.chunks++;
+            if (log.event_type === 'face:detected') {
+                const faces = log.event_data?.count || 0;
+                if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
+            }
         });
 
         const result = Object.values(summaryMap);
@@ -2111,13 +2131,32 @@ class SupabaseDB {
                     violationCount: 0,
                     studentCount: new Set(),
                     totalScore: 0,
-                    criticalCount: 0
+                    criticalCount: 0,
+                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0 }
                 };
             }
             summaryMap[key].violationCount++;
             summaryMap[key].studentCount.add(v.user_email);
             summaryMap[key].totalScore += (v.score || 0);
             if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
+        });
+
+        // Add proctoring stats (aggregated for all students in this assessment)
+        const { data: proctorLogs } = await supabaseClient
+            .from('proctoring_logs')
+            .select('attempt_id, event_type, event_data')
+            .in('attempt_id', assessmentIds);
+
+        (proctorLogs || []).forEach(log => {
+            const summary = summaryMap[log.attempt_id];
+            if (!summary) return;
+
+            if (log.event_type === 'snapshot:captured') summary.proctoringStats.snapshots++;
+            if (log.event_type === 'chunk:recorded') summary.proctoringStats.chunks++;
+            if (log.event_type === 'face:detected') {
+                const faces = log.event_data?.count || 0;
+                if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
+            }
         });
 
         const result = Object.values(summaryMap).map(s => ({

@@ -657,6 +657,16 @@ const UI = {
             <div class="grid mt-20">
                 ${summary.map(s => {
                     const risk = s.criticalCount > 0 ? 'High' : (s.violationCount > (isStudent ? 5 : 10) ? 'Medium' : 'Low');
+
+                    // Proctoring stats if available
+                    const proctoringHtml = s.proctoringStats ? `
+                        <div class="flex gap-10 mt-10 p-5 bg-light border-radius-sm" style="font-size: 0.75rem">
+                            <span title="Webcam Snapshots">📸 ${s.proctoringStats.snapshots || 0}</span>
+                            <span title="Screen Recording Chunks">🖥️ ${s.proctoringStats.chunks || 0}</span>
+                            <span title="AI Detected Faces">👤 ${s.proctoringStats.maxFaces || 0}</span>
+                        </div>
+                    ` : '';
+
                     return `
                     <div class="card">
                         <div class="flex-between">
@@ -675,6 +685,8 @@ const UI = {
                                 <div class="value" style="font-size: 1.2rem">${isStudent ? s.totalScore : s.studentCount}</div>
                             </div>
                         </div>
+
+                        ${proctoringHtml}
 
                         <button class="button secondary small mt-15" onclick="UI._dispatchACViewDetails('${containerId}', '${escapeAttr(s.id)}', '${escapeAttr(s.title)}')">
                             ${isStudent ? 'View Detailed Report' : 'View Affected Students'}

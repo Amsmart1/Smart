@@ -505,6 +505,22 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS proctoring_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id VARCHAR(255) NOT NULL,
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  attempt_id UUID NOT NULL, -- Links to assessment ID (quiz.id or assignment.id)
+  user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
+  teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
+  event_type VARCHAR(100) NOT NULL,
+  event_data JSONB DEFAULT '{}'::jsonb,
+  elapsed INTEGER, -- milliseconds since start
+  device JSONB DEFAULT '{}'::jsonb,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- 2. Migrations for existing tables (Idempotent)
 
 DO $$
@@ -901,7 +917,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
     LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS update_%I_updated_at ON %I', t, t);
         EXECUTE format('CREATE TRIGGER update_%I_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()', t, t);
@@ -1329,6 +1345,11 @@ BEGIN
       ELSIF NEW.assessment_type = 'quiz' THEN
         SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
       END IF;
+    ELSIF TG_TABLE_NAME = 'proctoring_logs' THEN
+      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.attempt_id;
+      IF NEW.course_id IS NULL THEN
+        SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.attempt_id;
+      END IF;
     END IF;
   END IF;
 
@@ -1382,6 +1403,9 @@ CREATE TRIGGER tr_study_session_data_inherit BEFORE INSERT ON study_sessions FOR
 
 DROP TRIGGER IF EXISTS tr_violation_data_inherit ON violations;
 CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
+
+DROP TRIGGER IF EXISTS tr_proctoring_log_data_inherit ON proctoring_logs;
+CREATE TRIGGER tr_proctoring_log_data_inherit BEFORE INSERT ON proctoring_logs FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
 
 -- 5. Validation Triggers
 
@@ -1665,6 +1689,11 @@ CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
+
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_session ON proctoring_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_attempt ON proctoring_logs(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_user ON proctoring_logs(user_email);
+CREATE INDEX IF NOT EXISTS idx_proctoring_logs_event ON proctoring_logs(event_type);
 
 -- Ensure uniqueness for certificates to prevent duplicates
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_unique_single ON certificates (student_email, course_id) WHERE (type = 'single');
@@ -2590,7 +2619,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -2605,7 +2634,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
     LOOP
         EXECUTE format('DROP POLICY IF EXISTS "Migration: Admin ALL" ON %I', t);
         EXECUTE format('CREATE POLICY "Migration: Admin ALL" ON %I FOR ALL USING (_is_migration_mode())', t);
@@ -2930,6 +2959,27 @@ CREATE POLICY "Violations: Delete" ON violations FOR DELETE USING (
   is_teacher() AND EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND teacher_email = get_auth_email())
 );
 
+-- proctoring_logs RLS
+DROP POLICY IF EXISTS "Proctoring Logs: Access" ON proctoring_logs;
+CREATE POLICY "Proctoring Logs: Access" ON proctoring_logs FOR SELECT USING (
+  is_admin() OR
+  teacher_email = get_auth_email() OR
+  (user_email = get_auth_email() AND EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND status = 'published'))
+);
+
+DROP POLICY IF EXISTS "Proctoring Logs: Insert" ON proctoring_logs;
+CREATE POLICY "Proctoring Logs: Insert" ON proctoring_logs FOR INSERT WITH CHECK (
+  user_email = get_auth_email() AND
+  EXISTS (SELECT 1 FROM enrollments WHERE course_id = proctoring_logs.course_id AND student_email = get_auth_email()) AND
+  EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND status = 'published')
+);
+
+DROP POLICY IF EXISTS "Proctoring Logs: Delete" ON proctoring_logs;
+CREATE POLICY "Proctoring Logs: Delete" ON proctoring_logs FOR DELETE USING (
+  is_admin() OR
+  (is_teacher() AND EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND teacher_email = get_auth_email()))
+);
+
 -- 18. Planner Table
 DROP POLICY IF EXISTS "Planner: User Access" ON planner;
 CREATE POLICY "Planner: User Access" ON planner FOR ALL USING (user_email = get_auth_email() OR is_admin());
@@ -3010,7 +3060,7 @@ DROP PUBLICATION IF EXISTS supabase_realtime;
 -- 11. Storage Initialization & Policies
 
 INSERT INTO storage.buckets (id, name, public)
-VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true), ('backups', 'backups', false)
+VALUES ('materials', 'materials', true), ('assignments', 'assignments', true), ('certificates', 'certificates', true), ('backups', 'backups', false), ('proctoring', 'proctoring', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Enable RLS on storage.objects
@@ -3073,4 +3123,25 @@ CREATE POLICY "Certificates: Student Read Own" ON storage.objects FOR SELECT USI
 DROP POLICY IF EXISTS "Backups: Admin Manage" ON storage.objects;
 CREATE POLICY "Backups: Admin Manage" ON storage.objects FOR ALL USING (
     bucket_id = 'backups' AND is_admin()
+);
+
+-- 11.5 Proctoring Bucket Policies
+DROP POLICY IF EXISTS "Proctoring: Teacher/Admin Access" ON storage.objects;
+CREATE POLICY "Proctoring: Teacher/Admin Access" ON storage.objects FOR SELECT USING (
+    bucket_id = 'proctoring' AND (is_teacher() OR is_admin())
+);
+
+DROP POLICY IF EXISTS "Proctoring: Student Upload" ON storage.objects;
+CREATE POLICY "Proctoring: Student Upload" ON storage.objects FOR INSERT WITH CHECK (
+    bucket_id = 'proctoring' AND get_auth_role() = 'student'
+);
+
+DROP POLICY IF EXISTS "Proctoring: Student Select Own" ON storage.objects;
+CREATE POLICY "Proctoring: Student Select Own" ON storage.objects FOR SELECT USING (
+    bucket_id = 'proctoring' AND (storage.foldername(name))[2] = get_auth_email()
+);
+
+DROP POLICY IF EXISTS "Proctoring: Management" ON storage.objects;
+CREATE POLICY "Proctoring: Management" ON storage.objects FOR DELETE USING (
+    bucket_id = 'proctoring' AND (is_teacher() OR is_admin())
 );
