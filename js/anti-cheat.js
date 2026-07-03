@@ -84,7 +84,7 @@
 
             if (this.config.FULLSCREEN_REQUIRED) {
                 this.initFullscreenHandlers();
-                this.enforceFullscreen();
+                await this.enforceFullscreen();
             }
 
             if (this.config.MULTI_TAB_LOCK) this.initMultiTabLock();
@@ -93,7 +93,7 @@
             this.initInputControl();
             this.initVisibilityDetection();
             this.initDevToolsDetection();
-            this.initProctoring();
+            await this.initProctoring();
 
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
         }

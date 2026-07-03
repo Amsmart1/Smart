@@ -2086,9 +2086,9 @@ class SupabaseDB {
             const summary = summaryMap[log.attempt_id];
             if (!summary) return;
 
-            if (log.event_type === 'snapshot:captured') summary.proctoringStats.snapshots++;
-            if (log.event_type === 'chunk:recorded') summary.proctoringStats.chunks++;
-            if (log.event_type === 'face:detected') {
+            if (log.event_type === 'SNAPSHOT_CAPTURED') summary.proctoringStats.snapshots++;
+            if (log.event_type === 'CHUNK_RECORDED') summary.proctoringStats.chunks++;
+            if (log.event_type === 'FACE_DETECTED') {
                 const faces = log.event_data?.count || 0;
                 if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
             }
@@ -2151,9 +2151,9 @@ class SupabaseDB {
             const summary = summaryMap[log.attempt_id];
             if (!summary) return;
 
-            if (log.event_type === 'snapshot:captured') summary.proctoringStats.snapshots++;
-            if (log.event_type === 'chunk:recorded') summary.proctoringStats.chunks++;
-            if (log.event_type === 'face:detected') {
+            if (log.event_type === 'SNAPSHOT_CAPTURED') summary.proctoringStats.snapshots++;
+            if (log.event_type === 'CHUNK_RECORDED') summary.proctoringStats.chunks++;
+            if (log.event_type === 'FACE_DETECTED') {
                 const faces = log.event_data?.count || 0;
                 if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
             }

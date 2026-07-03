@@ -727,6 +727,16 @@
         }
 
         this.engine.emit('face:detected', result);
+
+        // Log face detection event for stats
+        await this.engine._logEvent('FACE_DETECTED', {
+            sessionId: this.engine.state.sessionId,
+            attemptId: this.engine.config.attemptId,
+            user_email: this.engine.config.userId,
+            count: result.count,
+            confidence: result.confidence,
+            timestamp: new Date().toISOString()
+        });
       } catch (e) {
         this.engine.debug('FaceDetector tick error: ' + e.message);
       }
