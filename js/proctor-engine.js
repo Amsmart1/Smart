@@ -182,6 +182,8 @@
     /** @type {string} */
     attemptId: null,
     /** @type {string} */
+    courseId: null,
+    /** @type {string} */
     userId: null,
     /** @type {string|null} */
     supabaseUrl: null,
@@ -1760,6 +1762,7 @@
 
       const record = {
         session_id: this.state.sessionId,
+        course_id: this.config.courseId,
         attempt_id: this.config.attemptId,
         user_email: this.config.userId,
         event_type: eventType,
