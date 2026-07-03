@@ -702,6 +702,7 @@ async function showAssignmentForm(assignmentId) {
   if (a.anti_cheat_config && Object.values(a.anti_cheat_config).some(v => v === true)) {
     await AntiCheat.init(a.id, 'assignment', user.email, {
         ...a.anti_cheat_config,
+        courseId: a.course_id,
         callbacks: {
             onViolation: (v) => {
                 UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
@@ -2511,7 +2512,7 @@ async function startQuiz(quizId) {
 
     // Handle Anti-Cheat initialization with gesture requirement
     const ac = quiz.anti_cheat_config || {};
-    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_FACE_DETECTION;
+    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_FACE_DETECTION || ac.PROCTORING_NOISE_DETECTION;
 
     if (needsGesture) {
         const qContainer = document.getElementById('questionContainer');
@@ -2537,6 +2538,7 @@ async function startQuiz(quizId) {
                 // Initialize Anti-Cheat within the user gesture
                 await AntiCheat.init(quiz.id, 'quiz', user.email, {
                     ...quiz.anti_cheat_config,
+                    courseId: quiz.course_id,
                     callbacks: {
                         onViolation: (v) => {
                             UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
@@ -2552,6 +2554,7 @@ async function startQuiz(quizId) {
       // Initialize other anti-cheat features that don't strictly require a fresh gesture
       await AntiCheat.init(quiz.id, 'quiz', user.email, {
           ...quiz.anti_cheat_config,
+          courseId: quiz.course_id,
           callbacks: {
               onViolation: (v) => {
                   UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
@@ -2560,8 +2563,22 @@ async function startQuiz(quizId) {
       });
     }
 
-    // Authoritative start via RPC
-    StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
+    // Authoritative start via RPC with Idempotency
+    try {
+        StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
+    } catch (startErr) {
+        // Handle 409 Conflict if an attempt already exists (idempotency fallback)
+        if (startErr.code === '23505' || startErr.message?.includes('already exists') || startErr.status === 409) {
+            const subsRes = await SupabaseDB.getQuizSubmissions(quizId, user.email, null, { status: 'in-progress' });
+            if (subsRes.data && subsRes.data.length > 0) {
+                StudentState.currentSubmission = subsRes.data[0];
+            } else {
+                throw startErr; // Rethrow if we can't find the existing attempt
+            }
+        } else {
+            throw startErr;
+        }
+    }
     if (renderId !== window.currentRenderId) return;
 
     // Calculate deadline once to avoid redundancy

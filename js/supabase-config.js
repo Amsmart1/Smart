@@ -2092,6 +2092,9 @@ class SupabaseDB {
                 const faces = log.event_data?.count || 0;
                 if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
             }
+            if (log.event_type === 'NOISE_DETECTED') {
+                summary.proctoringStats.noiseEvents = (summary.proctoringStats.noiseEvents || 0) + 1;
+            }
         });
 
         const result = Object.values(summaryMap);
@@ -2156,6 +2159,9 @@ class SupabaseDB {
             if (log.event_type === 'FACE_DETECTED') {
                 const faces = log.event_data?.count || 0;
                 if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
+            }
+            if (log.event_type === 'NOISE_DETECTED') {
+                summary.proctoringStats.noiseEvents = (summary.proctoringStats.noiseEvents || 0) + 1;
             }
         });
 
