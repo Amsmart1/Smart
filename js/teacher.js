@@ -1726,10 +1726,14 @@ function openAntiCheatModal(type) {
         { key: 'MULTI_TAB_LOCK', label: 'Multi-Tab Lock', desc: 'Prevents the assessment from being opened in multiple tabs.', category: 'Environment' },
 
         { key: 'BLOCK_LONG_PRESS', label: 'Block Long Press', desc: 'Prevents long-press actions on touch devices.', category: 'Input' },
-        { key: 'BLOCK_TEXT_SELECTION', label: 'Block Text Selection', desc: 'Disables the ability to highlight/select text.', category: 'Input' }
+        { key: 'BLOCK_TEXT_SELECTION', label: 'Block Text Selection', desc: 'Disables the ability to highlight/select text.', category: 'Input' },
+
+        { key: 'PROCTORING_WEBCAM', label: 'Webcam Monitoring', desc: 'Captures periodic snapshots of the student via webcam.', category: 'Proctoring & AI' },
+        { key: 'PROCTORING_SCREEN', label: 'Screen Recording', desc: 'Records the student\'s screen in chunks throughout the assessment.', category: 'Proctoring & AI' },
+        { key: 'PROCTORING_FACE_DETECTION', label: 'AI Face Detection', desc: 'Detects presence of multiple faces or absence of the student.', category: 'Proctoring & AI' }
     ];
 
-    const categories = ['Interaction', 'Environment', 'Input'];
+    const categories = ['Interaction', 'Environment', 'Input', 'Proctoring & AI'];
 
     backdrop.innerHTML = `
         <div class="modal" style="max-width: 800px">
@@ -1747,7 +1751,7 @@ function openAntiCheatModal(type) {
                 ${categories.map(cat => `
                     <div class="mb-30">
                         <h4 class="mb-15" style="border-bottom: 2px solid var(--purple-light); padding-bottom: 8px; color: var(--purple); display: flex; align-items: center; gap: 8px">
-                            ${cat === 'Interaction' ? '🖱️' : cat === 'Environment' ? '🌐' : '⌨️'} ${cat} Control
+                            ${cat === 'Interaction' ? '🖱️' : cat === 'Environment' ? '🌐' : cat === 'Input' ? '⌨️' : '🤖'} ${cat} ${cat === 'Proctoring & AI' ? '' : 'Control'}
                         </h4>
                         <div class="grid-2">
                             ${flags.filter(f => f.category === cat).map(f => {
@@ -1800,7 +1804,9 @@ function updateACPreview() {
 
     try {
         const config = JSON.parse(input.value || '{}');
-        const active = Object.entries(config).filter(([k, v]) => v === true).map(([k, v]) => k.replace('BLOCK_', '').replace(/_/g, ' '));
+        const active = Object.entries(config)
+            .filter(([k, v]) => v === true)
+            .map(([k, v]) => k.replace('BLOCK_', '').replace('PROCTORING_', '').replace(/_/g, ' '));
 
         if (active.length === 0) {
             preview.textContent = 'No anti-cheat measures active.';
