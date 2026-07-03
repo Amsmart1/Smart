@@ -252,7 +252,7 @@ function displayCatalog(courses) {
         <div style="flex:1">
           <h3 class="m-0 mt-10" style="font-size:18px">${escapeHtml(c.title)}</h3>
           <div class="small-text color-dim mt-5">By: ${escapeHtml(c.created_by || 'Unknown Teacher')}</div>
-          <div class="small mt-10 mb-20" style="line-height:1.4">${UI.renderRichText((c.description || '').substring(0, 150))}...</div>
+          <div class="small mt-10 mb-20" style="line-height:1.4">${UI.renderText((c.description || '').substring(0, 150))}...</div>
           <div class="flex-between">
             ${enrolled ?
               `<button class="button secondary w-auto small" onclick="viewCourse('${escapeAttr(c.id)}', false)">View Details</button>` :
@@ -300,7 +300,7 @@ async function renderMyCourses() {
                 <span class="tiny text-muted">${progress}% Complete</span>
                 ${enrollment?.completed ? '<span class="badge badge-active tiny">Completed</span>' : ''}
               </div>
-              <div class="small" style="flex:1">${UI.renderRichText((c.description || '').substring(0, 150))}...</div>
+              <div class="small" style="flex:1">${UI.renderText((c.description || '').substring(0, 150))}...</div>
               <button class="button w-auto small" onclick="viewCourse('${escapeAttr(c.id)}', true)">Open Course</button>
             </div>
           `;
@@ -409,7 +409,7 @@ async function viewCourse(courseId, fromMyCourses = false) {
                 <div class="mb-20">
                     <div class="p-10 bg-light border-radius-sm mb-5">
                         <strong class="small">${escapeHtml(t.title)}</strong>
-                        ${t.description ? `<div class="tiny text-muted m-0 mt-2">${UI.renderRichText(t.description)}</div>` : ''}
+                        ${t.description ? `<div class="tiny text-muted m-0 mt-2">${UI.renderText(t.description)}</div>` : ''}
                     </div>
                     <div class="pl-15">
                         ${t.lessons.map(l => `
@@ -502,7 +502,7 @@ async function showLesson(lessonId, courseId, fromMyCourses = false) {
     <div class="card">
       <h2 class="m-0 mb-20">${escapeHtml(lesson.title)}</h2>
       ${videoHtml}
-      <div class="mt-20" style="line-height:1.6">${UI.renderRichText(lesson.content)}</div>
+      <div class="mt-20" style="line-height:1.6">${UI.renderText(lesson.content)}</div>
     </div>`;
   } catch (error) {
     console.error('Show lesson error:', error);
@@ -607,7 +607,7 @@ async function renderAssignments(openId = null){
     row.innerHTML = `
       <td>
         <div style="font-weight:600">${escapeHtml(a.title)}</div>
-        <div class="small">${UI.renderRichText((a.description || '').substring(0, 80))}...</div>
+        <div class="small">${UI.renderText((a.description || '').substring(0, 80))}...</div>
       </td>
       <td>${escapeHtml(course?.title || 'Unknown')}</td>
       <td>
@@ -719,7 +719,7 @@ async function showAssignmentForm(assignmentId) {
         <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy(); StudyTracker.stop();">Close</button>
       </div>
 
-      <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
+      <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderText(a.description)}</div>
 
       ${submission && submission.status === 'submitted' ? `
         <div class="card success-border p-10 mt-10" style="background:#f0fff4">
@@ -821,7 +821,7 @@ async function showAssignmentForm(assignmentId) {
 
     qDiv.innerHTML = `
       <div class="flex-between mb-10">
-        <div class="bold">Q${idx + 1}. ${UI.renderRichText(q.text || '')}</div>
+        <div class="bold">Q${idx + 1}. ${UI.renderText(q.text || '')}</div>
         <div class="badge badge-lock">${q.points || 0} pts</div>
       </div>
       ${switcherHtml}
@@ -928,7 +928,7 @@ async function viewFeedback(assignmentId) {
             let displayAnswer = '<div class="small p-10 mt-5 text-muted italic">No answer provided.</div>';
             if (value) {
                 if (type === 'essay') {
-                    displayAnswer = `<div class="small p-10 mt-5" style="background: #f7fafc; border-radius: 4px;">${UI.renderRichText(value)}</div>`;
+                    displayAnswer = `<div class="small p-10 mt-5" style="background: #f7fafc; border-radius: 4px;">${UI.renderText(value)}</div>`;
                 } else {
                     displayAnswer = `<div class="mt-5 flex gap-10">
                         <span class="badge badge-purple tiny">${type.toUpperCase()}</span>
@@ -939,14 +939,14 @@ async function viewFeedback(assignmentId) {
 
             return `<div class="list-item mb-20 card border-light">
               <div class="flex-between">
-                <div class="bold">Question ${idx + 1}: ${UI.renderRichText(q.text)}</div>
+                <div class="bold">Question ${idx + 1}: ${UI.renderText(q.text)}</div>
                 <div class="badge ${score >= (q.points * 0.7) ? 'badge-active' : 'badge-warn'}">${score} / ${q.points} pts</div>
               </div>
               <div class="mt-10">${displayAnswer}</div>
               ${submission.question_feedback?.[idx] ? `
                 <div class="mt-10 p-10 bg-light border-radius-sm">
                   <div class="tiny text-muted bold">Teacher Comment:</div>
-                  <div class="small italic">${UI.renderRichText(submission.question_feedback[idx])}</div>
+                  <div class="small italic">${UI.renderText(submission.question_feedback[idx])}</div>
                 </div>
               ` : ''}
             </div>`;
@@ -956,7 +956,7 @@ async function viewFeedback(assignmentId) {
 
       <div class="mt-20 pt-20" style="border-top:1px solid var(--border)">
         <h4>Teacher Feedback</h4>
-        <div class="small p-15" style="background:#fffcf0; border-radius:8px; border:1px solid #ffeeba">${UI.renderRichText(submission.feedback || 'No written feedback yet.')}</div>
+        <div class="small p-15" style="background:#fffcf0; border-radius:8px; border:1px solid #ffeeba">${UI.renderText(submission.feedback || 'No written feedback yet.')}</div>
       </div>
 
       <div class="mt-20 pt-20" style="border-top:1px solid var(--border)">
@@ -2370,7 +2370,7 @@ async function renderQuizzes(openId = null) {
             <div class="card">
               <h3 class="m-0">${escapeHtml(q.title)}</h3>
               <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'Unknown')}</p>
-              <div class="small mt-5">${UI.renderRichText(q.description || '')}</div>
+              <div class="small mt-5">${UI.renderText(q.description || '')}</div>
               <div class="flex-between mt-15 p-10" style="background:var(--bg); border-radius:6px">
                   <div class="text-center">
                       <div class="bold" id="attempts-count-${q.id}">${attemptsUsed} / ${q.attempts_allowed}</div>
@@ -2681,7 +2681,7 @@ function renderQuizQuestion(index) {
                 <div class="quiz-option-card ${isChecked ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, '${i}')"
                      style="padding:15px; border:1px solid var(--border); border-radius:8px; cursor:pointer; display:flex; align-items:center; gap:15px; background:${isChecked ? '#f0f4ff' : '#fff'}; transition: all 0.2s">
                     <div class="option-marker" style="width:30px; height:30px; border-radius:50%; background:${isChecked ? 'var(--purple)' : '#edf2f7'}; color:${isChecked ? '#fff' : 'var(--text)'}; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:0.9rem">${String.fromCharCode(65 + i)}</div>
-                    <div class="option-text" style="flex:1; font-size:1rem">${UI.renderRichText(opt)}</div>
+                    <div class="option-text" style="flex:1; font-size:1rem">${UI.renderText(opt)}</div>
                 </div>
             `;
         }).join('');
@@ -2717,7 +2717,7 @@ function renderQuizQuestion(index) {
                 <div class="badge badge-purple small">Points: ${q.points}</div>
                 ${q.hint ? `<button class="button tiny w-auto animate-pulse" style="background: var(--ok)" onclick="UI.showNotification('💡 Hint: ' + this.dataset.hint, 'info')" data-hint="${escapeAttr(q.hint)}">View Hint</button>` : ''}
             </div>
-            <h2 class="quiz-question-text mb-30" style="font-size: 1.4rem; line-height: 1.4; color: var(--text)">${UI.renderRichText(q.text)}</h2>
+            <h2 class="quiz-question-text mb-30" style="font-size: 1.4rem; line-height: 1.4; color: var(--text)">${UI.renderText(q.text)}</h2>
             <div class="quiz-options-container flex-column gap-15">
                 ${inputHtml}
             </div>
@@ -2991,12 +2991,12 @@ async function viewQuizResults(quizId, submissionId = null) {
           return `
             <div class="question" style="border-left: 5px solid ${statusColor}">
               <div class="flex-between">
-                <div class="bold">Q${idx + 1}: ${UI.renderRichText(q.text)}</div>
+                <div class="bold">Q${idx + 1}: ${UI.renderText(q.text)}</div>
                 <div class="badge ${isCorrect ? 'badge-active' : 'badge-warn'}">${isCorrect ? q.points : 0} / ${q.points} pts</div>
               </div>
-              <div class="small mt-10">Your Answer: <span class="bold">${UI.renderRichText(studentDisplay)}</span></div>
-              ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
-              ${q.explanation ? `<div class="small mt-10 p-10" style="background:var(--light); border-radius:4px; font-style:italic">📖 Explanation: ${UI.renderRichText(q.explanation)}</div>` : ''}
+              <div class="small mt-10">Your Answer: <span class="bold">${UI.renderText(studentDisplay)}</span></div>
+              ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderText(correctDisplay)}</div>` : ''}
+              ${q.explanation ? `<div class="small mt-10 p-10" style="background:var(--light); border-radius:4px; font-style:italic">📖 Explanation: ${UI.renderText(q.explanation)}</div>` : ''}
             </div>
           `;
         }).join('')}
