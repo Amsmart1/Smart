@@ -43,7 +43,7 @@
     mediaRecorder: !!window.MediaRecorder,
     audioContext: !!(window.AudioContext || window.webkitAudioContext),
     workers: !!window.Worker,
-    faceDetection: !!(window.FaceDetector || (window.HTMLElement?.prototype ?? false)),
+    faceDetection: !!window.FaceDetector,
     blobUrls: true,
     broadcastChannel: !!window.BroadcastChannel,
     intersectionObserver: !!window.IntersectionObserver,
@@ -884,7 +884,7 @@
         await this._logEvent('SESSION_STARTED', {
           sessionId: this.state.sessionId,
           attemptId: this.config.attemptId,
-          userId: this.config.userId,
+          user_email: this.config.userId,
           device: this.state.deviceInfo,
           config: {
             webcam: this.config.webcam,
@@ -954,6 +954,7 @@
       // Log session end
       await this._logEvent('SESSION_ENDED', {
         sessionId: this.state.sessionId,
+        user_email: this.config.userId,
         duration,
         snapshotsUploaded: this.state.snapshotIndex,
         chunksRecorded: this.state.chunkIndex,
@@ -1073,7 +1074,7 @@
       const event = {
         sessionId: this.state.sessionId,
         attemptId: this.config.attemptId,
-        userId: this.config.userId,
+        user_email: this.config.userId,
         type: violation.type || 'CUSTOM_VIOLATION',
         source: violation.source || 'integration',
         severity: violation.severity || 'LOW',
@@ -1330,7 +1331,7 @@
      * @private
      * @param {Blob} blob
      */
-    _handleRecordingChunk(blob) {
+    async _handleRecordingChunk(blob) {
       const chunkIndex = this.state.chunkIndex++;
       const timestamp = new Date().toISOString();
       const size = blob.size;
@@ -1340,13 +1341,23 @@
       const metadata = {
         sessionId: this.state.sessionId,
         attemptId: this.config.attemptId,
-        userId: this.config.userId,
+        user_email: this.config.userId,
         chunkIndex,
         timestamp,
         size,
         mimeType: blob.type || 'video/webm',
         elapsed: Date.now() - (this.state.startTime || Date.now()),
       };
+
+      // Log chunk recorded
+      await this._logEvent('CHUNK_RECORDED', {
+        sessionId: this.state.sessionId,
+        attemptId: this.config.attemptId,
+        user_email: this.config.userId,
+        chunkIndex,
+        timestamp,
+        size
+      });
 
       // Upload chunk (potentially chunked for large files)
       this._uploadRecordingChunk(blob, metadata);
@@ -1461,13 +1472,23 @@
         const metadata = {
           sessionId: this.state.sessionId,
           attemptId: this.config.attemptId,
-          userId: this.config.userId,
+          user_email: this.config.userId,
           snapshotIndex: idx,
           timestamp,
           size,
           mimeType: blob.type,
           elapsed: Date.now() - (this.state.startTime || Date.now()),
         };
+
+        // Log snapshot captured
+        await this._logEvent('SNAPSHOT_CAPTURED', {
+            sessionId: this.state.sessionId,
+            attemptId: this.config.attemptId,
+            user_email: this.config.userId,
+            snapshotIndex: idx,
+            timestamp,
+            size
+        });
 
         await this._uploadBlob(blob, this._storagePath(`snapshots/${this.state.sessionId}/snap-${idx}.jpg`), 'snapshot', metadata);
 
@@ -1728,7 +1749,7 @@
       const record = {
         session_id: this.state.sessionId,
         attempt_id: this.config.attemptId,
-        user_id: this.config.userId,
+        user_email: this.config.userId,
         event_type: eventType,
         event_data: data,
         elapsed: Date.now() - (this.state.startTime || Date.now()),
@@ -2114,7 +2135,7 @@
      * @returns {string}
      */
     _storagePath(relative) {
-      return `${this.config.upload.storagePath}/${this.config.attemptId}/${relative}`;
+      return `${this.config.upload.storagePath}/${this.config.userId}/${this.config.attemptId}/${relative}`;
     }
 
     /**

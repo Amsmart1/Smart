@@ -21,6 +21,7 @@
                 BLOCK_DRAG: false,
                 BLOCK_DEVTOOLS: false,
                 BLOCK_TAB_SWITCH: false,
+                DEVTOOLS_HEARTBEAT: true,
 
                 PROCTORING_WEBCAM: false,
                 PROCTORING_SCREEN: false,
@@ -551,7 +552,9 @@
             setTimeout(checkSize, 1000);
 
             // Periodic debugger check
-            this._devtoolsInterval = setInterval(checkDebugger, 2000);
+            if (this.config.DEVTOOLS_HEARTBEAT) {
+                this._devtoolsInterval = setInterval(checkDebugger, 2000);
+            }
         }
 
         getViolationSeverity(type) {

@@ -3133,7 +3133,9 @@ CREATE POLICY "Proctoring: Teacher/Admin Access" ON storage.objects FOR SELECT U
 
 DROP POLICY IF EXISTS "Proctoring: Student Upload" ON storage.objects;
 CREATE POLICY "Proctoring: Student Upload" ON storage.objects FOR INSERT WITH CHECK (
-    bucket_id = 'proctoring' AND get_auth_role() = 'student'
+    bucket_id = 'proctoring' AND
+    get_auth_role() = 'student' AND
+    (storage.foldername(name))[2] = get_auth_email()
 );
 
 DROP POLICY IF EXISTS "Proctoring: Student Select Own" ON storage.objects;
