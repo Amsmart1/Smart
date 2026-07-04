@@ -1476,6 +1476,25 @@ class SupabaseDB {
         _cache.invalidate(`user_${email}`);
     }
 
+    /**
+     * Sends a direct notification to a specific user.
+     */
+    static async notifyUser(params) {
+        return this._request(async () => {
+            const { error } = await supabaseClient.rpc('notify_user', {
+                p_email: params.email,
+                p_title: params.title,
+                p_message: params.message,
+                p_link: params.link || null,
+                p_type: params.type || 'system',
+                p_course_id: params.courseId || null
+            });
+            if (error) throw error;
+            _cache.invalidate(`notifications_${params.email}`);
+            return true;
+        });
+    }
+
     static async markNotificationsAsRead(userEmail, id = null) {
         const query = supabaseClient
             .from('notifications')
@@ -1989,11 +2008,36 @@ class SupabaseDB {
         });
     }
 
-    static async getLiveProctoringSessions() {
+    static async getLiveProctoringSessions(options = {}) {
         return this._request(async () => {
             const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions');
             if (error) throw error;
-            return data || [];
+            let result = data || [];
+
+            if (options.withLatestSnapshots) {
+                const sessionIds = result.map(s => s.session_id);
+                if (sessionIds.length > 0) {
+                    // Fetch latest snapshots for all sessions in a single query
+                    const { data: snaps, error: snapErr } = await supabaseClient
+                        .from('violations')
+                        .select('session_id, metadata->path')
+                        .in('session_id', sessionIds)
+                        .eq('type', 'SNAPSHOT_CAPTURED')
+                        .order('timestamp', { ascending: false });
+
+                    if (!snapErr && snaps) {
+                        // Group by session_id and pick the first one (latest)
+                        const latestMap = {};
+                        snaps.forEach(snap => {
+                            if (!latestMap[snap.session_id]) latestMap[snap.session_id] = snap.path;
+                        });
+
+                        result = result.map(s => ({ ...s, latestSnapshotPath: latestMap[s.session_id] }));
+                    }
+                }
+            }
+
+            return result;
         });
     }
 
