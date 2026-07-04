@@ -664,6 +664,7 @@ const UI = {
                             <span title="Webcam Snapshots">📸 ${s.proctoringStats.snapshots || 0}</span>
                             <span title="Screen Recording Chunks">🖥️ ${s.proctoringStats.chunks || 0}</span>
                             <span title="AI Detected Faces">👤 ${s.proctoringStats.maxFaces || 0}</span>
+                            <span title="Noise Events">🔊 ${s.proctoringStats.noiseEvents || 0}</span>
                         </div>
                     ` : '';
 
@@ -1897,6 +1898,55 @@ const Exporter = {
 
 window.Exporter = Exporter;
 
+window.DeviceUtils = {
+    getBrowser() {
+        const ua = navigator.userAgent;
+        if (ua.includes('Firefox')) return 'Firefox';
+        if (ua.includes('SamsungBrowser')) return 'Samsung Browser';
+        if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
+        if (ua.includes('Trident')) return 'Internet Explorer';
+        if (ua.includes('Edge')) return 'Edge';
+        if (ua.includes('Chrome')) return 'Chrome';
+        if (ua.includes('Safari')) return 'Safari';
+        return 'Unknown';
+    },
+
+    getOS() {
+        const ua = navigator.userAgent;
+        if (ua.includes('Win')) return 'Windows';
+        if (ua.includes('Mac')) return 'MacOS';
+        if (ua.includes('X11')) return 'UNIX';
+        if (ua.includes('Linux')) return 'Linux';
+        if (ua.includes('Android')) return 'Android';
+        if (ua.includes('like Mac')) return 'iOS';
+        return 'Unknown';
+    },
+
+    getDevice() {
+        const ua = navigator.userAgent;
+        if (/(tablet|ipad|playbook|silk)/i.test(ua)) return 'Tablet';
+        if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated/i.test(ua)) return 'Mobile';
+        return 'Desktop';
+    },
+
+    getFullContext() {
+        return {
+            browser: this.getBrowser(),
+            os: this.getOS(),
+            device: this.getDevice(),
+            screenWidth: window.screen?.width || 0,
+            screenHeight: window.screen?.height || 0,
+            colorDepth: window.screen?.colorDepth || 0,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            language: navigator.language,
+            cores: navigator.hardwareConcurrency || 'unknown',
+            memory: navigator.deviceMemory || 'unknown',
+            online: navigator.onLine,
+            userAgent: navigator.userAgent
+        };
+    }
+};
+
 UI.createFileUploader = function(containerId, options = {}) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -2206,12 +2256,14 @@ UI.renderIntegrityReport = function(containerId, violations, userEmail) {
                 </tr>
               </thead>
               <tbody>
-                ${violations.map(v => `
-                  <tr>
+                ${violations.map(v => {
+                  const isLog = v.severity === 'INFO';
+                  return `
+                  <tr class="${isLog ? 'text-muted' : ''}">
                     <td class="small">${new Date(v.timestamp).toLocaleTimeString()}</td>
-                    <td><span class="bold">${escapeHtml(v.type.replace(/_/g, ' '))}</span></td>
+                    <td><span class="${isLog ? '' : 'bold'}">${escapeHtml(v.type.replace(/_/g, ' '))}</span></td>
                     <td>
-                        <span class="badge ${v.severity === 'CRITICAL' ? 'badge-inactive' : (v.severity === 'HIGH' ? 'badge-warn' : 'badge-active')}">
+                        <span class="badge ${v.severity === 'CRITICAL' ? 'badge-inactive' : (v.severity === 'HIGH' ? 'badge-warn' : (isLog ? 'secondary' : 'badge-active'))}">
                             ${v.severity}
                         </span>
                     </td>
@@ -2219,9 +2271,11 @@ UI.renderIntegrityReport = function(containerId, violations, userEmail) {
                     <td class="tiny text-muted">
                         ${v.metadata?.url ? `URL: ${v.metadata.url.substring(0,30)}...` : ''}
                         ${v.metadata?.shortcut ? `Shortcut: ${v.metadata.shortcut}` : ''}
+                        ${v.metadata?.chunkIndex !== undefined ? `Chunk: ${v.metadata.chunkIndex}` : ''}
+                        ${v.metadata?.snapshotIndex !== undefined ? `Snap: ${v.metadata.snapshotIndex}` : ''}
                     </td>
                   </tr>
-                `).join('')}
+                `}).join('')}
               </tbody>
             </table>
           </div>
