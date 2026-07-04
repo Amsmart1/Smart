@@ -3221,7 +3221,7 @@ BEGIN
             'assignment' as type,
             a.title,
             s.student_email,
-            s.created_at as started_at
+            s.submitted_at as started_at
         FROM submissions s
         JOIN assignments a ON s.assignment_id = a.id
         WHERE s.status = 'draft'
