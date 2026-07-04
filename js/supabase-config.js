@@ -1989,10 +1989,77 @@ class SupabaseDB {
         });
     }
 
+    static async getLiveProctoringSessions() {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions');
+            if (error) throw error;
+            return data || [];
+        });
+    }
+
+    static async getExamsTodayCount() {
+        return this._request(async () => {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const isoToday = today.toISOString();
+
+            const [quizCount, subCount] = await Promise.all([
+                this.getCount('quiz_submissions', q => q.gte('started_at', isoToday)),
+                this.getCount('submissions', q => q.gte('submitted_at', isoToday))
+            ]);
+            return quizCount + subCount;
+        });
+    }
+
+    static async getSystemSettings(key) {
+        return _cache.fetch(`sys_setting_${key}`, async () => {
+            return this._request(async () => {
+                const { data, error } = await supabaseClient
+                    .from('system_settings')
+                    .select('value')
+                    .eq('key', key)
+                    .maybeSingle();
+                if (error) throw error;
+                return data?.value || null;
+            });
+        });
+    }
+
+    static async saveSystemSettings(key, value) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient
+                .from('system_settings')
+                .upsert({ key, value, updated_at: new Date().toISOString() })
+                .select();
+            if (error) throw error;
+            _cache.invalidate(`sys_setting_${key}`);
+            return data?.[0];
+        });
+    }
+
+    static subscribeToLiveViolations(callback) {
+        if (!supabaseClient) return null;
+
+        const channel = supabaseClient.channel('live-violations');
+        channel
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'violations'
+            }, (payload) => {
+                callback(payload.new);
+            })
+            .subscribe();
+
+        return channel;
+    }
+
     static async getViolations(assessmentId = null, userEmail = null, teacherEmail = null, options = {}) {
-        const { assessmentType = null, severity = null } = options;
+        const { assessmentType = null, severity = null, sessionId = null } = options;
         return this._request(async () => {
             let query = supabaseClient.from('violations').select('*', { count: 'exact' });
+
+            if (sessionId) query = query.eq('session_id', sessionId);
 
             if (teacherEmail) {
                 // Get teacher's course IDs first
