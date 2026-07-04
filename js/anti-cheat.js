@@ -77,6 +77,19 @@
         async init(assessmentId, assessmentType, userEmail, config = {}) {
             if (this.state.isActive) await this.destroy();
 
+            // Check Global Proctoring Status before starting
+            try {
+                if (window.SupabaseDB) {
+                    const control = await window.SupabaseDB.getSystemSettings('proctoring_control');
+                    if (control && control.status === 'stopped') {
+                        throw new Error('Proctoring and assessments are currently suspended by administrator.');
+                    }
+                }
+            } catch (e) {
+                console.warn('Anti-Cheat: System status check failed', e);
+                if (e.message.includes('suspended')) throw e;
+            }
+
             this.state.sessionId = 'asmt_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
@@ -104,8 +117,88 @@
             this.initVisibilityDetection();
             this.initDevToolsDetection();
             await this.initProctoring();
+            this.initTerminationListener();
+            this.initGlobalControlListener();
 
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
+        }
+
+        initTerminationListener() {
+            if (!window.supabaseClient || !this.state.sessionId) return;
+
+            const channelId = `terminate-${this.state.sessionId}`;
+            this.terminationChannel = window.supabaseClient.channel(channelId)
+                .on('postgres_changes', {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'violations',
+                    filter: `session_id=eq.${this.state.sessionId}`
+                }, (payload) => {
+                    if (payload.new?.type === 'SESSION_TERMINATED') {
+                        this.handleRemoteTermination(payload.new.metadata?.reason);
+                    }
+                })
+                .subscribe();
+        }
+
+        initGlobalControlListener() {
+            if (!window.supabaseClient) return;
+
+            this.globalControlChannel = window.supabaseClient.channel('global-proctoring-control')
+                .on('postgres_changes', {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'system_settings',
+                    filter: 'key=eq.proctoring_control'
+                }, (payload) => {
+                    const status = payload.new?.value?.status;
+                    if (status === 'stopped') {
+                        this.handleRemoteTermination('Global proctoring suspended by administrator');
+                    }
+                })
+                .subscribe();
+        }
+
+        async handleRemoteTermination(reason = 'Administrative action') {
+            if (!this.state.isActive) return;
+
+            console.warn('Anti-Cheat: Session terminated remotely:', reason);
+
+            // 1. Immediately block UI
+            const overlay = document.createElement('div');
+            overlay.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(0,0,0,0.9); z-index: 1000000;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
+                color: white; font-family: sans-serif; text-align: center; padding: 20px;
+            `;
+            overlay.innerHTML = `
+                <div style="max-width: 600px">
+                    <h1 style="color: #ff4d4d; font-size: 3rem; margin-bottom: 20px;">SESSION TERMINATED</h1>
+                    <p style="font-size: 1.5rem; margin-bottom: 30px;">Your assessment session has been terminated by an administrator.</p>
+                    <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                        <strong>Reason:</strong> ${reason}
+                    </div>
+                    <button id="term-exit-btn" style="
+                        background: #5b2ea6; color: white; border: none; padding: 15px 40px;
+                        font-size: 1.2rem; border-radius: 8px; cursor: pointer;
+                    ">Return to Dashboard</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            // 2. Stop all proctoring and listeners
+            await this.destroy();
+
+            // 3. Force navigation on button click
+            document.getElementById('term-exit-btn').onclick = () => {
+                window.location.href = 'student.html';
+            };
+
+            // 4. Auto-redirect after 10 seconds if no action
+            setTimeout(() => {
+                window.location.href = 'student.html';
+            }, 10000);
         }
 
         async initProctoring() {
@@ -632,7 +725,8 @@
                 'SCREEN_RECORDING_FINALIZED': 'INFO',
                 'AUDIO_RECORDING_STARTED': 'INFO',
                 'AUDIO_RECORDING_FINALIZED': 'INFO',
-                'WEBCAM_SWITCHED': 'INFO'
+                'WEBCAM_SWITCHED': 'INFO',
+                'SESSION_TERMINATED': 'CRITICAL'
             };
             return weights[type] || 'LOW';
         }
@@ -697,6 +791,16 @@
             if (this._devtoolsInterval) {
                 clearInterval(this._devtoolsInterval);
                 this._devtoolsInterval = null;
+            }
+
+            if (this.terminationChannel) {
+                window.supabaseClient?.removeChannel(this.terminationChannel);
+                this.terminationChannel = null;
+            }
+
+            if (this.globalControlChannel) {
+                window.supabaseClient?.removeChannel(this.globalControlChannel);
+                this.globalControlChannel = null;
             }
 
             this.eventListeners.forEach(l => {
