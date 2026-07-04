@@ -2016,7 +2016,13 @@ class SupabaseDB {
             if (assessmentType) query = query.eq('assessment_type', assessmentType);
             if (severity) query = query.eq('severity', severity);
 
-            return this._getPaginated(query.order('timestamp', { ascending: false }), options);
+            query = query.order('timestamp', { ascending: false });
+
+            if (options.all) {
+                const data = await this._getAll(query);
+                return { data: data || [], total: data?.length || 0 };
+            }
+            return this._getPaginated(query, options);
         });
     }
 
@@ -2072,7 +2078,7 @@ class SupabaseDB {
                     violationCount: 0,
                     totalScore: 0,
                     criticalCount: 0,
-                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0, noiseEvents: 0 }
+                    proctoringStats: { snapshots: 0, chunks: 0, audioChunks: 0, maxFaces: 0, noiseEvents: 0 }
                 };
             }
 
@@ -2086,6 +2092,7 @@ class SupabaseDB {
                 const stats = summaryMap[key].proctoringStats;
                 if (v.type === 'SNAPSHOT_CAPTURED') stats.snapshots++;
                 if (v.type === 'CHUNK_RECORDED') stats.chunks++;
+                if (v.type === 'AUDIO_RECORDED') stats.audioChunks = (stats.audioChunks || 0) + 1;
                 if (v.type === 'FACE_DETECTED') {
                     const count = v.metadata?.count || 0;
                     if (count > stats.maxFaces) stats.maxFaces = count;
@@ -2130,7 +2137,7 @@ class SupabaseDB {
                     studentCount: new Set(),
                     totalScore: 0,
                     criticalCount: 0,
-                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0, noiseEvents: 0 }
+                    proctoringStats: { snapshots: 0, chunks: 0, audioChunks: 0, maxFaces: 0, noiseEvents: 0 }
                 };
             }
 
@@ -2143,6 +2150,7 @@ class SupabaseDB {
                 const stats = summaryMap[key].proctoringStats;
                 if (v.type === 'SNAPSHOT_CAPTURED') stats.snapshots++;
                 if (v.type === 'CHUNK_RECORDED') stats.chunks++;
+                if (v.type === 'AUDIO_RECORDED') stats.audioChunks = (stats.audioChunks || 0) + 1;
                 if (v.type === 'FACE_DETECTED') {
                     const count = v.metadata?.count || 0;
                     if (count > stats.maxFaces) stats.maxFaces = count;
@@ -2173,6 +2181,35 @@ class SupabaseDB {
             .from(bucket)
             .getPublicUrl(path);
         return data.publicUrl;
+    }
+
+    /**
+     * Generates a temporary signed URL for private bucket access.
+     */
+    static async createSignedUrl(bucket, path, expires = 3600) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient.storage
+                .from(bucket)
+                .createSignedUrl(path, expires);
+            if (error) throw error;
+            return data.signedUrl;
+        });
+    }
+
+    /**
+     * Fetches all violation records for a specific session that contain media.
+     */
+    static async getViolationMedia(sessionId) {
+        return this._request(async () => {
+            const { data, error } = await supabaseClient
+                .from('violations')
+                .select('*')
+                .eq('session_id', sessionId)
+                .not('metadata->path', 'is', null)
+                .order('timestamp', { ascending: true });
+            if (error) throw error;
+            return data || [];
+        });
     }
 
     /**

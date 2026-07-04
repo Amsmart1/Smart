@@ -700,6 +700,20 @@ async function showAssignmentForm(assignmentId) {
 
   // Initialize Anti-Cheat if configured
   if (a.anti_cheat_config && Object.values(a.anti_cheat_config).some(v => v === true)) {
+    const ac = a.anti_cheat_config;
+    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_AUDIO || ac.PROCTORING_FACE_DETECTION || ac.PROCTORING_NOISE_DETECTION;
+
+    if (needsGesture) {
+        // Assignments don't have a built-in pre-start screen like quizzes yet,
+        // so we prompt for gesture if high-security proctoring is enabled.
+        const confirmed = await UI.confirm(`This assignment requires advanced proctoring (Camera/Screen/Audio). Click Confirm to grant permissions and start.`, 'Security Check');
+        if (!confirmed) {
+            UI.showNotification('Security check rejected. Closing assignment.');
+            formWrap.style.display = 'none';
+            return;
+        }
+    }
+
     await AntiCheat.init(a.id, 'assignment', user.email, {
         ...a.anti_cheat_config,
         courseId: a.course_id,
@@ -2512,7 +2526,7 @@ async function startQuiz(quizId) {
 
     // Handle Anti-Cheat initialization with gesture requirement
     const ac = quiz.anti_cheat_config || {};
-    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_FACE_DETECTION || ac.PROCTORING_NOISE_DETECTION;
+    const needsGesture = ac.FULLSCREEN_REQUIRED || ac.PROCTORING_WEBCAM || ac.PROCTORING_SCREEN || ac.PROCTORING_AUDIO || ac.PROCTORING_FACE_DETECTION || ac.PROCTORING_NOISE_DETECTION;
 
     if (needsGesture) {
         const qContainer = document.getElementById('questionContainer');

@@ -1692,6 +1692,7 @@ CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
+CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
 
 -- Ensure uniqueness for certificates to prevent duplicates
@@ -3109,7 +3110,14 @@ CREATE POLICY "Backups: Admin Manage" ON storage.objects FOR ALL USING (
 -- 11.5 Proctoring Bucket Policies
 DROP POLICY IF EXISTS "Proctoring: Teacher/Admin Access" ON storage.objects;
 CREATE POLICY "Proctoring: Teacher/Admin Access" ON storage.objects FOR SELECT USING (
-    bucket_id = 'proctoring' AND (is_teacher() OR is_admin())
+    bucket_id = 'proctoring' AND (
+        is_admin() OR
+        (is_teacher() AND EXISTS (
+            SELECT 1 FROM violations v
+            WHERE v.teacher_email = get_auth_email()
+            AND v.session_id = (storage.foldername(name))[5]
+        ))
+    )
 );
 
 DROP POLICY IF EXISTS "Proctoring: Student Upload" ON storage.objects;

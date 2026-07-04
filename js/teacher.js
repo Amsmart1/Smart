@@ -1671,7 +1671,7 @@ async function viewStudentIntegrityReport(assessmentId, studentEmail) {
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
     backdrop.innerHTML = `
-        <div class="modal" style="max-width: 900px">
+        <div class="modal" style="max-width: 1000px">
             <div class="flex-between mb-20">
                 <h3 class="m-0">Integrity Report: ${escapeHtml(studentEmail)}</h3>
                 <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
@@ -1682,7 +1682,8 @@ async function viewStudentIntegrityReport(assessmentId, studentEmail) {
     document.body.appendChild(backdrop);
 
     try {
-        const { data: violations } = await SupabaseDB.getViolations(assessmentId, studentEmail, null);
+        // Fetch all violations including INFO logs for media evidence
+        const { data: violations } = await SupabaseDB.getViolations(assessmentId, studentEmail, null, { all: true });
         if (renderId !== window.currentRenderId) return;
         UI.renderIntegrityReport('reportContentArea', violations, studentEmail);
     } catch (e) {
@@ -1730,6 +1731,7 @@ function openAntiCheatModal(type) {
 
         { key: 'PROCTORING_WEBCAM', label: 'Webcam Monitoring', desc: 'Captures periodic snapshots of the student via webcam.', category: 'Proctoring & AI' },
         { key: 'PROCTORING_SCREEN', label: 'Screen Recording', desc: 'Records the student\'s screen in chunks throughout the assessment.', category: 'Proctoring & AI' },
+        { key: 'PROCTORING_AUDIO', label: 'Periodic Audio Recording', desc: 'Captures audio chunks from the student\'s microphone.', category: 'Proctoring & AI' },
         { key: 'PROCTORING_FACE_DETECTION', label: 'AI Face Detection', desc: 'Detects presence of multiple faces or absence of the student.', category: 'Proctoring & AI' }
     ];
 
