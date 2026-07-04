@@ -720,6 +720,7 @@
     stop() {
       this._running = false;
       if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+      this.detector = null;
     }
 
     /**
@@ -837,6 +838,9 @@
       if (this.audioCtx && this.audioCtx.state !== 'closed') {
         this.audioCtx.close().catch(() => {});
       }
+      this.audioCtx = null;
+      this.analyser = null;
+      this.source = null;
     }
 
     /**
@@ -2187,6 +2191,7 @@
       this.faceDetector.stop();
       this.noiseDetector.stop();
       this._stopConnectionMonitor();
+      this._finalizeScreenRecording();
       this._finalizeAudioRecording();
       this._stopStreams();
       this._destroyWorker();

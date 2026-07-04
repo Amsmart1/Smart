@@ -3056,8 +3056,9 @@ async function renderLiveProctoring() {
             <div class="flex-between mb-20">
                 <h2 class="m-0">Live Proctoring Dashboard</h2>
                 <div class="flex gap-10">
+                    <button class="button secondary small w-auto" onclick="showLiveFeedModal()" style="background:var(--ok); color:white">📺 Open Live Feed</button>
                     <button class="button secondary small w-auto" onclick="renderLiveProctoring()">Refresh</button>
-                    <button class="button small w-auto" style="background:#5b2ea6">Export Report</button>
+                    <button class="button small w-auto" style="background:#5b2ea6" onclick="exportProctoringReport()">Export Report</button>
                 </div>
             </div>
 
@@ -3068,7 +3069,7 @@ async function renderLiveProctoring() {
                         <strong style="font-size:1.1rem">AI Proctoring System</strong>
                         <span class="tiny" style="opacity:0.8; margin-left:10px">${status === 'active' ? 'Active Monitoring' : 'Monitoring Paused'}</span>
                     </div>
-                    <button class="button tiny w-auto" style="background:rgba(255,255,255,0.2); border:1px solid rgba(255,255,255,0.4)" onclick="UI.showNotification('Configuration options coming soon', 'info')">Configure</button>
+                    <button class="button tiny w-auto" style="background:rgba(255,255,255,0.2); border:1px solid rgba(255,255,255,0.4)" onclick="showProctoringConfigModal()">Configure</button>
                 </div>
             </div>
 
@@ -3161,7 +3162,7 @@ function renderSessionsTable(sessions) {
                 <td>
                     <div class="flex gap-5">
                         <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                        <button class="button secondary tiny w-auto" onclick="UI.showNotification('Messaging student...', 'info')">Message</button>
+                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}')">Message</button>
                         <button class="button danger tiny w-auto" onclick="terminateSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
                     </div>
                 </td>
@@ -3202,12 +3203,34 @@ async function updateProctoringStatus(status) {
     }
 }
 
+let _liveSurveillanceActive = false;
+
 async function monitorLiveSession(sessionId, email) {
     const backdrop = UI.showModal('Live Session Monitor: ' + email, `
+        <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
+            <div class="flex-center-y gap-10">
+                <div class="pulse-indicator" id="surveillance-pulse" style="width:10px; height:10px; background:#48bb78; border-radius:50%; display:none"></div>
+                <span class="small bold">Live Surveillance</span>
+            </div>
+            <label class="switch-container flex-center-y gap-10">
+                <input type="checkbox" id="surveillance-toggle" style="width:auto; margin:0">
+                <span class="tiny text-muted">Auto-play audio & update feed</span>
+            </label>
+        </div>
         <div id="liveMonitorContent" style="min-height:400px">
             <div class="flex-center p-40"><div class="loading-spinner"></div></div>
         </div>
     `, { maxWidth: '1000px' });
+
+    _liveSurveillanceActive = false;
+    const toggle = document.getElementById('surveillance-toggle');
+    const pulse = document.getElementById('surveillance-pulse');
+
+    toggle.onchange = (e) => {
+        _liveSurveillanceActive = e.target.checked;
+        pulse.style.display = _liveSurveillanceActive ? 'block' : 'none';
+        if (_liveSurveillanceActive) UI.showNotification('Live surveillance mode active', 'success');
+    };
 
     try {
         // Initial fetch
@@ -3222,18 +3245,44 @@ async function monitorLiveSession(sessionId, email) {
                 table: 'violations',
                 filter: `session_id=eq.${sessionId}`
             }, async (payload) => {
+                const newViolation = payload.new;
                 const updated = await SupabaseDB.getViolations(null, email, null, { sessionId, all: true });
+
+                // Re-render report to update lists
                 UI.renderIntegrityReport('liveMonitorContent', updated, email);
-                UI.showNotification('New evidence captured for live session', 'info');
+
+                if (_liveSurveillanceActive) {
+                    // 1. Auto-handle audio chunks
+                    if (newViolation.type === 'AUDIO_RECORDED' && newViolation.metadata?.path) {
+                        UI.showNotification('Live audio captured', 'info');
+                        try {
+                            const url = await SupabaseDB.createSignedUrl('proctoring', newViolation.metadata.path);
+                            const audio = new Audio(url);
+                            audio.play().catch(e => console.warn('Audio auto-play blocked:', e));
+                        } catch(e) {}
+                    }
+
+                    // 2. Refresh thumbnails if we were on the snaps tab
+                    const snapsTab = document.getElementById('proctor-snaps');
+                    if (snapsTab && !snapsTab.classList.contains('hidden')) {
+                        const loadBtn = snapsTab.querySelector('button');
+                        if (loadBtn && loadBtn.textContent.includes('Load')) {
+                            UI._loadProctorThumbnails(loadBtn);
+                        }
+                    }
+                } else {
+                    UI.showNotification('New evidence captured for live session', 'info');
+                }
             })
             .subscribe();
 
-        backdrop.addEventListener('click', (e) => {
-            if (e.target === backdrop) window.supabaseClient.removeChannel(channel);
-        });
-        backdrop.querySelector('button.secondary.tiny').addEventListener('click', () => {
-             window.supabaseClient.removeChannel(channel);
-        });
+        const cleanup = () => {
+            _liveSurveillanceActive = false;
+            window.supabaseClient?.removeChannel(channel);
+        };
+
+        backdrop.onclick = (e) => { if (e.target === backdrop) cleanup(); };
+        backdrop.querySelector('button.secondary.tiny').onclick = cleanup;
 
     } catch (e) {
         document.getElementById('liveMonitorContent').innerHTML = '<div class="empty">Error loading session data</div>';
@@ -3263,7 +3312,186 @@ async function terminateSession(sessionId, email) {
     }
 }
 
+async function exportProctoringReport() {
+    UI.showNotification('Preparing proctoring report...', 'info');
+    try {
+        const sessions = await SupabaseDB.getLiveProctoringSessions();
+        if (!sessions || sessions.length === 0) {
+            return UI.showNotification('No active sessions to export.', 'warn');
+        }
+
+        const headers = ['Student', 'Email', 'Assessment', 'Type', 'Started At', 'Last Activity', 'Violations', 'Status'];
+        const rows = sessions.map(s => [
+            s.full_name,
+            s.user_email,
+            s.assessment_title,
+            s.assessment_type,
+            new Date(s.started_at).toLocaleString(),
+            new Date(s.last_activity).toLocaleString(),
+            s.violation_count,
+            s.status
+        ]);
+
+        Exporter.csv(`proctoring_report_${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+        UI.showNotification('Report exported successfully.', 'success');
+    } catch (e) {
+        console.error('Export failed:', e);
+        UI.showNotification('Failed to export report: ' + e.message, 'error');
+    }
+}
+
 window.renderLiveProctoring = renderLiveProctoring;
 window.monitorLiveSession = monitorLiveSession;
 window.terminateSession = terminateSession;
 window.updateProctoringStatus = updateProctoringStatus;
+async function showProctoringConfigModal() {
+    const control = await SupabaseDB.getSystemSettings('proctoring_control') || { status: 'active' };
+
+    const html = `
+        <div class="p-10">
+            <p class="small mb-20">Global configuration for the AI Proctoring system. These settings affect all ongoing and future assessments.</p>
+
+            <div class="mb-20">
+                <label class="bold small">System Status</label>
+                <select id="config-system-status" class="w-100 mt-5">
+                    <option value="active" ${control.status === 'active' ? 'selected' : ''}>Active (Monitoring Enabled)</option>
+                    <option value="paused" ${control.status === 'paused' ? 'selected' : ''}>Paused (Logs only, no alerts)</option>
+                    <option value="stopped" ${control.status === 'stopped' ? 'selected' : ''}>Suspended (Block all assessments)</option>
+                </select>
+            </div>
+
+            <div class="mb-20">
+                <label class="bold small">Violation Thresholds</label>
+                <div class="grid-2 gap-10 mt-5">
+                    <div>
+                        <label class="tiny">Warning Threshold</label>
+                        <input type="number" id="config-warn-threshold" value="${control.warnThreshold || 1}" min="1" class="m-0">
+                    </div>
+                    <div>
+                        <label class="tiny">Flagged Threshold</label>
+                        <input type="number" id="config-flag-threshold" value="${control.flagThreshold || 5}" min="1" class="m-0">
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-20">
+                <label class="bold small">Retention Policy</label>
+                <select id="config-retention" class="w-100 mt-5">
+                    <option value="30" ${control.retention === 30 ? 'selected' : ''}>30 Days</option>
+                    <option value="90" ${control.retention === 90 ? 'selected' : ''}>90 Days (Default)</option>
+                    <option value="180" ${control.retention === 180 ? 'selected' : ''}>180 Days</option>
+                    <option value="365" ${control.retention === 365 ? 'selected' : ''}>1 Year</option>
+                </select>
+            </div>
+
+            <div class="flex-end gap-10 mt-30">
+                <button class="button secondary w-auto px-20" onclick="this.closest('.modal-backdrop').remove()">Cancel</button>
+                <button class="button w-auto px-40" id="save-proctor-config">Save Configuration</button>
+            </div>
+        </div>
+    `;
+
+    const backdrop = UI.showModal('Proctoring Configuration', html, { maxWidth: '500px' });
+
+    document.getElementById('save-proctor-config').onclick = async () => {
+        const btn = document.getElementById('save-proctor-config');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        const newConfig = {
+            status: document.getElementById('config-system-status').value,
+            warnThreshold: parseInt(document.getElementById('config-warn-threshold').value),
+            flagThreshold: parseInt(document.getElementById('config-flag-threshold').value),
+            retention: parseInt(document.getElementById('config-retention').value)
+        };
+
+        try {
+            await SupabaseDB.saveSystemSettings('proctoring_control', newConfig);
+            UI.showNotification('Proctoring configuration updated successfully.', 'success');
+            backdrop.remove();
+            renderLiveProctoring();
+        } catch (e) {
+            UI.showNotification('Failed to save config: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Save Configuration';
+        }
+    };
+}
+
+async function sendMessageToStudent(email) {
+    const msg = await UI.prompt(`Send a priority message to student ${email}:`, '', 'Priority Message');
+    if (!msg) return;
+
+    try {
+        await SupabaseDB.notifyUser({
+            email: email,
+            title: 'Proctoring Alert',
+            message: msg,
+            type: 'system'
+        });
+        UI.showNotification('Message sent to student.', 'success');
+    } catch (e) {
+        UI.showNotification('Failed to send message: ' + e.message, 'error');
+    }
+}
+
+async function showLiveFeedModal() {
+    const backdrop = UI.showModal('Real-time Proctoring Feed', `
+        <div id="live-feed-grid" class="grid-3 gap-15">
+            <div class="flex-center p-40" style="grid-column: 1/-1"><div class="loading-spinner"></div></div>
+        </div>
+    `, { maxWidth: '1200px' });
+
+    const grid = document.getElementById('live-feed-grid');
+
+    const updateFeed = async () => {
+        const sessions = await SupabaseDB.getLiveProctoringSessions({ withLatestSnapshots: true });
+        if (!sessions || sessions.length === 0) {
+            grid.innerHTML = '<div class="empty p-40" style="grid-column: 1/-1">No active sessions currently streaming.</div>';
+            return;
+        }
+
+        const proms = sessions.map(async s => {
+            let snapUrl = null;
+            if (s.latestSnapshotPath) {
+                snapUrl = await SupabaseDB.createSignedUrl('proctoring', s.latestSnapshotPath);
+            }
+            return { ...s, snapUrl };
+        });
+
+        const sessionsWithSnaps = await Promise.all(proms);
+
+        grid.innerHTML = sessionsWithSnaps.map(s => `
+            <div class="card p-0 overflow-hidden animate-fade-in" style="border: 2px solid ${s.violation_count > 5 ? 'var(--danger)' : (s.violation_count > 0 ? 'var(--warn)' : 'var(--border)')}">
+                <div class="p-10 flex-between bg-light">
+                    <div>
+                        <div class="bold tiny">${escapeHtml(s.full_name)}</div>
+                        <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+                    </div>
+                    <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'badge-active'} tiny">${s.violation_count} V</span>
+                </div>
+                <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
+                    ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
+                    <div class="absolute bottom-5 right-5 flex gap-5">
+                        <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    };
+
+    updateFeed();
+    const interval = setInterval(updateFeed, 15000);
+
+    const cleanup = () => {
+        clearInterval(interval);
+    };
+
+    backdrop.onclick = (e) => { if (e.target === backdrop) cleanup(); };
+    backdrop.querySelector('button.secondary.tiny').onclick = cleanup;
+}
+
+window.exportProctoringReport = exportProctoringReport;
+window.showProctoringConfigModal = showProctoringConfigModal;
+window.sendMessageToStudent = sendMessageToStudent;
+window.showLiveFeedModal = showLiveFeedModal;

@@ -1709,6 +1709,7 @@ CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
+CREATE INDEX IF NOT EXISTS idx_violations_session_timestamp ON violations(session_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
 CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
