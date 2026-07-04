@@ -474,18 +474,20 @@ CREATE TABLE IF NOT EXISTS invites (
 
 CREATE TABLE IF NOT EXISTS violations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id VARCHAR(255), -- Links multiple events to a single assessment session
   course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
   teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
   assessment_id UUID NOT NULL,
   assessment_type VARCHAR(50) NOT NULL CHECK (assessment_type IN ('assignment', 'quiz')),
-  type VARCHAR(100) NOT NULL,
+  type VARCHAR(100) NOT NULL, -- e.g., 'TAB_SWITCH', 'SNAPSHOT_CAPTURED', 'FACE_DETECTED'
   browser VARCHAR(100),
   device VARCHAR(50),
   os VARCHAR(50),
+  device_info JSONB DEFAULT '{}'::jsonb, -- Unified hardware/browser context
   elapsed_time INTEGER, -- in milliseconds
-  score INTEGER,
-  severity VARCHAR(20),
+  score INTEGER DEFAULT 0,
+  severity VARCHAR(20) DEFAULT 'LOW', -- LOW, MEDIUM, HIGH, CRITICAL, INFO (for proctoring logs)
   metadata JSONB DEFAULT '{}'::jsonb,
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -501,22 +503,6 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   message TEXT NOT NULL,
   status VARCHAR(50) DEFAULT 'open' CHECK (status IN ('open', 'pending', 'resolved', 'closed')),
   resolution_notes TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS proctoring_logs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  session_id VARCHAR(255) NOT NULL,
-  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
-  attempt_id UUID NOT NULL, -- Links to assessment ID (quiz.id or assignment.id)
-  user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
-  teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
-  event_type VARCHAR(100) NOT NULL,
-  event_data JSONB DEFAULT '{}'::jsonb,
-  elapsed INTEGER, -- milliseconds since start
-  device JSONB DEFAULT '{}'::jsonb,
-  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -659,19 +645,38 @@ BEGIN
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS session_id VARCHAR(255);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_id UUID;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_type VARCHAR(50);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS type VARCHAR(100);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS browser VARCHAR(100);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS device VARCHAR(50);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS os VARCHAR(50);
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS device_info JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS elapsed_time INTEGER;
-    ALTER TABLE violations ADD COLUMN IF NOT EXISTS score INTEGER;
-    ALTER TABLE violations ADD COLUMN IF NOT EXISTS severity VARCHAR(20);
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS score INTEGER DEFAULT 0;
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT 'LOW';
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE violations DROP COLUMN IF EXISTS details;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days');
+
+    -- Data Migration: Consolidate proctoring_logs into violations
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'proctoring_logs') THEN
+        INSERT INTO violations (
+            session_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
+            type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
+        )
+        SELECT
+            session_id, course_id, user_email, teacher_email, attempt_id,
+            CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN 'quiz' ELSE 'assignment' END,
+            event_type, elapsed, device, event_data, timestamp, created_at, updated_at
+        FROM proctoring_logs
+        ON CONFLICT DO NOTHING;
+
+        -- We don't drop the table here yet to avoid parsing errors in subsequent blocks if the script is run in one go,
+        -- but we've migrated the data. The actual DROP happens later in the script.
+    END IF;
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'Migration step failed: %', SQLERRM;
 END $$;
@@ -918,7 +923,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
     LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS update_%I_updated_at ON %I', t, t);
         EXECUTE format('CREATE TRIGGER update_%I_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()', t, t);
@@ -1341,15 +1346,13 @@ BEGIN
     ELSIF TG_TABLE_NAME = 'attendance' THEN
       SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
     ELSIF TG_TABLE_NAME = 'violations' THEN
-      IF NEW.assessment_type = 'assignment' THEN
-        SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
-      ELSIF NEW.assessment_type = 'quiz' THEN
-        SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
-      END IF;
-    ELSIF TG_TABLE_NAME = 'proctoring_logs' THEN
-      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.attempt_id;
-      IF NEW.course_id IS NULL THEN
-        SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.attempt_id;
+      IF NEW.course_id IS NULL AND NEW.assessment_id IS NOT NULL THEN
+          -- Try Quiz first
+          SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
+          IF NEW.course_id IS NULL THEN
+              -- Then Assignment
+              SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
+          END IF;
       END IF;
     END IF;
   END IF;
@@ -1405,8 +1408,6 @@ CREATE TRIGGER tr_study_session_data_inherit BEFORE INSERT ON study_sessions FOR
 DROP TRIGGER IF EXISTS tr_violation_data_inherit ON violations;
 CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
 
-DROP TRIGGER IF EXISTS tr_proctoring_log_data_inherit ON proctoring_logs;
-CREATE TRIGGER tr_proctoring_log_data_inherit BEFORE INSERT ON proctoring_logs FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
 
 -- 5. Validation Triggers
 
@@ -1689,12 +1690,9 @@ CREATE INDEX IF NOT EXISTS idx_quizzes_status ON quizzes(status);
 CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
+CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
+CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
-
-CREATE INDEX IF NOT EXISTS idx_proctoring_logs_session ON proctoring_logs(session_id);
-CREATE INDEX IF NOT EXISTS idx_proctoring_logs_attempt ON proctoring_logs(attempt_id);
-CREATE INDEX IF NOT EXISTS idx_proctoring_logs_user ON proctoring_logs(user_email);
-CREATE INDEX IF NOT EXISTS idx_proctoring_logs_event ON proctoring_logs(event_type);
 
 -- Ensure uniqueness for certificates to prevent duplicates
 CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_unique_single ON certificates (student_email, course_id) WHERE (type = 'single');
@@ -2620,7 +2618,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -2635,7 +2633,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'proctoring_logs')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
     LOOP
         EXECUTE format('DROP POLICY IF EXISTS "Migration: Admin ALL" ON %I', t);
         EXECUTE format('CREATE POLICY "Migration: Admin ALL" ON %I FOR ALL USING (_is_migration_mode())', t);
@@ -2960,26 +2958,8 @@ CREATE POLICY "Violations: Delete" ON violations FOR DELETE USING (
   is_teacher() AND EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND teacher_email = get_auth_email())
 );
 
--- proctoring_logs RLS
-DROP POLICY IF EXISTS "Proctoring Logs: Access" ON proctoring_logs;
-CREATE POLICY "Proctoring Logs: Access" ON proctoring_logs FOR SELECT USING (
-  is_admin() OR
-  teacher_email = get_auth_email() OR
-  (user_email = get_auth_email() AND EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND status = 'published'))
-);
-
-DROP POLICY IF EXISTS "Proctoring Logs: Insert" ON proctoring_logs;
-CREATE POLICY "Proctoring Logs: Insert" ON proctoring_logs FOR INSERT WITH CHECK (
-  user_email = get_auth_email() AND
-  EXISTS (SELECT 1 FROM enrollments WHERE course_id = proctoring_logs.course_id AND student_email = get_auth_email()) AND
-  EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND status = 'published')
-);
-
-DROP POLICY IF EXISTS "Proctoring Logs: Delete" ON proctoring_logs;
-CREATE POLICY "Proctoring Logs: Delete" ON proctoring_logs FOR DELETE USING (
-  is_admin() OR
-  (is_teacher() AND EXISTS (SELECT 1 FROM courses WHERE id = proctoring_logs.course_id AND teacher_email = get_auth_email()))
-);
+-- Final Cleanup: Drop redundant proctoring_logs table
+DROP TABLE IF EXISTS proctoring_logs CASCADE;
 
 -- 18. Planner Table
 DROP POLICY IF EXISTS "Planner: User Access" ON planner;

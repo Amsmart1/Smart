@@ -41,12 +41,13 @@
 
             this.state = {
                 isActive: false,
+                sessionId: null, // Unique ID for this specific assessment attempt
                 assessmentId: null,
                 assessmentType: null, // 'quiz' or 'assignment'
                 userEmail: null,
                 startTime: null,
                 lastViolationTime: {},
-                sessionInfo: {
+                sessionInfo: window.DeviceUtils ? window.DeviceUtils.getFullContext() : {
                     browser: this.getBrowserInfo(),
                     device: this.getDeviceInfo(),
                     os: this.getOSInfo()
@@ -75,12 +76,18 @@
         async init(assessmentId, assessmentType, userEmail, config = {}) {
             if (this.state.isActive) await this.destroy();
 
+            this.state.sessionId = 'asmt_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
             this.state.courseId = config.courseId || null;
             this.state.userEmail = userEmail;
             this.state.startTime = Date.now();
             this.state.isActive = true;
+
+            // Re-sync device info in case of changes
+            if (window.DeviceUtils) {
+                this.state.sessionInfo = window.DeviceUtils.getFullContext();
+            }
 
             this.configure(config);
 
@@ -117,6 +124,7 @@
                 this.proctor = new ProctorEngine({
                     supabaseUrl: window.supabaseClient?.supabaseUrl,
                     supabaseKey: window.supabaseClient?.supabaseKey,
+                    sessionId: this.state.sessionId,
                     attemptId: this.state.assessmentId,
                     courseId: this.state.courseId,
                     userId: this.state.userEmail,
@@ -141,22 +149,33 @@
         async injectViolation(violation) {
             // Forward from ProctorEngine to standard AntiCheat logging
             const metadata = violation.event_data || violation.data || violation;
-            this.logViolation(violation.type, metadata);
+
+            // Standardize severity for proctoring logs if not provided
+            const logTypes = ['SESSION_STARTED', 'SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
+            const isLog = logTypes.includes(violation.type);
+            const severity = violation.severity || (isLog ? 'INFO' : this.getViolationSeverity(violation.type));
+            const score = violation.score || (isLog ? 0 : this.getViolationScore(violation.type));
+
+            this.logViolation(violation.type, metadata, { severity, score, elapsed: violation.elapsed });
         }
 
-        logViolation(type, metadata = {}) {
+        logViolation(type, metadata = {}, options = {}) {
             if (!this.state.isActive) return;
 
             const now = Date.now();
             const lastTime = this.state.lastViolationTime[type] || 0;
-            if (now - lastTime < this.config.MIN_VIOLATION_INTERVAL) return;
+
+            // High-frequency logs (snapshots/chunks) bypass interval check
+            const isHighFreq = ['SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'FACE_DETECTED', 'NOISE_DETECTED'].includes(type);
+            if (!isHighFreq && (now - lastTime < this.config.MIN_VIOLATION_INTERVAL)) return;
 
             this.state.lastViolationTime[type] = now;
 
-            const severity = this.getViolationSeverity(type);
-            const score = this.getViolationScore(type);
+            const severity = options.severity || this.getViolationSeverity(type);
+            const score = options.score !== undefined ? options.score : this.getViolationScore(type);
 
             const violation = {
+                session_id: this.state.sessionId,
                 user_email: this.state.userEmail,
                 assessment_id: this.state.assessmentId,
                 assessment_type: this.state.assessmentType,
@@ -165,7 +184,8 @@
                 browser: this.state.sessionInfo.browser || 'Unknown',
                 device: this.state.sessionInfo.device || 'Unknown',
                 os: this.state.sessionInfo.os || 'Unknown',
-                elapsed_time: Math.max(0, now - (this.state.startTime || now)),
+                device_info: this.state.sessionInfo,
+                elapsed_time: options.elapsed || Math.max(0, now - (this.state.startTime || now)),
                 score: score || 0,
                 severity: severity || 'LOW',
                 metadata: {
@@ -215,6 +235,8 @@
 
             const counts = {};
             violations.forEach(v => {
+                if (v.severity === 'INFO') return; // Skip proctoring logs for stats
+
                 const type = v.type;
                 counts[type] = (counts[type] || 0) + 1;
                 stats.totalScore += v.score || 0;
@@ -596,7 +618,15 @@
                 'TEXT_SELECTION': 'LOW',
                 'MULTIPLE_FACES': 'HIGH',
                 'NOISE_DETECTED': 'MEDIUM',
-                'PROCTORING_FAILURE': 'MEDIUM'
+                'PROCTORING_FAILURE': 'MEDIUM',
+                'SESSION_STARTED': 'INFO',
+                'SESSION_ENDED': 'INFO',
+                'SNAPSHOT_CAPTURED': 'INFO',
+                'CHUNK_RECORDED': 'INFO',
+                'FACE_DETECTED': 'INFO',
+                'SCREEN_RECORDING_STARTED': 'INFO',
+                'SCREEN_RECORDING_FINALIZED': 'INFO',
+                'WEBCAM_SWITCHED': 'INFO'
             };
             return weights[type] || 'LOW';
         }
@@ -612,33 +642,15 @@
         }
 
         getBrowserInfo() {
-            const ua = navigator.userAgent;
-            if (ua.includes("Firefox")) return "Firefox";
-            if (ua.includes("SamsungBrowser")) return "Samsung Browser";
-            if (ua.includes("Opera") || ua.includes("OPR")) return "Opera";
-            if (ua.includes("Trident")) return "Internet Explorer";
-            if (ua.includes("Edge")) return "Edge";
-            if (ua.includes("Chrome")) return "Chrome";
-            if (ua.includes("Safari")) return "Safari";
-            return "Unknown Browser";
+            return window.DeviceUtils ? window.DeviceUtils.getBrowser() : "Unknown";
         }
 
         getDeviceInfo() {
-            const ua = navigator.userAgent;
-            if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) return "Tablet";
-            if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) return "Mobile";
-            return "Desktop";
+            return window.DeviceUtils ? window.DeviceUtils.getDevice() : "Unknown";
         }
 
         getOSInfo() {
-            const ua = navigator.userAgent;
-            if (ua.indexOf("Win") !== -1) return "Windows";
-            if (ua.indexOf("Mac") !== -1) return "MacOS";
-            if (ua.indexOf("X11") !== -1) return "UNIX";
-            if (ua.indexOf("Linux") !== -1) return "Linux";
-            if (ua.indexOf("Android") !== -1) return "Android";
-            if (ua.indexOf("like Mac") !== -1) return "iOS";
-            return "Unknown OS";
+            return window.DeviceUtils ? window.DeviceUtils.getOS() : "Unknown";
         }
 
         async destroy() {

@@ -133,7 +133,7 @@ class SupabaseDB {
         'reset_request', 'notification_preferences', 'answers',
         'question_scores', 'question_feedback', 'recurring_config',
         'analytics', 'schedules', 'allowed_extensions', 'anti_cheat_config',
-        'reset_data'
+        'reset_data', 'device_info'
     ];
 
     static _sanitizePayload(payload, table = null) {
@@ -144,10 +144,10 @@ class SupabaseDB {
         // We also strip internal UI states (starting with _) to prevent leakage
         const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data'];
         VIRTUAL_FIELDS.forEach(field => {
-            // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets table
+            // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets or violations table
             // Also preserve session_id during migration/restoration
             const isMigration = sessionStorage.getItem('migrationMode') === 'true';
-            if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data' || isMigration)) return;
+            if ((table === 'user_secrets' || table === 'violations') && (field === 'session_id' || field === 'reset_data' || isMigration)) return;
             delete sanitized[field];
         });
 
@@ -2047,7 +2047,7 @@ class SupabaseDB {
     static async getStudentViolationSummary(studentEmail) {
         const { data: violations, error } = await supabaseClient
             .from('violations')
-            .select('assessment_id, assessment_type, type, severity, score')
+            .select('assessment_id, assessment_type, type, severity, score, metadata')
             .eq('user_email', studentEmail);
 
         if (error) throw error;
@@ -2072,33 +2072,25 @@ class SupabaseDB {
                     violationCount: 0,
                     totalScore: 0,
                     criticalCount: 0,
-                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0 }
+                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0, noiseEvents: 0 }
                 };
             }
-            summaryMap[key].violationCount++;
-            summaryMap[key].totalScore += (v.score || 0);
-            if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
-        });
 
-        // Add proctoring stats
-        const { data: proctorLogs } = await supabaseClient
-            .from('proctoring_logs')
-            .select('attempt_id, event_type, event_data')
-            .eq('user_email', studentEmail)
-            .in('attempt_id', assessmentIds);
-
-        (proctorLogs || []).forEach(log => {
-            const summary = summaryMap[log.attempt_id];
-            if (!summary) return;
-
-            if (log.event_type === 'SNAPSHOT_CAPTURED') summary.proctoringStats.snapshots++;
-            if (log.event_type === 'CHUNK_RECORDED') summary.proctoringStats.chunks++;
-            if (log.event_type === 'FACE_DETECTED') {
-                const faces = log.event_data?.count || 0;
-                if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
-            }
-            if (log.event_type === 'NOISE_DETECTED') {
-                summary.proctoringStats.noiseEvents = (summary.proctoringStats.noiseEvents || 0) + 1;
+            // Distinguish between actual violations (weighted score) and proctoring logs (INFO)
+            if (v.severity !== 'INFO') {
+                summaryMap[key].violationCount++;
+                summaryMap[key].totalScore += (v.score || 0);
+                if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
+            } else {
+                // Aggregate proctoring stats from logs
+                const stats = summaryMap[key].proctoringStats;
+                if (v.type === 'SNAPSHOT_CAPTURED') stats.snapshots++;
+                if (v.type === 'CHUNK_RECORDED') stats.chunks++;
+                if (v.type === 'FACE_DETECTED') {
+                    const count = v.metadata?.count || 0;
+                    if (count > stats.maxFaces) stats.maxFaces = count;
+                }
+                if (v.type === 'NOISE_DETECTED') stats.noiseEvents++;
             }
         });
 
@@ -2118,17 +2110,15 @@ class SupabaseDB {
         const assessmentIds = [...(assignsRes.data || []).map(a => a.id), ...(quizzesRes.data || []).map(q => q.id)];
         if (assessmentIds.length === 0) return { data: [], total: 0 };
 
-        // PostgREST doesn't support complex aggregation well, so we fetch and aggregate in JS for now
-        // This is safe for thousands of records as it's just the violations table
-        const { data, error } = await supabaseClient
+        const { data: violations, error } = await supabaseClient
             .from('violations')
-            .select('assessment_id, assessment_type, user_email, type, severity, score')
+            .select('assessment_id, assessment_type, user_email, type, severity, score, metadata')
             .in('assessment_id', assessmentIds);
 
         if (error) throw error;
 
         const summaryMap = {};
-        (data || []).forEach(v => {
+        (violations || []).forEach(v => {
             const key = v.assessment_id;
             if (!summaryMap[key]) {
                 const assessment = [...(assignsRes.data || []), ...(quizzesRes.data || [])].find(a => a.id === key);
@@ -2140,33 +2130,24 @@ class SupabaseDB {
                     studentCount: new Set(),
                     totalScore: 0,
                     criticalCount: 0,
-                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0 }
+                    proctoringStats: { snapshots: 0, chunks: 0, maxFaces: 0, noiseEvents: 0 }
                 };
             }
-            summaryMap[key].violationCount++;
-            summaryMap[key].studentCount.add(v.user_email);
-            summaryMap[key].totalScore += (v.score || 0);
-            if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
-        });
 
-        // Add proctoring stats (aggregated for all students in this assessment)
-        const { data: proctorLogs } = await supabaseClient
-            .from('proctoring_logs')
-            .select('attempt_id, event_type, event_data')
-            .in('attempt_id', assessmentIds);
-
-        (proctorLogs || []).forEach(log => {
-            const summary = summaryMap[log.attempt_id];
-            if (!summary) return;
-
-            if (log.event_type === 'SNAPSHOT_CAPTURED') summary.proctoringStats.snapshots++;
-            if (log.event_type === 'CHUNK_RECORDED') summary.proctoringStats.chunks++;
-            if (log.event_type === 'FACE_DETECTED') {
-                const faces = log.event_data?.count || 0;
-                if (faces > summary.proctoringStats.maxFaces) summary.proctoringStats.maxFaces = faces;
-            }
-            if (log.event_type === 'NOISE_DETECTED') {
-                summary.proctoringStats.noiseEvents = (summary.proctoringStats.noiseEvents || 0) + 1;
+            if (v.severity !== 'INFO') {
+                summaryMap[key].violationCount++;
+                summaryMap[key].studentCount.add(v.user_email);
+                summaryMap[key].totalScore += (v.score || 0);
+                if (v.severity === 'CRITICAL') summaryMap[key].criticalCount++;
+            } else {
+                const stats = summaryMap[key].proctoringStats;
+                if (v.type === 'SNAPSHOT_CAPTURED') stats.snapshots++;
+                if (v.type === 'CHUNK_RECORDED') stats.chunks++;
+                if (v.type === 'FACE_DETECTED') {
+                    const count = v.metadata?.count || 0;
+                    if (count > stats.maxFaces) stats.maxFaces = count;
+                }
+                if (v.type === 'NOISE_DETECTED') stats.noiseEvents++;
             }
         });
 

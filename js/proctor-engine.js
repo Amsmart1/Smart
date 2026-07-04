@@ -87,8 +87,8 @@
 
   /**
    * @typedef {Object} DatabaseConfig
-   * @property {string} [table='proctoring_logs'] - Database table name
-   * @property {string} [endpoint='/rest/v1/proctoring_logs'] - REST endpoint path
+   * @property {string} [table='violations'] - Database table name
+   * @property {string} [endpoint='/rest/v1/violations'] - REST endpoint path
    * @property {Object} [headers={}] - Additional headers for database requests
    */
 
@@ -175,8 +175,8 @@
     },
     /** @type {DatabaseConfig} */
     database: {
-      table: 'proctoring_logs',
-      endpoint: '/rest/v1/proctoring_logs',
+      table: 'violations',
+      endpoint: '/rest/v1/violations',
       headers: {},
     },
     /** @type {FaceDetectionConfig} */
@@ -192,6 +192,8 @@
       threshold: -50,
       minDuration: 1000,
     },
+    /** @type {string} */
+    sessionId: null,
     /** @type {string} */
     attemptId: null,
     /** @type {string} */
@@ -744,10 +746,7 @@
         this.engine.emit('face:detected', result);
 
         // Log face detection event for stats
-        await this.engine._logEvent('FACE_DETECTED', {
-            sessionId: this.engine.state.sessionId,
-            attemptId: this.engine.config.attemptId,
-            user_email: this.engine.config.userId,
+        await this.engine._reportEvent('FACE_DETECTED', {
             count: result.count,
             confidence: result.confidence,
             timestamp: new Date().toISOString()
@@ -868,11 +867,8 @@
             data: noiseData,
           });
 
-          // Log to proctoring_logs for summary stats
-          this.engine._logEvent('NOISE_DETECTED', {
-            sessionId: this.engine.state.sessionId,
-            attemptId: this.engine.config.attemptId,
-            user_email: this.engine.config.userId,
+          // Log for summary stats
+          this.engine._reportEvent('NOISE_DETECTED', {
             ...noiseData,
             timestamp: new Date().toISOString()
           });
@@ -933,8 +929,8 @@
         chunkIndex: 0,
         totalSnapshotSize: 0,
         totalChunkSize: 0,
-        sessionId: uid(),
-        deviceInfo: this._getDeviceInfo(),
+        sessionId: this.config.sessionId || uid(),
+        deviceInfo: window.DeviceUtils ? window.DeviceUtils.getFullContext() : this._getDeviceInfo(),
         networkStatus: navigator.onLine,
         reconnectAttempts: 0,
       };
@@ -1039,11 +1035,7 @@
         this._startConnectionMonitor();
 
         // Log session start
-        await this._logEvent('SESSION_STARTED', {
-          sessionId: this.state.sessionId,
-          attemptId: this.config.attemptId,
-          user_email: this.config.userId,
-          device: this.state.deviceInfo,
+        await this._reportEvent('SESSION_STARTED', {
           config: {
             webcam: this.config.webcam,
             screen: this.config.screen,
@@ -1108,9 +1100,7 @@
       }
 
       // Log session end
-      await this._logEvent('SESSION_ENDED', {
-        sessionId: this.state.sessionId,
-        user_email: this.config.userId,
+      await this._reportEvent('SESSION_ENDED', {
         duration,
         snapshotsUploaded: this.state.snapshotIndex,
         chunksRecorded: this.state.chunkIndex,
@@ -1224,30 +1214,12 @@
      * @returns {Promise<void>}
      */
     async injectViolation(violation) {
-      const event = {
-        sessionId: this.state.sessionId,
-        attemptId: this.config.attemptId,
-        user_email: this.config.userId,
-        type: violation.type || 'CUSTOM_VIOLATION',
-        source: violation.source || 'integration',
-        severity: violation.severity || 'LOW',
-        score: violation.score || 1,
-        elapsed: Date.now() - (this.state.startTime || Date.now()),
-        timestamp: new Date().toISOString(),
-        data: violation.data || violation,
-      };
-
-      await this._logEvent('VIOLATION', event);
-      this.emit('violation', event);
-
-      // Forward to AntiCheat callbacks if available
-      if (this.config.callbacks.onViolation) {
-        try {
-          this.config.callbacks.onViolation(event);
-        } catch (e) {
-          this.debug('onViolation callback error: ' + e.message);
-        }
-      }
+      await this._reportEvent(violation.type || 'CUSTOM_VIOLATION', {
+          source: violation.source || 'proctor',
+          severity: violation.severity || 'LOW',
+          score: violation.score || 1,
+          data: violation.data || violation
+      });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1385,7 +1357,7 @@
       }
 
       this.emit('webcam:switched', { deviceId: newTrack.getSettings().deviceId });
-      await this._logEvent('WEBCAM_SWITCHED', { deviceId });
+      await this._reportEvent('WEBCAM_SWITCHED', { deviceId });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1473,7 +1445,7 @@
         chunkDuration: cfg.chunkDuration,
       });
 
-      await this._logEvent('SCREEN_RECORDING_STARTED', {
+      await this._reportEvent('SCREEN_RECORDING_STARTED', {
         mimeType: this.state.mediaRecorder.mimeType,
         chunkDuration: cfg.chunkDuration,
       });
@@ -1503,10 +1475,7 @@
       };
 
       // Log chunk recorded
-      await this._logEvent('CHUNK_RECORDED', {
-        sessionId: this.state.sessionId,
-        attemptId: this.config.attemptId,
-        user_email: this.config.userId,
+      await this._reportEvent('CHUNK_RECORDED', {
         chunkIndex,
         timestamp,
         size
@@ -1560,7 +1529,7 @@
         totalSize: this.state.totalChunkSize,
       });
 
-      await this._logEvent('SCREEN_RECORDING_FINALIZED', {
+      await this._reportEvent('SCREEN_RECORDING_FINALIZED', {
         totalChunks: this.state.chunkIndex,
         totalSize: this.state.totalChunkSize,
       });
@@ -1634,10 +1603,7 @@
         };
 
         // Log snapshot captured
-        await this._logEvent('SNAPSHOT_CAPTURED', {
-            sessionId: this.state.sessionId,
-            attemptId: this.config.attemptId,
-            user_email: this.config.userId,
+        await this._reportEvent('SNAPSHOT_CAPTURED', {
             snapshotIndex: idx,
             timestamp,
             size
@@ -1890,56 +1856,35 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Logs an event to the Supabase database.
+     * Standardized event reporting.
+     * Delegates to AntiCheatSystem via callbacks or emissions.
      * @private
-     * @param {string} eventType
+     * @param {string} type
      * @param {Object} data
-     * @returns {Promise<void>}
      */
-    async _logEvent(eventType, data) {
-      if (!this._sb) return;
-
-      const record = {
-        session_id: this.state.sessionId,
-        course_id: this.config.courseId,
-        attempt_id: this.config.attemptId,
-        user_email: this.config.userId,
-        event_type: eventType,
-        event_data: data,
-        elapsed: Date.now() - (this.state.startTime || Date.now()),
-        device: this.state.deviceInfo,
-        timestamp: new Date().toISOString(),
-        created_at: new Date().toISOString(),
+    async _reportEvent(type, data) {
+      const elapsed = Date.now() - (this.state.startTime || Date.now());
+      const event = {
+          type,
+          elapsed,
+          timestamp: new Date().toISOString(),
+          event_data: data,
+          // Support both legacy and unified data structures during delegation
+          data: data,
+          severity: data.severity,
+          score: data.score
       };
 
-      try {
-        const { error } = await this._sb.from(this.config.database.table).insert(record);
-        if (error) throw error;
-        this.emit('log:success', { eventType });
-      } catch (err) {
-        this.debug('DB log failed (' + eventType + '): ' + err.message);
+      this.emit(type.toLowerCase(), event);
+      this.emit('violation', event); // Unified emission for AntiCheat integration
 
-        // Store locally for retry
-        this.retryQueue.add({
-          type: 'log',
-          data: record,
-          path: `logs/${this.state.sessionId}/${eventType.toLowerCase()}.json`,
-        });
-
-        this.emit('log:error', { eventType, error: err.message });
+      if (this.config.callbacks.onViolation) {
+          try {
+              this.config.callbacks.onViolation(event);
+          } catch (e) {
+              this.debug('onViolation callback failed', e);
+          }
       }
-    }
-
-    /**
-     * Does a log upload (for retry queue).
-     * @private
-     * @param {string} path
-     * @param {Object} data
-     * @returns {Promise<UploadResult>}
-     */
-    _doLogUpload(path, data) {
-      const blob = new Blob([safeSerialize(data)], { type: 'application/json' });
-      return this._uploadBlob(blob, path, 'log');
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2284,11 +2229,16 @@
      * @returns {Object}
      */
     _getDeviceInfo() {
+      if (window.DeviceUtils) {
+          const ctx = window.DeviceUtils.getFullContext();
+          return { ...ctx, features: { ...FEATURES } };
+      }
+
       const ua = navigator.userAgent;
       return {
-        browser: this._getBrowser(),
-        os: this._getOS(),
-        device: this._getDevice(),
+        browser: 'Unknown',
+        os: 'Unknown',
+        device: 'Unknown',
         screenWidth: screen.width,
         screenHeight: screen.height,
         colorDepth: screen.colorDepth,
@@ -2300,39 +2250,6 @@
         userAgent: ua,
         features: { ...FEATURES },
       };
-    }
-
-    /** @private */
-    _getBrowser() {
-      const ua = navigator.userAgent;
-      if (ua.includes('Firefox')) return 'Firefox';
-      if (ua.includes('SamsungBrowser')) return 'Samsung Browser';
-      if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera';
-      if (ua.includes('Trident')) return 'Internet Explorer';
-      if (ua.includes('Edge')) return 'Edge';
-      if (ua.includes('Chrome')) return 'Chrome';
-      if (ua.includes('Safari')) return 'Safari';
-      return 'Unknown';
-    }
-
-    /** @private */
-    _getOS() {
-      const ua = navigator.userAgent;
-      if (ua.includes('Win')) return 'Windows';
-      if (ua.includes('Mac')) return 'MacOS';
-      if (ua.includes('X11')) return 'UNIX';
-      if (ua.includes('Linux')) return 'Linux';
-      if (ua.includes('Android')) return 'Android';
-      if (ua.includes('like Mac')) return 'iOS';
-      return 'Unknown';
-    }
-
-    /** @private */
-    _getDevice() {
-      const ua = navigator.userAgent;
-      if (/(tablet|ipad|playbook|silk)/i.test(ua)) return 'Tablet';
-      if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated/i.test(ua)) return 'Mobile';
-      return 'Desktop';
     }
 
     /**
