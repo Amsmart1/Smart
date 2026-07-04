@@ -662,7 +662,8 @@ const UI = {
                     const proctoringHtml = s.proctoringStats ? `
                         <div class="flex gap-10 mt-10 p-5 bg-light border-radius-sm" style="font-size: 0.75rem">
                             <span title="Webcam Snapshots">📸 ${s.proctoringStats.snapshots || 0}</span>
-                            <span title="Screen Recording Chunks">🖥️ ${s.proctoringStats.chunks || 0}</span>
+                            <span title="Screen Recording">🖥️ ${s.proctoringStats.chunks || 0}</span>
+                            <span title="Audio Recording">🎙️ ${s.proctoringStats.audioChunks || 0}</span>
                             <span title="AI Detected Faces">👤 ${s.proctoringStats.maxFaces || 0}</span>
                             <span title="Noise Events">🔊 ${s.proctoringStats.noiseEvents || 0}</span>
                         </div>
@@ -2168,6 +2169,79 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
     }
 };
 
+UI._loadProctorThumbnails = async function(btn) {
+    const grid = document.getElementById('proctor-snap-grid');
+    if (!grid) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Loading Thumbnails...';
+
+    const previews = Array.from(grid.querySelectorAll('.snap-preview'));
+
+    // Concurrent loading with batching to avoid network congestion
+    const batchSize = 6;
+    for (let i = 0; i < previews.length; i += batchSize) {
+        const batch = previews.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (p) => {
+            const path = p.dataset.path;
+            if (!path) return;
+            try {
+                const url = await SupabaseDB.createSignedUrl('proctoring', path);
+                p.innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover">`;
+            } catch (e) {
+                console.warn('Failed to load thumbnail:', path, e);
+            }
+        }));
+    }
+
+    btn.remove();
+};
+
+UI._switchProctorTab = function(btn, tabId) {
+    const parent = btn.closest('#proctoringMediaEvidence');
+    parent.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    parent.querySelectorAll('.proctor-tab-content').forEach(c => c.classList.add('hidden'));
+    parent.querySelector(`#proctor-${tabId}`).classList.remove('hidden');
+};
+
+UI._viewProctorMedia = async function(path, type, timestamp) {
+    try {
+        const signedUrl = await SupabaseDB.createSignedUrl('proctoring', path);
+        const title = `Proctoring Evidence: ${type.toUpperCase()} (${new Date(timestamp).toLocaleString()})`;
+
+        if (type === 'snapshot') {
+            UI.showModal(title, `<img src="${signedUrl}" style="width:100%; height:auto; border-radius:8px">`, { maxWidth: '800px' });
+        } else if (type === 'video') {
+            UI.showModal(title, `<video src="${signedUrl}" controls autoplay style="width:100%; height:auto; border-radius:8px"></video>`, { maxWidth: '1000px' });
+        } else if (type === 'audio') {
+            UI.showModal(title, `
+                <div class="text-center p-40">
+                    <div style="font-size:48px; margin-bottom:20px">🎙️</div>
+                    <audio src="${signedUrl}" controls autoplay style="width:100%"></audio>
+                </div>
+            `, { maxWidth: '500px' });
+        }
+    } catch (e) {
+        UI.showNotification('Failed to load media: ' + e.message, 'error');
+    }
+};
+
+UI._downloadProctorMedia = async function(path, filename) {
+    try {
+        const signedUrl = await SupabaseDB.createSignedUrl('proctoring', path);
+        const a = document.createElement('a');
+        a.href = signedUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    } catch (e) {
+        UI.showNotification('Download failed: ' + e.message, 'error');
+    }
+};
+
 UI.renderIntegrityReport = function(containerId, violations, userEmail) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -2180,6 +2254,10 @@ UI.renderIntegrityReport = function(containerId, violations, userEmail) {
     const stats = AntiCheat.calculateStats(violations);
     const firstV = violations[violations.length - 1];
     const lastV = violations[0];
+
+    const snapshots = violations.filter(v => v.type === 'SNAPSHOT_CAPTURED').reverse();
+    const screenChunks = violations.filter(v => v.type === 'CHUNK_RECORDED').reverse();
+    const audioChunks = violations.filter(v => v.type === 'AUDIO_RECORDED').reverse();
 
     container.innerHTML = `
       <div class="card mb-20">
@@ -2236,6 +2314,65 @@ UI.renderIntegrityReport = function(containerId, violations, userEmail) {
             <h4>Most Frequent</h4>
             <div class="value" style="font-size: 1rem">${escapeHtml(stats.topViolation)}</div>
           </div>
+        </div>
+      </div>
+
+      <div class="card mb-20" id="proctoringMediaEvidence">
+        <h3>Proctoring Media Evidence</h3>
+        <div class="tabs mb-20">
+            <button class="button secondary tiny w-auto active" onclick="UI._switchProctorTab(this, 'snaps')">Webcam Snapshots (${snapshots.length})</button>
+            <button class="button secondary tiny w-auto" onclick="UI._switchProctorTab(this, 'screen')">Screen Recordings (${screenChunks.length})</button>
+            <button class="button secondary tiny w-auto" onclick="UI._switchProctorTab(this, 'audio')">Audio Recordings (${audioChunks.length})</button>
+        </div>
+
+        <div id="proctor-media-content">
+            <div id="proctor-snaps" class="proctor-tab-content">
+                ${snapshots.length === 0 ? '<div class="empty tiny">No snapshots captured.</div>' : `
+                    <div class="mb-10 flex-end"><button class="button secondary tiny w-auto" onclick="UI._loadProctorThumbnails(this)">📷 Load Preview Images</button></div>
+                    <div class="grid-4 gap-10" id="proctor-snap-grid">
+                        ${snapshots.map((s, idx) => `
+                            <div class="card p-5 text-center">
+                                <div class="snap-preview bg-light flex-center" style="height:100px; cursor:pointer; overflow:hidden; border-radius:4px"
+                                     data-path="${escapeAttr(s.metadata.path)}"
+                                     onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'snapshot', '${s.timestamp}')">
+                                    <span class="tiny">Snapshot ${idx + 1}</span>
+                                </div>
+                                <div class="tiny text-muted mt-5">${new Date(s.timestamp).toLocaleTimeString()}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+            </div>
+            <div id="proctor-screen" class="proctor-tab-content hidden">
+                ${screenChunks.length === 0 ? '<div class="empty tiny">No screen recording chunks.</div>' : `
+                    <div class="list">
+                        ${screenChunks.map((s, idx) => `
+                            <div class="list-item flex-between py-5">
+                                <span class="small">Screen Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
+                                <div class="flex gap-5">
+                                    <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'video', '${s.timestamp}')">Play</button>
+                                    <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'screen-chunk-${idx+1}.webm')">Download</a>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+            </div>
+            <div id="proctor-audio" class="proctor-tab-content hidden">
+                ${audioChunks.length === 0 ? '<div class="empty tiny">No audio recording chunks.</div>' : `
+                    <div class="list">
+                        ${audioChunks.map((s, idx) => `
+                            <div class="list-item flex-between py-5">
+                                <span class="small">Audio Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
+                                <div class="flex gap-5">
+                                    <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'audio', '${s.timestamp}')">Listen</button>
+                                    <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'audio-chunk-${idx+1}.webm')">Download</a>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+            </div>
         </div>
       </div>
 

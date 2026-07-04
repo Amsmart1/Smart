@@ -192,6 +192,12 @@
       threshold: -50,
       minDuration: 1000,
     },
+    /** @type {AudioConfig} */
+    audio: {
+      enabled: false,
+      chunkDuration: 15000,
+      mimeType: 'audio/webm',
+    },
     /** @type {string} */
     sessionId: null,
     /** @type {string} */
@@ -923,12 +929,15 @@
         startTime: null,
         webcamStream: null,
         screenStream: null,
+        audioRecorder: null,
         mediaRecorder: null,
         recordingChunks: [],
         snapshotIndex: 0,
         chunkIndex: 0,
+        audioChunkIndex: 0,
         totalSnapshotSize: 0,
         totalChunkSize: 0,
+        totalAudioSize: 0,
         sessionId: this.config.sessionId || uid(),
         deviceInfo: window.DeviceUtils ? window.DeviceUtils.getFullContext() : this._getDeviceInfo(),
         networkStatus: navigator.onLine,
@@ -1013,6 +1022,11 @@
           await this._startScreenRecording();
         }
 
+        // Start audio recording
+        if (this.config.audio.enabled) {
+          await this._startAudioRecording();
+        }
+
         // Initialize face detection
         if (this.config.faceDetection.enabled) {
           await this.faceDetector.init();
@@ -1088,6 +1102,9 @@
       // Finalize screen recording
       await this._finalizeScreenRecording();
 
+      // Finalize audio recording
+      await this._finalizeAudioRecording();
+
       // Stop streams
       this._stopStreams();
 
@@ -1104,16 +1121,20 @@
         duration,
         snapshotsUploaded: this.state.snapshotIndex,
         chunksRecorded: this.state.chunkIndex,
+        audioChunksRecorded: this.state.audioChunkIndex,
         totalSnapshotSize: this.state.totalSnapshotSize,
         totalChunkSize: this.state.totalChunkSize,
+        totalAudioSize: this.state.totalAudioSize,
       });
 
       const stats = {
         duration,
         snapshots: this.state.snapshotIndex,
         chunks: this.state.chunkIndex,
+        audioChunks: this.state.audioChunkIndex,
         totalSnapshotSize: this.state.totalSnapshotSize,
         totalChunkSize: this.state.totalChunkSize,
+        totalAudioSize: this.state.totalAudioSize,
         retryQueue: this.retryQueue.getStatus(),
         sessionId: this.state.sessionId,
       };
@@ -1147,8 +1168,10 @@
         elapsed,
         snapshots: this.state.snapshotIndex,
         chunks: this.state.chunkIndex,
+        audioChunks: this.state.audioChunkIndex,
         totalSnapshotSize: this.state.totalSnapshotSize,
         totalChunkSize: this.state.totalChunkSize,
+        totalAudioSize: this.state.totalAudioSize,
         sessionId: this.state.sessionId,
         retryQueue: this.retryQueue.getStatus(),
         networkStatus: this.state.networkStatus,
@@ -1462,6 +1485,7 @@
       const size = blob.size;
 
       this.state.totalChunkSize += size;
+      const path = this._storagePath(`chunks/${this.state.sessionId}/chunk-${chunkIndex}.webm`);
 
       const metadata = {
         sessionId: this.state.sessionId,
@@ -1472,17 +1496,19 @@
         size,
         mimeType: blob.type || 'video/webm',
         elapsed: Date.now() - (this.state.startTime || Date.now()),
+        path: path
       };
 
       // Log chunk recorded
       await this._reportEvent('CHUNK_RECORDED', {
         chunkIndex,
         timestamp,
-        size
+        size,
+        path: path
       });
 
       // Upload chunk (potentially chunked for large files)
-      this._uploadRecordingChunk(blob, metadata);
+      this._uploadRecordingChunk(blob, path, metadata);
 
       this.emit('chunk:recorded', metadata);
 
@@ -1493,11 +1519,10 @@
      * Uploads a recording chunk, possibly splitting large blobs.
      * @private
      * @param {Blob} blob
+     * @param {string} path
      * @param {Object} metadata
      */
-    async _uploadRecordingChunk(blob, metadata) {
-      const path = this._storagePath(`chunks/${this.state.sessionId}/chunk-${metadata.chunkIndex}.webm`);
-
+    async _uploadRecordingChunk(blob, path, metadata) {
       if (blob.size > this.config.upload.chunkUploadSize) {
         // Large file: chunk and upload in parallel
         this.debug('Large chunk detected, using chunked upload: ' + blob.size + ' bytes');
@@ -1532,6 +1557,102 @@
       await this._reportEvent('SCREEN_RECORDING_FINALIZED', {
         totalChunks: this.state.chunkIndex,
         totalSize: this.state.totalChunkSize,
+      });
+    }
+
+    /**
+     * Starts audio recording in chunks.
+     * @private
+     */
+    async _startAudioRecording() {
+      if (!this.state.webcamStream || this.state.webcamStream.getAudioTracks().length === 0) {
+        this.debug('Audio recording skipped: no audio tracks available');
+        return;
+      }
+
+      const cfg = this.config.audio;
+      const options = { mimeType: cfg.mimeType };
+
+      try {
+        this.state.audioRecorder = new MediaRecorder(this.state.webcamStream, options);
+      } catch (e) {
+        this.state.audioRecorder = new MediaRecorder(this.state.webcamStream);
+      }
+
+      this.state.audioRecorder.ondataavailable = (e) => {
+        if (!e.data || e.data.size === 0) return;
+        this._handleAudioChunk(e.data);
+      };
+
+      this.state.audioRecorder.start(cfg.chunkDuration);
+
+      this.emit('audio:started', {
+        chunkDuration: cfg.chunkDuration,
+      });
+
+      await this._reportEvent('AUDIO_RECORDING_STARTED', {
+        mimeType: this.state.audioRecorder.mimeType,
+        chunkDuration: cfg.chunkDuration,
+      });
+    }
+
+    /**
+     * Handles a single audio chunk from MediaRecorder.
+     * @private
+     * @param {Blob} blob
+     */
+    async _handleAudioChunk(blob) {
+      const chunkIndex = this.state.audioChunkIndex++;
+      const timestamp = new Date().toISOString();
+      const size = blob.size;
+
+      this.state.totalAudioSize += size;
+      const path = this._storagePath(`audio/${this.state.sessionId}/chunk-${chunkIndex}.webm`);
+
+      const metadata = {
+        sessionId: this.state.sessionId,
+        attemptId: this.config.attemptId,
+        user_email: this.config.userId,
+        chunkIndex,
+        timestamp,
+        size,
+        mimeType: blob.type || 'audio/webm',
+        elapsed: Date.now() - (this.state.startTime || Date.now()),
+        path: path
+      };
+
+      await this._reportEvent('AUDIO_RECORDED', {
+        chunkIndex,
+        timestamp,
+        size,
+        path: path
+      });
+
+      await this._uploadBlob(blob, path, 'chunk', metadata);
+
+      this.emit('audio:recorded', metadata);
+      this.debug('Audio chunk ' + chunkIndex, { size, total: this.state.totalAudioSize });
+    }
+
+    /**
+     * Finalizes the current audio recording.
+     * @private
+     */
+    async _finalizeAudioRecording() {
+      if (!this.state.audioRecorder) return;
+
+      if (this.state.audioRecorder.state !== 'inactive') {
+        this.state.audioRecorder.stop();
+      }
+
+      this.emit('audio:finalized', {
+        totalChunks: this.state.audioChunkIndex,
+        totalSize: this.state.totalAudioSize,
+      });
+
+      await this._reportEvent('AUDIO_RECORDING_FINALIZED', {
+        totalChunks: this.state.audioChunkIndex,
+        totalSize: this.state.totalAudioSize,
       });
     }
 
@@ -1590,6 +1711,7 @@
         const blob = await this._compressSnapshot(this._webcamVideo);
         const size = blob.size;
         this.state.totalSnapshotSize += size;
+        const path = this._storagePath(`snapshots/${this.state.sessionId}/snap-${idx}.jpg`);
 
         const metadata = {
           sessionId: this.state.sessionId,
@@ -1600,16 +1722,18 @@
           size,
           mimeType: blob.type,
           elapsed: Date.now() - (this.state.startTime || Date.now()),
+          path: path
         };
 
         // Log snapshot captured
         await this._reportEvent('SNAPSHOT_CAPTURED', {
             snapshotIndex: idx,
             timestamp,
-            size
+            size,
+            path: path
         });
 
-        await this._uploadBlob(blob, this._storagePath(`snapshots/${this.state.sessionId}/snap-${idx}.jpg`), 'snapshot', metadata);
+        await this._uploadBlob(blob, path, 'snapshot', metadata);
 
         this.emit('snapshot:captured', metadata);
         this.debug('Snapshot ' + idx + ' uploaded', { size });
@@ -2058,6 +2182,7 @@
       this.faceDetector.stop();
       this.noiseDetector.stop();
       this._stopConnectionMonitor();
+      this._finalizeAudioRecording();
       this._stopStreams();
       this._destroyWorker();
 
@@ -2090,6 +2215,11 @@
       if (this.state.mediaRecorder && this.state.mediaRecorder.state !== 'inactive') {
         this.state.mediaRecorder.stop();
         this.state.mediaRecorder = null;
+      }
+
+      if (this.state.audioRecorder && this.state.audioRecorder.state !== 'inactive') {
+        this.state.audioRecorder.stop();
+        this.state.audioRecorder = null;
       }
     }
 

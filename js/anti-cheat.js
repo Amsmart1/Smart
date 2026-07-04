@@ -25,6 +25,7 @@
 
                 PROCTORING_WEBCAM: false,
                 PROCTORING_SCREEN: false,
+                PROCTORING_AUDIO: false,
                 PROCTORING_FACE_DETECTION: false,
                 PROCTORING_NOISE_DETECTION: false,
 
@@ -110,10 +111,11 @@
         async initProctoring() {
             const webcam = this.config.PROCTORING_WEBCAM;
             const screen = this.config.PROCTORING_SCREEN;
+            const audio = this.config.PROCTORING_AUDIO;
             const face = this.config.PROCTORING_FACE_DETECTION;
             const noise = this.config.PROCTORING_NOISE_DETECTION;
 
-            if (!webcam && !screen && !face && !noise) return;
+            if (!webcam && !screen && !audio && !face && !noise) return;
 
             if (typeof ProctorEngine === 'undefined') {
                 console.error('Anti-Cheat: ProctorEngine not found. Ensure js/proctor-engine.js is loaded.');
@@ -131,6 +133,7 @@
                     debug: this.config.DEBUG,
                     webcam: { enabled: webcam },
                     screen: { enabled: screen },
+                    audio: { enabled: audio },
                     faceDetection: { enabled: face },
                     noiseDetection: { enabled: noise },
                     callbacks: {
@@ -151,7 +154,7 @@
             const metadata = violation.event_data || violation.data || violation;
 
             // Standardize severity for proctoring logs if not provided
-            const logTypes = ['SESSION_STARTED', 'SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
+            const logTypes = ['SESSION_STARTED', 'SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'AUDIO_RECORDING_STARTED', 'AUDIO_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
             const isLog = logTypes.includes(violation.type);
             const severity = violation.severity || (isLog ? 'INFO' : this.getViolationSeverity(violation.type));
             const score = violation.score || (isLog ? 0 : this.getViolationScore(violation.type));
@@ -166,7 +169,7 @@
             const lastTime = this.state.lastViolationTime[type] || 0;
 
             // High-frequency logs (snapshots/chunks) bypass interval check
-            const isHighFreq = ['SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'FACE_DETECTED', 'NOISE_DETECTED'].includes(type);
+            const isHighFreq = ['SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'NOISE_DETECTED'].includes(type);
             if (!isHighFreq && (now - lastTime < this.config.MIN_VIOLATION_INTERVAL)) return;
 
             this.state.lastViolationTime[type] = now;
@@ -623,9 +626,12 @@
                 'SESSION_ENDED': 'INFO',
                 'SNAPSHOT_CAPTURED': 'INFO',
                 'CHUNK_RECORDED': 'INFO',
+                'AUDIO_RECORDED': 'INFO',
                 'FACE_DETECTED': 'INFO',
                 'SCREEN_RECORDING_STARTED': 'INFO',
                 'SCREEN_RECORDING_FINALIZED': 'INFO',
+                'AUDIO_RECORDING_STARTED': 'INFO',
+                'AUDIO_RECORDING_FINALIZED': 'INFO',
                 'WEBCAM_SWITCHED': 'INFO'
             };
             return weights[type] || 'LOW';
