@@ -2050,12 +2050,15 @@
               const formData = new FormData();
               formData.append('file', blob);
 
+              const sid = sessionStorage.getItem('sessionId');
               const res = await fetch(
                 `${this.config.supabaseUrl}/storage/v1/object/${bucket}/${path}`,
                 {
                   method: 'POST',
                   headers: {
                     'Authorization': `Bearer ${this.config.supabaseKey}`,
+                    'apikey': this.config.supabaseKey,
+                    'x-session-id': sid || '',
                     'x-upsert': opts.upsert ? 'true' : 'false',
                     ...(opts.contentType ? { 'Content-Type': opts.contentType } : {}),
                   },
@@ -2078,6 +2081,7 @@
         },
         from: (table) => ({
           insert: async (record) => {
+            const sid = sessionStorage.getItem('sessionId');
             const res = await fetch(
               `${this.config.supabaseUrl}/rest/v1/${table}`,
               {
@@ -2085,6 +2089,7 @@
                 headers: {
                   'Authorization': `Bearer ${this.config.supabaseKey}`,
                   'apikey': this.config.supabaseKey,
+                  'x-session-id': sid || '',
                   'Content-Type': 'application/json',
                   'Prefer': 'return=minimal',
                   ...this.config.database.headers,
