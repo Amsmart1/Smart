@@ -921,7 +921,7 @@ class SupabaseDB {
     static async getCourses(teacherEmail = null, status = null, options = {}) {
         const { searchTerm = '' } = options;
         return this._request(async () => {
-            let query = supabaseClient.from('courses').select('*', { count: 'exact' });
+            let query = supabaseClient.from('courses').select('*, enrollments(count)', { count: 'exact' });
             if (teacherEmail) query = query.eq('teacher_email', teacherEmail);
             if (status) query = query.eq('status', status);
             if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);

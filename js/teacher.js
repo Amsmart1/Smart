@@ -75,11 +75,20 @@ async function renderCourses() {
       <button class="button w-auto" onclick="showCourseForm()">+ Create Course</button>
     </div>
     <div class="grid">
-      ${courses.map(c => `
+      ${courses.map(c => {
+        const enrolledCount = c.enrollments?.[0]?.count || 0;
+        const limit = c.enrollment_limit;
+        const limitDisplay = limit ? `${enrolledCount} / ${limit} Enrolled` : `${enrolledCount} Enrolled`;
+        const isFull = limit && enrolledCount >= limit;
+
+        return `
         <div class="card">
           <h3 class="m-0">${escapeHtml(c.title)}</h3>
           <div class="small">${UI.renderRichText(c.description)}</div>
-          <div class="mt-10"><span class="badge ${c.status === 'published' ? 'badge-active' : 'badge-lock'}">${escapeHtml(c.status)}</span></div>
+          <div class="mt-10 flex-between flex-wrap gap-5">
+            <span class="badge ${c.status === 'published' ? 'badge-active' : 'badge-lock'}">${escapeHtml(c.status)}</span>
+            <span class="tiny bold ${isFull ? 'danger-text' : 'text-muted'}">${escapeHtml(limitDisplay)}</span>
+          </div>
           <div class="flex gap-10 mt-15">
             <button class="button w-auto small" onclick="editCourse('${escapeAttr(c.id)}')">Manage Lessons</button>
             <button class="button secondary w-auto small" onclick="loadAndEditCourse('${escapeAttr(c.id)}')">Edit Info</button>
@@ -134,6 +143,10 @@ function showCourseForm(course = null) {
             <input type="text" id="courseEnrollmentId" placeholder="Require ID for enrollment" value="${isEdit ? escapeHtml(course.enrollment_id || '') : ''}">
           </div>
           <div>
+            <label>Enrollment Limit (0 for unlimited)</label>
+            <input type="number" id="courseEnrollmentLimit" placeholder="Max students" min="0" value="${isEdit ? (course.enrollment_limit || 0) : 0}">
+          </div>
+          <div>
             <label>Status</label>
             <select id="courseStatus">
               <option value="draft" ${isEdit && course.status === 'draft' ? 'selected' : ''}>Draft</option>
@@ -168,6 +181,7 @@ function showCourseForm(course = null) {
         title: title,
         description: document.getElementById('courseDescription').value,
         enrollment_id: document.getElementById('courseEnrollmentId').value || null,
+        enrollment_limit: parseInt(document.getElementById('courseEnrollmentLimit').value) || null,
         status: document.getElementById('courseStatus').value,
         teacher_email: user.email,
         created_by: user.full_name,

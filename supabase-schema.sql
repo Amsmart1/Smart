@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS courses (
   teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
   created_by VARCHAR(255), -- Stores teacher's full name
   enrollment_id VARCHAR(255), -- Optional ID required for student enrollment
+  enrollment_limit INTEGER DEFAULT NULL,
   status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -731,6 +732,7 @@ BEGIN
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS created_by VARCHAR(255);
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS enrollment_id VARCHAR(255);
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS enrollment_limit INTEGER DEFAULT NULL;
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 
     -- topics
@@ -2599,11 +2601,20 @@ RETURNS VOID AS $$
 DECLARE
   v_actual_enrollment_id VARCHAR;
   v_course_status VARCHAR;
+  v_enrollment_limit INTEGER;
+  v_current_enrollments INTEGER;
 BEGIN
-  SELECT enrollment_id, status INTO v_actual_enrollment_id, v_course_status FROM courses WHERE id = p_course_id;
+  SELECT enrollment_id, status, enrollment_limit
+  INTO v_actual_enrollment_id, v_course_status, v_enrollment_limit
+  FROM courses WHERE id = p_course_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Course not found.';
+  END IF;
+
+  -- 1. Idempotency Check: If already enrolled, success (do nothing)
+  IF EXISTS (SELECT 1 FROM enrollments WHERE course_id = p_course_id AND student_email = p_student_email) THEN
+    RETURN;
   END IF;
 
   IF v_course_status != 'published' THEN
@@ -2612,6 +2623,14 @@ BEGIN
 
   IF v_actual_enrollment_id IS NOT NULL AND (p_enrollment_id IS NULL OR v_actual_enrollment_id != p_enrollment_id) THEN
     RAISE EXCEPTION 'Invalid Enrollment ID';
+  END IF;
+
+  -- 2. Capacity Check
+  IF v_enrollment_limit IS NOT NULL AND v_enrollment_limit > 0 THEN
+    SELECT COUNT(*)::INTEGER INTO v_current_enrollments FROM enrollments WHERE course_id = p_course_id;
+    IF v_current_enrollments >= v_enrollment_limit THEN
+      RAISE EXCEPTION 'Course Full: The enrollment limit for this course has been reached.';
+    END IF;
   END IF;
 
   INSERT INTO enrollments (course_id, student_email)
