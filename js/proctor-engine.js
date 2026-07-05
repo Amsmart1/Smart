@@ -1451,6 +1451,11 @@
       videoTrack.onended = () => {
         this.emit('screen:ended', { reason: 'user_stopped' });
         this.debug('Screen share ended by user');
+        this._reportEvent('SCREEN_SHARE_STOPPED', {
+            reason: 'user_stopped',
+            severity: 'HIGH',
+            score: 5
+        });
         this._finalizeScreenRecording();
       };
 

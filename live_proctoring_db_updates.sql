@@ -34,69 +34,48 @@ RETURNS TABLE (
     started_at TIMESTAMP WITH TIME ZONE,
     last_activity TIMESTAMP WITH TIME ZONE,
     violation_count BIGINT,
-    status TEXT
+    status TEXT,
+    is_online BOOLEAN
 ) AS $$
 BEGIN
     RETURN QUERY
-    WITH recent_activity AS (
-        -- Get unique sessions with activity in the last 2 hours
+    WITH latest_violations AS (
+        -- Get unique sessions with activity in the last 4 hours
         SELECT
             v.session_id,
             v.user_email,
             v.assessment_id,
             v.assessment_type,
             MAX(v.timestamp) as last_act,
-            COUNT(*) FILTER (WHERE v.severity != 'INFO') as v_count
+            MIN(v.timestamp) as first_act,
+            COUNT(*) FILTER (WHERE v.severity NOT IN ('INFO', 'LOW')) as high_v_count,
+            COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL '2 hours'
+        WHERE v.timestamp > NOW() - INTERVAL '4 hours'
         GROUP BY v.session_id, v.user_email, v.assessment_id, v.assessment_type
-    ),
-    active_quizzes AS (
-        SELECT
-            qs.quiz_id as id,
-            'quiz' as type,
-            q.title,
-            qs.student_email,
-            qs.started_at,
-            'In Progress' as q_status
-        FROM quiz_submissions qs
-        JOIN quizzes q ON qs.quiz_id = q.id
-        WHERE qs.status = 'in-progress'
-    ),
-    active_assignments AS (
-        -- For assignments, we only have records in submissions table if student saved draft.
-        -- We'll also rely on recent violations to detect active assignment sessions.
-        SELECT
-            s.assignment_id as id,
-            'assignment' as type,
-            a.title,
-            s.student_email,
-            s.created_at as started_at,
-            'In Progress' as a_status
-        FROM submissions s
-        JOIN assignments a ON s.assignment_id = a.id
-        WHERE s.status = 'draft'
     )
     SELECT
-        ra.session_id,
-        ra.user_email,
+        lv.session_id,
+        lv.user_email,
         u.full_name,
-        ra.assessment_id,
-        COALESCE(aq.title, aa.title, 'Unknown Assessment') as assessment_title,
-        ra.assessment_type::VARCHAR,
-        COALESCE(aq.started_at, aa.started_at, ra.last_act - INTERVAL '1 minute') as started_at,
-        ra.last_act as last_activity,
-        ra.v_count as violation_count,
+        lv.assessment_id,
+        COALESCE(q.title, a.title, 'Unknown Assessment') as assessment_title,
+        lv.assessment_type::VARCHAR,
+        lv.first_act as started_at,
+        lv.last_act as last_activity,
+        lv.total_v_count as violation_count,
         CASE
-            WHEN ra.v_count > 5 THEN 'Flagged'
-            WHEN ra.v_count > 0 THEN 'Warning'
-            ELSE 'Normal'
-        END as status
-    FROM recent_activity ra
-    JOIN users u ON ra.user_email = u.email
-    LEFT JOIN active_quizzes aq ON ra.assessment_id = aq.id AND ra.user_email = aq.student_email
-    LEFT JOIN active_assignments aa ON ra.assessment_id = aa.id AND ra.user_email = aa.student_email
-    ORDER BY ra.last_act DESC;
+            WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN 'Flagged'
+            WHEN lv.total_v_count > 0 THEN 'Warning'
+            WHEN lv.last_act < NOW() - INTERVAL '5 minutes' THEN 'Idle'
+            ELSE 'Active'
+        END as status,
+        (lv.last_act > NOW() - INTERVAL '2 minutes') as is_online
+    FROM latest_violations lv
+    JOIN users u ON lv.user_email = u.email
+    LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = 'quiz'
+    LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = 'assignment'
+    ORDER BY lv.last_act DESC;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
@@ -116,6 +95,8 @@ BEGIN
       FROM violations
       WHERE session_id = NEW.session_id
       AND assessment_id IS NOT NULL
+      AND assessment_type IS NOT NULL
+      ORDER BY created_at ASC
       LIMIT 1;
   END IF;
 
@@ -129,16 +110,15 @@ BEGIN
       SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
     ELSIF TG_TABLE_NAME = 'violations' THEN
       IF NEW.assessment_id IS NOT NULL THEN
-          -- Try Quiz first
           IF NEW.assessment_type = 'quiz' THEN
               SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
           ELSIF NEW.assessment_type = 'assignment' THEN
               SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
           ELSE
-              -- Auto-detect
-              SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
+              -- Auto-detect if type is missing but ID is present
+              SELECT course_id, 'quiz'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM quizzes WHERE id = NEW.assessment_id;
               IF NEW.course_id IS NULL THEN
-                  SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
+                  SELECT course_id, 'assignment'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM assignments WHERE id = NEW.assessment_id;
               END IF;
           END IF;
       END IF;
