@@ -126,7 +126,7 @@
         initTerminationListener() {
             if (!window.supabaseClient || !this.state.sessionId) return;
 
-            const channelId = `terminate-${this.state.sessionId}`;
+            const channelId = `live-session-${this.state.sessionId}`;
             this.terminationChannel = window.supabaseClient.channel(channelId)
                 .on('postgres_changes', {
                     event: 'INSERT',
@@ -134,11 +134,33 @@
                     table: 'violations',
                     filter: `session_id=eq.${this.state.sessionId}`
                 }, (payload) => {
-                    if (payload.new?.type === 'SESSION_TERMINATED') {
-                        this.handleRemoteTermination(payload.new.metadata?.reason);
+                    const v = payload.new;
+                    if (v.type === 'SESSION_TERMINATED') {
+                        this.handleRemoteTermination(v.metadata?.reason);
+                    } else if (v.type === 'STAFF_MESSAGE') {
+                        this.handleStaffMessage(v.metadata?.message);
                     }
                 })
                 .subscribe();
+        }
+
+        handleStaffMessage(message) {
+            if (!message) return;
+            // Display as a persistent, high-priority notification or modal
+            const html = `
+                <div style="text-align: center; padding: 10px;">
+                    <div style="font-size: 2rem; margin-bottom: 15px;">📢</div>
+                    <p style="font-size: 1.1rem; line-height: 1.5; margin-bottom: 20px;">
+                        ${window.escapeHtml(message)}
+                    </p>
+                    <button class="button" onclick="this.closest('.modal-backdrop').remove()" style="width: 100%;">Acknowledge</button>
+                </div>
+            `;
+            if (window.UI && window.UI.showModal) {
+                window.UI.showModal('Message from Proctor', html, { maxWidth: '400px' });
+            } else {
+                alert('PROCTOR MESSAGE: ' + message);
+            }
         }
 
         initGlobalControlListener() {
@@ -238,7 +260,7 @@
                 if (this.config.DEBUG) console.log('Anti-Cheat: Proctoring started');
             } catch (err) {
                 console.error('Anti-Cheat: Failed to start proctoring', err);
-                this.logViolation('PROCTORING_FAILURE', { error: err.message });
+                this.logViolation('PROCTORING_FAILURE', { error: err.message, severity: 'MEDIUM' });
             }
         }
 
@@ -726,7 +748,9 @@
                 'AUDIO_RECORDING_STARTED': 'INFO',
                 'AUDIO_RECORDING_FINALIZED': 'INFO',
                 'WEBCAM_SWITCHED': 'INFO',
-                'SESSION_TERMINATED': 'CRITICAL'
+                'SESSION_TERMINATED': 'CRITICAL',
+                'STAFF_MESSAGE': 'INFO',
+                'SCREEN_SHARE_STOPPED': 'HIGH'
             };
             return weights[type] || 'LOW';
         }

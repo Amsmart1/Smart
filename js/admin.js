@@ -3144,25 +3144,35 @@ async function renderLiveProctoring() {
 function renderSessionsTable(sessions) {
     UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
         const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
-        const statusClass = s.status === 'Flagged' ? 'badge-inactive' : (s.status === 'Warning' ? 'badge-warn' : 'badge-active');
+        let statusClass = 'badge-active';
+        if (s.status === 'Flagged') statusClass = 'badge-inactive';
+        else if (s.status === 'Warning') statusClass = 'badge-warn';
+        else if (s.status === 'Idle') statusClass = 'secondary';
+
+        const onlineIndicator = s.is_online ?
+            '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+            '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
 
         return `
-            <tr>
+            <tr data-session-id="${s.session_id}">
                 <td>
-                    <div class="bold small">${escapeHtml(s.full_name)}</div>
-                    <div class="tiny text-muted">${escapeHtml(s.user_email)}</div>
+                    <div class="flex-center-y">
+                        ${onlineIndicator}
+                        <div class="bold small">${escapeHtml(s.full_name)}</div>
+                    </div>
+                    <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
                 </td>
                 <td>
                     <div class="small">${escapeHtml(s.assessment_title)}</div>
                     <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
                 </td>
-                <td><div class="small">${elapsed} / -- min</div></td>
+                <td><div class="small">${elapsed} min</div></td>
                 <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
                 <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
                 <td>
                     <div class="flex gap-5">
                         <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}')">Message</button>
+                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.session_id}')">Message</button>
                         <button class="button danger tiny w-auto" onclick="terminateSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
                     </div>
                 </td>
@@ -3211,6 +3221,7 @@ async function monitorLiveSession(sessionId, email) {
             <div class="flex-center-y gap-10">
                 <div class="pulse-indicator" id="surveillance-pulse" style="width:10px; height:10px; background:#48bb78; border-radius:50%; display:none"></div>
                 <span class="small bold">Live Surveillance</span>
+                <span id="monitor-status-indicator" class="tiny text-muted">| Monitoring Active</span>
             </div>
             <label class="switch-container flex-center-y gap-10">
                 <input type="checkbox" id="surveillance-toggle" style="width:auto; margin:0">
@@ -3225,17 +3236,68 @@ async function monitorLiveSession(sessionId, email) {
     _liveSurveillanceActive = false;
     const toggle = document.getElementById('surveillance-toggle');
     const pulse = document.getElementById('surveillance-pulse');
+    const audioQueue = [];
+    let isPlayingAudio = false;
+
+    const playNextAudio = async () => {
+        if (audioQueue.length === 0 || isPlayingAudio) return;
+        isPlayingAudio = true;
+        const path = audioQueue.shift();
+        try {
+            const url = await SupabaseDB.createSignedUrl('proctoring', path);
+            const audio = new Audio(url);
+            audio.onended = () => {
+                isPlayingAudio = false;
+                playNextAudio();
+            };
+            await audio.play();
+        } catch (e) {
+            console.warn('Audio playback failed:', e);
+            isPlayingAudio = false;
+            playNextAudio();
+        }
+    };
 
     toggle.onchange = (e) => {
         _liveSurveillanceActive = e.target.checked;
         pulse.style.display = _liveSurveillanceActive ? 'block' : 'none';
-        if (_liveSurveillanceActive) UI.showNotification('Live surveillance mode active', 'success');
+        if (_liveSurveillanceActive) {
+            UI.showNotification('Live surveillance mode active', 'success');
+            playNextAudio();
+        }
     };
 
     try {
+        const fetchAndUpdate = async (isIncremental = false) => {
+            const violations = await SupabaseDB.getViolations(null, email, null, { sessionId, all: true });
+
+            // To provide a smooth enterprise experience, we only update the main container if it's the first load
+            // or if the surveillance toggle just changed. Otherwise we can target specific areas if needed.
+            // For now, we reuse UI.renderIntegrityReport but we preserve the active tab.
+
+            const activeTab = document.querySelector('#proctoringMediaEvidence .tabs button.active')?.textContent.split(' (')[0];
+
+            UI.renderIntegrityReport('liveMonitorContent', violations, email);
+
+            if (activeTab) {
+                const tabs = document.querySelectorAll('#proctoringMediaEvidence .tabs button');
+                tabs.forEach(btn => {
+                    if (btn.textContent.startsWith(activeTab)) {
+                        const tabIdMap = { 'Webcam Snapshots': 'snaps', 'Screen Recordings': 'screen', 'Audio Recordings': 'audio' };
+                        const tabId = tabIdMap[activeTab];
+                        if (tabId) UI._switchProctorTab(btn, tabId);
+                    }
+                });
+            }
+
+            if (isIncremental && _liveSurveillanceActive) {
+                const loadBtn = document.querySelector('#proctor-snaps button');
+                if (loadBtn) UI._loadProctorThumbnails(loadBtn);
+            }
+        };
+
         // Initial fetch
-        const violations = await SupabaseDB.getViolations(null, email, null, { sessionId, all: true });
-        UI.renderIntegrityReport('liveMonitorContent', violations, email);
+        await fetchAndUpdate(false);
 
         // Subscribe to live updates for THIS session
         const channel = window.supabaseClient.channel('monitor-' + sessionId)
@@ -3246,32 +3308,17 @@ async function monitorLiveSession(sessionId, email) {
                 filter: `session_id=eq.${sessionId}`
             }, async (payload) => {
                 const newViolation = payload.new;
-                const updated = await SupabaseDB.getViolations(null, email, null, { sessionId, all: true });
-
-                // Re-render report to update lists
-                UI.renderIntegrityReport('liveMonitorContent', updated, email);
 
                 if (_liveSurveillanceActive) {
-                    // 1. Auto-handle audio chunks
                     if (newViolation.type === 'AUDIO_RECORDED' && newViolation.metadata?.path) {
-                        UI.showNotification('Live audio captured', 'info');
-                        try {
-                            const url = await SupabaseDB.createSignedUrl('proctoring', newViolation.metadata.path);
-                            const audio = new Audio(url);
-                            audio.play().catch(e => console.warn('Audio auto-play blocked:', e));
-                        } catch(e) {}
+                        audioQueue.push(newViolation.metadata.path);
+                        if (!isPlayingAudio) playNextAudio();
                     }
-
-                    // 2. Refresh thumbnails if we were on the snaps tab
-                    const snapsTab = document.getElementById('proctor-snaps');
-                    if (snapsTab && !snapsTab.classList.contains('hidden')) {
-                        const loadBtn = snapsTab.querySelector('button');
-                        if (loadBtn && loadBtn.textContent.includes('Load')) {
-                            UI._loadProctorThumbnails(loadBtn);
-                        }
-                    }
+                    await fetchAndUpdate(true);
                 } else {
-                    UI.showNotification('New evidence captured for live session', 'info');
+                    UI.showNotification('New activity detected in session', 'info');
+                    // Still update stats even if not in full surveillance
+                    await fetchAndUpdate(true);
                 }
             })
             .subscribe();
@@ -3281,8 +3328,9 @@ async function monitorLiveSession(sessionId, email) {
             window.supabaseClient?.removeChannel(channel);
         };
 
-        backdrop.onclick = (e) => { if (e.target === backdrop) cleanup(); };
         backdrop.querySelector('button.secondary.tiny').onclick = cleanup;
+        // Also handle backdrop removal via external clicks if needed,
+        // but UI.showModal usually handles simple removal.
 
     } catch (e) {
         document.getElementById('liveMonitorContent').innerHTML = '<div class="empty">Error loading session data</div>';
@@ -3320,7 +3368,7 @@ async function exportProctoringReport() {
             return UI.showNotification('No active sessions to export.', 'warn');
         }
 
-        const headers = ['Student', 'Email', 'Assessment', 'Type', 'Started At', 'Last Activity', 'Violations', 'Status'];
+        const headers = ['Student', 'Email', 'Assessment', 'Type', 'Started At', 'Last Activity', 'Violations', 'Status', 'Online'];
         const rows = sessions.map(s => [
             s.full_name,
             s.user_email,
@@ -3329,7 +3377,8 @@ async function exportProctoringReport() {
             new Date(s.started_at).toLocaleString(),
             new Date(s.last_activity).toLocaleString(),
             s.violation_count,
-            s.status
+            s.status,
+            s.is_online ? 'YES' : 'NO'
         ]);
 
         Exporter.csv(`proctoring_report_${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
@@ -3418,17 +3467,34 @@ async function showProctoringConfigModal() {
     };
 }
 
-async function sendMessageToStudent(email) {
+async function sendMessageToStudent(email, sessionId = null) {
     const msg = await UI.prompt(`Send a priority message to student ${email}:`, '', 'Priority Message');
     if (!msg) return;
 
     try {
+        // Send as a system notification
         await SupabaseDB.notifyUser({
             email: email,
             title: 'Proctoring Alert',
             message: msg,
             type: 'system'
         });
+
+        // If we have a session ID, also send as a real-time 'STAFF_MESSAGE' violation
+        // which the AntiCheatSystem will pick up immediately during the assessment.
+        if (sessionId) {
+            await SupabaseDB.saveViolation({
+                session_id: sessionId,
+                user_email: email,
+                assessment_id: '00000000-0000-0000-0000-000000000000',
+                assessment_type: 'quiz',
+                type: 'STAFF_MESSAGE',
+                severity: 'INFO',
+                score: 0,
+                metadata: { message: msg }
+            });
+        }
+
         UI.showNotification('Message sent to student.', 'success');
     } catch (e) {
         UI.showNotification('Failed to send message: ' + e.message, 'error');
@@ -3464,9 +3530,12 @@ async function showLiveFeedModal() {
         grid.innerHTML = sessionsWithSnaps.map(s => `
             <div class="card p-0 overflow-hidden animate-fade-in" style="border: 2px solid ${s.violation_count > 5 ? 'var(--danger)' : (s.violation_count > 0 ? 'var(--warn)' : 'var(--border)')}">
                 <div class="p-10 flex-between bg-light">
-                    <div>
-                        <div class="bold tiny">${escapeHtml(s.full_name)}</div>
-                        <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+                    <div class="flex-center-y gap-5">
+                        <div class="${s.is_online ? 'pulse-indicator' : ''}" style="width:6px; height:6px; background:${s.is_online ? '#48bb78' : '#cbd5e0'}; border-radius:50%"></div>
+                        <div>
+                            <div class="bold tiny">${escapeHtml(s.full_name)}</div>
+                            <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+                        </div>
                     </div>
                     <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'badge-active'} tiny">${s.violation_count} V</span>
                 </div>
