@@ -245,6 +245,10 @@ function displayCatalog(courses) {
 
   grid.innerHTML = courses.map(c => {
     const enrolled = window.myEnrollments.some(e => e.course_id === c.id);
+    const enrolledCount = c.enrollments?.[0]?.count || 0;
+    const limit = c.enrollment_limit;
+    const isFull = limit && enrolledCount >= limit;
+    const limitDisplay = limit ? `${enrolledCount} / ${limit}` : `${enrolledCount} Enrolled`;
 
     return `
       <div class="card flex-column gap-10" style="transition:transform 0.2s">
@@ -254,9 +258,10 @@ function displayCatalog(courses) {
           <div class="small-text color-dim mt-5">By: ${escapeHtml(c.created_by || 'Unknown Teacher')}</div>
           <div class="small mt-10 mb-20" style="line-height:1.4">${UI.renderRichText((c.description || '').substring(0, 150))}...</div>
           <div class="flex-between">
+            <span class="tiny bold ${isFull && !enrolled ? 'danger-text' : 'text-muted'}">${escapeHtml(limitDisplay)}</span>
             ${enrolled ?
               `<button class="button secondary w-auto small" onclick="viewCourse('${escapeAttr(c.id)}', false)">View Details</button>` :
-              `<button class="button w-auto small" onclick="enroll('${escapeAttr(c.id)}')">Enroll Now</button>`
+              `<button class="button w-auto small ${isFull ? 'secondary' : ''}" ${isFull ? 'disabled' : ''} onclick="enroll('${escapeAttr(c.id)}')">${isFull ? 'Course Full' : 'Enroll Now'}</button>`
             }
           </div>
         </div>
@@ -360,7 +365,8 @@ async function enroll(courseId) {
     UI.showNotification('Successfully enrolled!', 'success');
     renderCourses();
   } catch (e) {
-    UI.showNotification('Enrollment failed: ' + e.message, 'danger');
+    const isFull = e.message?.includes('Course Full');
+    UI.showNotification(isFull ? e.message : 'Enrollment failed: ' + e.message, isFull ? 'warn' : 'danger');
   }
 }
 async function viewCourse(courseId, fromMyCourses = false) {

@@ -210,10 +210,14 @@ async function renderCourses(page = 1) {
     </section>
     `;
 
-    UI.renderTable('coursesTable', ['Title', 'Instructor', 'Status', 'Created At', 'Action'], courses, (c) => {
+    UI.renderTable('coursesTable', ['Title', 'Instructor', 'Status', 'Enrollment', 'Created At', 'Action'], courses, (c) => {
         let statusClass = 'badge-active';
         if (c.status === 'draft') statusClass = 'badge-warn';
         else if (c.status === 'archived') statusClass = 'badge-inactive';
+
+        const enrolledCount = c.enrollments?.[0]?.count || 0;
+        const limit = c.enrollment_limit;
+        const isFull = limit && enrolledCount >= limit;
 
         return `
             <tr>
@@ -223,6 +227,9 @@ async function renderCourses(page = 1) {
                 <div class="tiny text-muted">${escapeHtml(c.teacher_email || 'No email')}</div>
               </td>
               <td><span class="badge ${statusClass}">${c.status.toUpperCase()}</span></td>
+              <td>
+                <div class="small bold ${isFull ? 'danger-text' : ''}">${enrolledCount} / ${limit || '∞'}</div>
+              </td>
               <td>${c.created_at ? new Date(c.created_at).toLocaleDateString() : 'N/A'}</td>
               <td>
                 <div class="flex gap-5">
