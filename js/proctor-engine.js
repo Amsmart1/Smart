@@ -735,16 +735,13 @@
         const cfg = this.engine.config.faceDetection;
 
         if (result.count > cfg.maxFaces) {
-          this.engine.emit('face:multiple', {
-            count: result.count,
-            maxExpected: cfg.maxFaces,
-            confidence: result.confidence,
-          });
-          this.engine.emit('violation', {
+          await this.engine._reportEvent('MULTIPLE_FACES', {
             source: 'face',
-            type: 'MULTIPLE_FACES',
             severity: 'HIGH',
-            data: { count: result.count, maxFaces: cfg.maxFaces },
+            score: 3,
+            count: result.count,
+            maxFaces: cfg.maxFaces,
+            confidence: result.confidence
           });
         } else if (result.count === 0 && result.confidence < 0.1) {
           this.engine.emit('face:none', { confidence: result.confidence });
@@ -847,7 +844,7 @@
      * Monitoring tick.
      * @private
      */
-    _tick() {
+    async _tick() {
       if (!this._running) return;
 
       const bufferLength = this.analyser.frequencyBinCount;
@@ -870,17 +867,12 @@
           // Persistent noise detected
           const noiseData = { db: Math.round(db), threshold: cfg.threshold, duration: Date.now() - this._noiseStartTime };
 
-          this.engine.emit('violation', {
-            source: 'proctor',
-            type: 'NOISE_DETECTED',
-            severity: 'MEDIUM',
-            data: noiseData,
-          });
-
-          // Log for summary stats
-          this.engine._reportEvent('NOISE_DETECTED', {
+          // Log violation via standardized reporting pipeline
+          await this.engine._reportEvent('NOISE_DETECTED', {
             ...noiseData,
-            timestamp: new Date().toISOString()
+            source: 'proctor',
+            severity: 'MEDIUM',
+            score: 2
           });
 
           this._noiseStartTime = Date.now(); // Reset to avoid continuous spamming, or handle cooldown

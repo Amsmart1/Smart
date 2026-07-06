@@ -270,7 +270,9 @@
 
             // Standardize severity for proctoring logs if not provided
             const logTypes = ['SESSION_STARTED', 'SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'AUDIO_RECORDING_STARTED', 'AUDIO_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
-            const isLog = logTypes.includes(violation.type);
+            // Explicitly exclude actual violations from being downgraded to INFO
+            const isViolation = ['MULTIPLE_FACES', 'NOISE_DETECTED', 'SCREEN_SHARE_STOPPED', 'PROCTORING_FAILURE'].includes(violation.type);
+            const isLog = !isViolation && logTypes.includes(violation.type);
             const severity = violation.severity || (isLog ? 'INFO' : this.getViolationSeverity(violation.type));
             const score = violation.score || (isLog ? 0 : this.getViolationScore(violation.type));
 
@@ -283,8 +285,8 @@
             const now = Date.now();
             const lastTime = this.state.lastViolationTime[type] || 0;
 
-            // High-frequency logs (snapshots/chunks) bypass interval check
-            const isHighFreq = ['SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'NOISE_DETECTED'].includes(type);
+            // High-frequency logs (snapshots/chunks) and critical proctoring alerts bypass interval check
+            const isHighFreq = ['SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'NOISE_DETECTED', 'MULTIPLE_FACES'].includes(type);
             if (!isHighFreq && (now - lastTime < this.config.MIN_VIOLATION_INTERVAL)) return;
 
             this.state.lastViolationTime[type] = now;

@@ -95,7 +95,7 @@ async function renderCourses() {
             <button class="button danger w-auto small" onclick="deleteCourseById('${escapeAttr(c.id)}')">Delete</button>
           </div>
         </div>
-      `).join('') || '<div class="empty">No courses created yet.</div>'}
+      `;}).join('') || '<div class="empty">No courses created yet.</div>'}
       </div>
     `;
   } catch (error) {
