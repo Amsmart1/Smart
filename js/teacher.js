@@ -1473,9 +1473,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
           questionFeedback[input.dataset.qIdx] = input.value;
       });
 
-      // Explicitly sync RTE if it exists to ensure latest value is captured before save
       const feedbackEl = document.getElementById('feedback');
-      if (feedbackEl?._rte) feedbackEl._rte.sync();
 
       const updatedSubmission = {
         ...submission,

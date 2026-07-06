@@ -581,7 +581,9 @@
 
             const longPressEnabled = this.config.BLOCK_LONG_PRESS;
             const textSelectionEnabled = this.config.BLOCK_TEXT_SELECTION;
-            if (!longPressEnabled && !textSelectionEnabled) return;
+            const fullscreenRequired = this.config.FULLSCREEN_REQUIRED;
+
+            if (!longPressEnabled && !textSelectionEnabled && !fullscreenRequired) return;
 
             const selectors = 'input:not([type="hidden"]), textarea, [contenteditable]';
 
@@ -627,10 +629,22 @@
             // Observer for dynamic elements
             this.mutationObserver = new MutationObserver((mutations) => {
                 mutations.forEach(m => {
-                    // Re-enforce fullscreen if overlay was removed
-                    if (this.config.FULLSCREEN_REQUIRED && this.state.isActive && !document.fullscreenElement) {
+                    // Re-enforce fullscreen if overlay was removed or tampered with
+                    if (this.config.FULLSCREEN_REQUIRED && this.state.isActive && !document.fullscreenElement && !document.webkitFullscreenElement) {
                         const overlay = document.getElementById('anti-cheat-fullscreen-overlay');
                         if (!overlay) this.showFullscreenOverlay();
+                    }
+
+                    // Protect overlay from deletion or hiding
+                    if (this.config.FULLSCREEN_REQUIRED && this.state.isActive) {
+                        const overlay = document.getElementById('anti-cheat-fullscreen-overlay');
+                        if (overlay) {
+                            if (overlay.style.display === 'none' || overlay.style.visibility === 'hidden' || overlay.style.opacity === '0') {
+                                overlay.style.display = 'flex';
+                                overlay.style.visibility = 'visible';
+                                overlay.style.opacity = '1';
+                            }
+                        }
                     }
 
                     m.addedNodes.forEach(node => {
@@ -693,6 +707,14 @@
                 // This debugger statement will pause execution if DevTools is open
                 // and the "Pause on exceptions" or similar is active.
                 // If DevTools is NOT open, it completes instantly.
+                (function() {
+                    const devtools = /./;
+                    devtools.toString = function() {
+                        this.opened = true;
+                    };
+                    console.log('%c', devtools);
+                })();
+
                 debugger;
                 const end = performance.now();
                 if (end - start > 100) { // If it took more than 100ms, execution was likely paused
