@@ -2059,7 +2059,7 @@
               const formData = new FormData();
               formData.append('file', blob);
 
-              const sid = sessionStorage.getItem('sessionId');
+              const sid = this.state.sessionId || sessionStorage.getItem('sessionId');
               const res = await fetch(
                 `${this.config.supabaseUrl}/storage/v1/object/${bucket}/${path}`,
                 {
@@ -2090,7 +2090,7 @@
         },
         from: (table) => ({
           insert: async (record) => {
-            const sid = sessionStorage.getItem('sessionId');
+            const sid = this.state.sessionId || sessionStorage.getItem('sessionId');
             const res = await fetch(
               `${this.config.supabaseUrl}/rest/v1/${table}`,
               {

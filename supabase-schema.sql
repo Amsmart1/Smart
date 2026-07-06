@@ -1361,6 +1361,14 @@ BEGIN
       SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.quiz_id;
     ELSIF TG_TABLE_NAME = 'attendance' THEN
       SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
+    ELSIF TG_TABLE_NAME = 'lessons' THEN
+      IF NEW.topic_id IS NOT NULL THEN
+        SELECT course_id INTO NEW.course_id FROM topics WHERE id = NEW.topic_id;
+      END IF;
+    ELSIF TG_TABLE_NAME = 'discussions' THEN
+      IF NEW.parent_id IS NOT NULL THEN
+        SELECT course_id INTO NEW.course_id FROM discussions WHERE id = NEW.parent_id;
+      END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
       IF NEW.assessment_id IS NOT NULL THEN
           IF NEW.assessment_type = 'quiz' THEN
@@ -1704,6 +1712,7 @@ CREATE INDEX IF NOT EXISTS idx_materials_course ON materials(course_id);
 CREATE INDEX IF NOT EXISTS idx_planner_user_date ON planner(user_email, due_date);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_expiry ON broadcasts(expires_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_expiry ON notifications(expires_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_course_id ON notifications(course_id);
 CREATE INDEX IF NOT EXISTS idx_violations_expiry ON violations(expires_at);
 CREATE INDEX IF NOT EXISTS idx_courses_status ON courses(status);
 CREATE INDEX IF NOT EXISTS idx_live_classes_status ON live_classes(status);
@@ -2637,7 +2646,7 @@ BEGIN
   VALUES (p_course_id, p_student_email)
   ON CONFLICT (course_id, student_email) DO NOTHING;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
 
@@ -3198,6 +3207,7 @@ DROP POLICY IF EXISTS "System Settings: Public Select" ON system_settings;
 CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USING (true);
 
 -- 24. Live Proctoring Aggregate RPC
+DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
     session_id VARCHAR,

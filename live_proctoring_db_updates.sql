@@ -23,6 +23,7 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 -- Function to get active proctored sessions
 -- Returns a list of sessions that have recently reported violations (including proctoring logs)
 -- or have an in-progress quiz submission.
+DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
     session_id VARCHAR,
@@ -108,6 +109,14 @@ BEGIN
       SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.quiz_id;
     ELSIF TG_TABLE_NAME = 'attendance' THEN
       SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
+    ELSIF TG_TABLE_NAME = 'lessons' THEN
+      IF NEW.topic_id IS NOT NULL THEN
+        SELECT course_id INTO NEW.course_id FROM topics WHERE id = NEW.topic_id;
+      END IF;
+    ELSIF TG_TABLE_NAME = 'discussions' THEN
+      IF NEW.parent_id IS NOT NULL THEN
+        SELECT course_id INTO NEW.course_id FROM discussions WHERE id = NEW.parent_id;
+      END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
       IF NEW.assessment_id IS NOT NULL THEN
           IF NEW.assessment_type = 'quiz' THEN

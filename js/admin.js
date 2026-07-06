@@ -38,7 +38,8 @@ const BACKUP_CONFIG = {
         { name: 'violations', onConflict: 'id', orderBy: 'timestamp', dependencies: [{ table: 'courses', field: 'course_id', optional: true }, { table: 'users', field: 'user_email' }, { table: ['assignments', 'quizzes'], field: 'assessment_id' }, { table: 'users', field: 'teacher_email', optional: true }] },
         { name: 'certificates', onConflict: 'id', orderBy: 'issued_at', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'student_email' }, { table: 'users', field: 'teacher_email', optional: true }] },
         { name: 'discussions', onConflict: 'id', orderBy: 'created_at', dependencies: [{ table: 'courses', field: 'course_id' }, { table: 'users', field: 'user_email' }, { table: 'users', field: 'teacher_email', optional: true }, { table: 'discussions', field: 'parent_id', optional: true, self: true }] },
-        { name: 'discussion_views', onConflict: 'discussion_id,user_email', orderBy: 'viewed_at', dependencies: [{ table: 'discussions', field: 'discussion_id' }, { table: 'users', field: 'user_email' }] }
+        { name: 'discussion_views', onConflict: 'discussion_id,user_email', orderBy: 'viewed_at', dependencies: [{ table: 'discussions', field: 'discussion_id' }, { table: 'users', field: 'user_email' }] },
+        { name: 'system_settings', onConflict: 'key', orderBy: 'key', dependencies: [] }
     ]
 };
 
