@@ -151,12 +151,15 @@ DECLARE
   v_auth_email VARCHAR;
   v_auth_role VARCHAR;
 BEGIN
-  -- ABAC: Only Admins, Teachers or system triggers (NULL session) can notify users
-  v_auth_email := get_auth_email();
-  v_auth_role := get_auth_role();
+  -- ABAC: Only Admins, Teachers or system triggers (NULL session/triggers) can notify users
+  -- We check pg_trigger_depth() to allow internal automated alerts for student actions
+  IF pg_trigger_depth() = 0 THEN
+      v_auth_email := get_auth_email();
+      v_auth_role := get_auth_role();
 
-  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
-     RAISE EXCEPTION 'Unauthorized: Only staff can send direct notifications';
+      IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+         RAISE EXCEPTION 'Unauthorized: Only staff can send direct notifications';
+      END IF;
   END IF;
 
   -- Enterprise Grade Validation: Leverage custom domain for validation
@@ -1007,11 +1010,14 @@ DECLARE
   v_auth_role VARCHAR;
 BEGIN
   -- ABAC: Only Admins or Teachers can create broadcasts
-  v_auth_email := get_auth_email();
-  v_auth_role := get_auth_role();
+  -- We check pg_trigger_depth() to allow internal automated alerts for student actions
+  IF pg_trigger_depth() = 0 THEN
+      v_auth_email := get_auth_email();
+      v_auth_role := get_auth_role();
 
-  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
-     RAISE EXCEPTION 'Unauthorized: Only staff can create broadcasts';
+      IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+         RAISE EXCEPTION 'Unauthorized: Only staff can create broadcasts';
+      END IF;
   END IF;
 
   -- Security: Only authorized roles or system triggers (SECURITY DEFINER) can create broadcasts
@@ -1082,9 +1088,9 @@ BEGIN
       PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
     END IF;
 
-    -- Notify student
+    -- Notify student (Confirmation - use student_email to avoid self-author filtering)
     SELECT title INTO v_assign_title FROM assignments WHERE id = NEW.assignment_id;
-    PERFORM notify_user(NEW.student_email, 'Assignment Submitted', 'You have successfully submitted "' || COALESCE(v_assign_title, 'Assignment') || '".', 'student.html?page=assignments', 'system', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
+    PERFORM notify_user(NEW.student_email, 'Assignment Submitted', 'You have successfully submitted "' || COALESCE(v_assign_title, 'Assignment') || '".', 'student.html?page=assignments', 'system', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
   END IF;
   RETURN NEW;
 END;
@@ -1101,8 +1107,8 @@ BEGIN
     IF NEW.teacher_email IS NOT NULL THEN
       PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
     END IF;
-    -- Notify Student (Confirmation)
-    PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
+    -- Notify Student (Confirmation - use student_email to avoid self-author filtering)
+    PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
   END IF;
   RETURN NEW;
 END;
@@ -1186,6 +1192,8 @@ BEGIN
 
   -- 2. Teacher Issues Certificate (status: 'pending_approval')
   IF (NEW.status = 'pending_approval' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'pending_approval'))) THEN
+     -- Fix: Populate student name for admin notification
+     SELECT full_name INTO v_student_name FROM users WHERE email = NEW.student_email;
      -- Notify all admins
      FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
        PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate for ' || COALESCE(v_student_name, 'a student') || ' is pending approval.', 'admin.html?page=users', 'cert_issued', NEW.course_id, jsonb_build_object('author_email', NEW.teacher_email, 'student_email', NEW.student_email));
@@ -1291,10 +1299,17 @@ DROP TRIGGER IF EXISTS tr_discussion_event ON discussions;
 CREATE TRIGGER tr_discussion_event AFTER INSERT ON discussions FOR EACH ROW EXECUTE PROCEDURE tr_notify_discussion();
 
 CREATE OR REPLACE FUNCTION tr_notify_support_ticket() RETURNS TRIGGER AS $$
+DECLARE
+  v_admin_email VARCHAR(255);
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  IF (TG_OP = 'UPDATE') THEN
+  IF (TG_OP = 'INSERT') THEN
+    -- Notify all admins of new support ticket
+    FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
+      PERFORM notify_user(v_admin_email, 'New Support Ticket', 'A user has submitted a new support ticket: "' || NEW.subject || '".', 'admin.html?page=support', 'system', NULL, jsonb_build_object('author_email', NEW.user_email));
+    END LOOP;
+  ELSIF (TG_OP = 'UPDATE') THEN
     IF (OLD.status IS DISTINCT FROM NEW.status) THEN
       PERFORM notify_user(NEW.user_email, 'Support Ticket Updated', 'The status of your ticket "' || NEW.subject || '" has been updated to ' || NEW.status || '.', null, 'system');
     ELSIF (OLD.resolution_notes IS NULL AND NEW.resolution_notes IS NOT NULL) OR (OLD.resolution_notes IS DISTINCT FROM NEW.resolution_notes) THEN
@@ -1307,9 +1322,11 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS tr_support_ticket_event ON support_tickets;
-CREATE TRIGGER tr_support_ticket_event AFTER UPDATE ON support_tickets FOR EACH ROW EXECUTE PROCEDURE tr_notify_support_ticket();
+CREATE TRIGGER tr_support_ticket_event AFTER INSERT OR UPDATE ON support_tickets FOR EACH ROW EXECUTE PROCEDURE tr_notify_support_ticket();
 
 CREATE OR REPLACE FUNCTION tr_notify_user_security() RETURNS TRIGGER AS $$
+DECLARE
+  v_admin_email VARCHAR(255);
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
@@ -1335,6 +1352,11 @@ BEGIN
     IF (NEW.reset_request IS NOT NULL AND (OLD.reset_request IS NULL OR OLD.reset_request->>'status' IS DISTINCT FROM NEW.reset_request->>'status')) THEN
       IF (NEW.reset_request->>'status' = 'pending') THEN
         PERFORM notify_user(NEW.email, 'Reset Requested', 'Your password reset request is pending administrator review.', null, 'reset_requested');
+
+        -- Notify all admins of pending reset
+        FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
+          PERFORM notify_user(v_admin_email, 'Password Reset Requested', 'A user (' || NEW.full_name || ') has requested a password reset.', 'admin.html?page=resets', 'reset_requested', NULL, jsonb_build_object('author_email', NEW.email));
+        END LOOP;
       ELSIF (NEW.reset_request->>'status' = 'approved') THEN
         PERFORM notify_user(NEW.email, 'Reset Approved', 'Your password reset request was approved. Please use the temporary password to login and finalize your reset.', null, 'system');
       ELSIF (NEW.reset_request->>'status' = 'denied') THEN
@@ -1354,8 +1376,8 @@ CREATE OR REPLACE FUNCTION tr_notify_password_updated() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  IF (TG_OP = 'UPDATE' AND OLD.password_hash IS DISTINCT FROM NEW.password_hash) THEN
-    -- Notify only on actual password change
+  -- Notify only on actual password change and ignore initial setups (from MIGRATION_PENDING)
+  IF (TG_OP = 'UPDATE' AND OLD.password_hash IS DISTINCT FROM NEW.password_hash AND OLD.password_hash != 'MIGRATION_PENDING') THEN
     PERFORM notify_user(NEW.email, 'Password Updated', 'Your account password has been successfully updated.', null, 'password_updated');
   END IF;
 

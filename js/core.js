@@ -917,6 +917,8 @@ const NotificationManager = {
             const broadcasts = broadcastsRes.data || [];
 
             // 3. Filter notifications/broadcasts authored by the current user to prevent self-alerting
+            // We only filter if author_email explicitly matches current user.
+            // Notifications with student_email or no author_email (system confirmations) are preserved.
             const filterSelf = (items) => items.filter(item => {
                 const authorEmail = item.metadata?.author_email;
                 return !authorEmail || authorEmail !== user.email;
@@ -942,16 +944,14 @@ const NotificationManager = {
                     is_broadcast: true
                 }));
 
-            // 6. Combine, deduplicate, and sort
+            // 6. Combine, deduplicate, and sort (Descending order for newest first)
             const all = [...filteredPersonal, ...activeBroadcasts];
             const uniqueMap = new Map();
             all.forEach(n => {
-                // Enterprise Guard: Filter out self-authored notifications using metadata
-                if (n.metadata?.author_email === user.email) return;
                 if (!uniqueMap.has(n.id)) uniqueMap.set(n.id, n);
             });
 
-            // 7. Enforce final limit after combination
+            // 7. Sort by created_at DESC and enforce limit
             return Array.from(uniqueMap.values())
                 .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
                 .slice(0, limit);
@@ -1069,6 +1069,13 @@ const NotificationManager = {
                         case 'quiz_published': return '❓';
                         case 'grade_posted': return '🎓';
                         case 'live_class': return '📹';
+                        case 'reset_requested': return '🔐';
+                        case 'password_updated': return '✅';
+                        case 'cert_requested': return '🎓';
+                        case 'cert_issued': return '📜';
+                        case 'cert_approved': return '🌟';
+                        case 'cert_rejected': return '❌';
+                        case 'submission_received': return '📤';
                         default: return '📢';
                     }
                 };
