@@ -161,12 +161,51 @@ async function syncDatabaseOperations() {
 
 // Push Notifications
 self.addEventListener('push', (event) => {
-  const data = event.data.json();
-  const options = {
-    body: data.body,
-    icon: 'https://cdn-icons-png.flaticon.com/512/3135/3135665.png'
-  };
-  event.waitUntil(
-    self.registration.showNotification(data.title, options)
-  );
+  if (!event.data) return;
+
+  try {
+    const data = event.data.json();
+    const options = {
+      body: data.body || '',
+      icon: data.icon || './favicon.ico',
+      badge: './favicon.ico',
+      vibrate: [100, 50, 100],
+      data: {
+        link: data.link || './index.html'
+      },
+      tag: 'smartlms-push',
+      renotify: true
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(data.title || 'SmartLMS Update', options)
+    );
+  } catch (e) {
+    console.warn('Push payload parsing failed:', e);
+  }
+});
+
+// Notification Click Interaction
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const link = event.notification.data?.link;
+
+  if (link) {
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        // 1. Try to find an existing window and navigate it
+        for (const client of clientList) {
+          if ('focus' in client) {
+            return client.focus().then(c => {
+              if ('navigate' in c) return c.navigate(link);
+            });
+          }
+        }
+        // 2. Fallback: Open new window
+        if (clients.openWindow) {
+          return clients.openWindow(link);
+        }
+      })
+    );
+  }
 });

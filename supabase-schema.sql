@@ -142,7 +142,12 @@ DECLARE
 BEGIN
   v_auth_email := get_auth_email();
 
-  -- ABAC: Authorization check for direct RPC calls
+  -- 1. Validation: Ensure type is among the allowed list
+  IF p_type NOT IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected') THEN
+    RAISE EXCEPTION 'Invalid notification type: %', p_type;
+  END IF;
+
+  -- 2. ABAC: Authorization check for direct RPC calls
   -- Allows: Admins, Course Teachers notifying students, or Students notifying their Course Teacher
   IF v_auth_email IS NOT NULL AND NOT is_admin() AND v_auth_email <> p_email THEN
     IF NOT (
@@ -868,6 +873,10 @@ BEGIN
     -- broadcasts
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
+    BEGIN
+        ALTER TABLE broadcasts DROP CONSTRAINT IF EXISTS broadcasts_type_check;
+        ALTER TABLE broadcasts ADD CONSTRAINT broadcasts_type_check CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+    EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- maintenance
     ALTER TABLE maintenance ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
@@ -1032,7 +1041,7 @@ CREATE TRIGGER tr_live_class_event AFTER INSERT OR UPDATE ON live_classes FOR EA
 CREATE OR REPLACE FUNCTION tr_notify_assignment() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'published'))) THEN
+  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
     PERFORM create_broadcast(NEW.course_id, 'student', 'New Assignment', 'A new assignment "' || NEW.title || '" has been published.', 'student.html?page=assignments', 'assignment_published');
   END IF;
   RETURN NEW;
@@ -1045,7 +1054,7 @@ CREATE TRIGGER tr_assignment_published AFTER INSERT OR UPDATE ON assignments FOR
 CREATE OR REPLACE FUNCTION tr_notify_quiz() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'published'))) THEN
+  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
     PERFORM create_broadcast(NEW.course_id, 'student', 'New Quiz Available', 'A new quiz "' || NEW.title || '" has been published.', 'student.html?page=quizzes', 'quiz_published');
   END IF;
   RETURN NEW;
@@ -1135,7 +1144,7 @@ CREATE TRIGGER tr_submission_regrade_request AFTER UPDATE ON submissions FOR EAC
 CREATE OR REPLACE FUNCTION tr_notify_grade() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'graded'))) THEN
+  IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'graded'))) THEN
     PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted', NEW.course_id);
   END IF;
   RETURN NEW;
@@ -2778,19 +2787,40 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    DELETE FROM broadcasts WHERE expires_at < NOW();
+    -- Enterprise-Grade Scalable Purging using CTE with LIMIT to minimize lock contention
+    WITH expired_broadcasts AS (
+        SELECT id FROM broadcasts WHERE expires_at < NOW() LIMIT 500
+    )
+    DELETE FROM broadcasts WHERE id IN (SELECT id FROM expired_broadcasts);
+
     -- Hard limit: Delete all notifications older than 90 days
-    DELETE FROM notifications WHERE created_at < v_expired_cutoff;
+    WITH old_notifications AS (
+        SELECT id FROM notifications WHERE created_at < v_expired_cutoff LIMIT 500
+    )
+    DELETE FROM notifications WHERE id IN (SELECT id FROM old_notifications);
+
     -- Soft limit: Delete read notifications older than 30 days
-    DELETE FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE;
-    DELETE FROM violations WHERE expires_at < NOW();
+    WITH read_notifications AS (
+        SELECT id FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE LIMIT 500
+    )
+    DELETE FROM notifications WHERE id IN (SELECT id FROM read_notifications);
+
+    -- Violations Purge
+    WITH expired_violations AS (
+        SELECT id FROM violations WHERE expires_at < NOW() LIMIT 500
+    )
+    DELETE FROM violations WHERE id IN (SELECT id FROM expired_violations);
 
     -- Automatically clear expired password reset requests (24h window)
     UPDATE users
     SET reset_request = NULL
-    WHERE reset_request IS NOT NULL
-    AND reset_request->>'expires_at' IS NOT NULL
-    AND (reset_request->>'expires_at')::TIMESTAMP WITH TIME ZONE < NOW();
+    WHERE email IN (
+        SELECT email FROM users
+        WHERE reset_request IS NOT NULL
+        AND reset_request->>'expires_at' IS NOT NULL
+        AND (reset_request->>'expires_at')::TIMESTAMP WITH TIME ZONE < NOW()
+        LIMIT 100
+    );
 
     RETURN NULL;
 END;
