@@ -675,6 +675,18 @@ async function renderAssignments(openId = null){
   }
 }
 
+async function closeAssignmentForm() {
+    const f = document.getElementById('assignmentForm');
+    if (f) {
+        f.classList.add('hidden');
+        f.style.display = 'none';
+    }
+    await StudyTracker.stop();
+    if (window.AntiCheat) await AntiCheat.destroy();
+    renderAssignments();
+}
+window.closeAssignmentForm = closeAssignmentForm;
+
 async function showAssignmentForm(assignmentId) {
   const renderId = window.currentRenderId;
   const formWrap = document.getElementById('assignmentForm');
@@ -737,7 +749,7 @@ async function showAssignmentForm(assignmentId) {
     <div class="card">
       <div class="flex-between">
         <h3 class="m-0">${submission ? 'Review' : 'Submit'}: ${escapeHtml(a.title)}</h3>
-        <button class="button secondary w-auto small" onclick="const f=document.getElementById('assignmentForm'); f.classList.add('hidden'); f.style.display='none'; AntiCheat.destroy(); StudyTracker.stop();">Close</button>
+        <button class="button secondary w-auto small" onclick="closeAssignmentForm()">Close</button>
       </div>
 
       <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
@@ -2549,25 +2561,36 @@ async function startQuiz(quizId) {
             </div>
         `;
 
-        await new Promise((resolve) => {
+        const success = await new Promise((resolve) => {
             document.getElementById('confirmQuizStartBtn').onclick = async () => {
                 const btn = document.getElementById('confirmQuizStartBtn');
                 btn.disabled = true;
                 btn.textContent = 'Securing...';
 
-                // Initialize Anti-Cheat within the user gesture
-                await AntiCheat.init(quiz.id, 'quiz', user.email, {
-                    ...quiz.anti_cheat_config,
-                    courseId: quiz.course_id,
-                    callbacks: {
-                        onViolation: (v) => {
-                            UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                try {
+                    // Initialize Anti-Cheat within the user gesture
+                    await AntiCheat.init(quiz.id, 'quiz', user.email, {
+                        ...quiz.anti_cheat_config,
+                        courseId: quiz.course_id,
+                        callbacks: {
+                            onViolation: (v) => {
+                                UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                            }
                         }
+                    });
+                    resolve(true);
+                } catch (e) {
+                    UI.showNotification('Failed to initialize security: ' + e.message, 'danger');
+                    if (listBtn) {
+                        listBtn.disabled = false;
+                        listBtn.textContent = 'Start New Attempt';
                     }
-                });
-                resolve();
+                    StudentState.isStartingQuiz = false;
+                    resolve(false);
+                }
             };
         });
+        if (!success) return;
 
         UI.showLoading('questionContainer', 'Starting attempt...');
     } else if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
@@ -2595,9 +2618,11 @@ async function startQuiz(quizId) {
             if (subsRes.data && subsRes.data.length > 0) {
                 StudentState.currentSubmission = subsRes.data[0];
             } else {
+                await AntiCheat.destroy();
                 throw startErr; // Rethrow if we can't find the existing attempt
             }
         } else {
+            await AntiCheat.destroy();
             throw startErr;
         }
     }
@@ -2859,7 +2884,7 @@ async function submitQuiz(isAuto = false) {
   }
 
   UI.showLoading('quizArea', 'Saving your answers and calculating score...');
-  AntiCheat.destroy();
+  if (window.AntiCheat) await AntiCheat.pauseProctoring();
 
   if (StudentState.quizTimer instanceof Countdown) {
     StudentState.quizTimer.destroy();
@@ -2882,13 +2907,15 @@ async function submitQuiz(isAuto = false) {
     if (renderId !== window.currentRenderId) return;
     StudentState.currentSubmission = result;
 
+    // Successfully submitted, now we can end the anti-cheat session
+    if (window.AntiCheat) await AntiCheat.destroy();
   } catch (err) {
       console.error('Quiz submission failed:', err);
       // Revert status to allow retry and continued autosave
       if (StudentState.currentSubmission) StudentState.currentSubmission.status = 'in-progress';
       UI.showNotification('Quiz Submission Failed: ' + (err.message || 'Unknown error'), 'error');
-      // If auto-submit failed, we might want to re-initiate anti-cheat or timer?
-      // For now, just ensuring UI is unlocked.
+
+      if (window.AntiCheat) await AntiCheat.resumeProctoring();
   } finally {
       StudentState.isSubmittingQuiz = false;
       if (!StudentState.currentSubmission || StudentState.currentSubmission.status !== 'submitted') {
@@ -3116,6 +3143,7 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
   if (btn) { btn.disabled = true; btn.textContent = isDraft ? 'Saving Draft...' : 'Uploading...'; }
   if (otherBtn) { otherBtn.disabled = true; }
   UI.showLoading('assignmentForm', isDraft ? 'Saving draft...' : 'Uploading submission...');
+  if (window.AntiCheat) await AntiCheat.pauseProctoring();
 
   try {
     const existing = await SupabaseDB.getSubmission(assignmentId, studentEmail);
@@ -3190,16 +3218,23 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
       if (renderId !== window.currentRenderId) return;
 
       UI.showNotification(isDraft ? 'Draft saved successfully!' : 'Assignment submitted successfully!', 'success');
-      renderAssignments();
+
+      if (isDraft) {
+          if (window.AntiCheat) await AntiCheat.resumeProctoring();
+      } else {
+          // Successfully submitted, now we can end the anti-cheat session
+      if (window.AntiCheat) await AntiCheat.destroy();
+          renderAssignments();
+      }
     } else {
         throw new Error('Save failed');
     }
   } catch (e) {
     console.error('Submission failed:', e);
     UI.showNotification(`Submission failed: ${e.message || 'Unknown error'}. ${e.details || ''}`);
+    if (window.AntiCheat) await AntiCheat.resumeProctoring();
   } finally {
     StudentState.isSubmittingAssignment = false;
-    AntiCheat.destroy(); // Destroy after all processing is complete
     UI.hideLoading('assignmentForm');
     if (btn) {
         btn.disabled = false;
@@ -3230,8 +3265,11 @@ function initNav() {
         studentNav.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         button.classList.add('active');
         const page = button.dataset.page;
+
         await StudyTracker.stop();
+        if (window.AntiCheat) await AntiCheat.destroy();
         DiscussionManager.cleanup();
+
         if(page === 'courses') renderCourses();
         else if(page === 'my-courses') renderMyCourses();
         else if(page === 'assignments') renderAssignments();

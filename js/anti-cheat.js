@@ -120,6 +120,8 @@
             this.initTerminationListener();
             this.initGlobalControlListener();
 
+            this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
+
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
         }
 
@@ -264,12 +266,26 @@
             }
         }
 
+        /**
+         * Pauses all proctoring activities if active.
+         */
+        async pauseProctoring() {
+            if (this.proctor) await this.proctor.pause();
+        }
+
+        /**
+         * Resumes all proctoring activities if active.
+         */
+        async resumeProctoring() {
+            if (this.proctor) await this.proctor.resume();
+        }
+
         async injectViolation(violation) {
             // Forward from ProctorEngine to standard AntiCheat logging
             const metadata = violation.event_data || violation.data || violation;
 
             // Standardize severity for proctoring logs if not provided
-            const logTypes = ['SESSION_STARTED', 'SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'AUDIO_RECORDING_STARTED', 'AUDIO_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
+            const logTypes = ['ASSESSMENT_SESSION_STARTED', 'ASSESSMENT_SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'AUDIO_RECORDING_STARTED', 'AUDIO_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
             // Explicitly exclude actual violations from being downgraded to INFO
             const isViolation = ['MULTIPLE_FACES', 'NOISE_DETECTED', 'SCREEN_SHARE_STOPPED', 'PROCTORING_FAILURE'].includes(violation.type);
             const isLog = !isViolation && logTypes.includes(violation.type);
@@ -761,8 +777,8 @@
                 'MULTIPLE_FACES': 'HIGH',
                 'NOISE_DETECTED': 'MEDIUM',
                 'PROCTORING_FAILURE': 'MEDIUM',
-                'SESSION_STARTED': 'INFO',
-                'SESSION_ENDED': 'INFO',
+                'ASSESSMENT_SESSION_STARTED': 'INFO',
+                'ASSESSMENT_SESSION_ENDED': 'INFO',
                 'SNAPSHOT_CAPTURED': 'INFO',
                 'CHUNK_RECORDED': 'INFO',
                 'AUDIO_RECORDED': 'INFO',
@@ -803,6 +819,9 @@
 
         async destroy() {
             if (!this.state.isActive) return;
+
+            const duration = Date.now() - (this.state.startTime || Date.now());
+            this.logViolation('ASSESSMENT_SESSION_ENDED', { duration }, { severity: 'INFO', score: 0 });
 
             this.state.isActive = false;
 
