@@ -8,6 +8,12 @@ SET client_min_messages TO NOTICE;
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Enterprise Grade Custom Domains
+DO $$ BEGIN
+    CREATE DOMAIN notification_type AS VARCHAR(50)
+    CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- 0. Internal Auth Helpers (Defined early for use in triggers and RPCs)
 
 -- Internal helper to retrieve session ID from headers (DRY)
@@ -138,8 +144,15 @@ DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCA
 CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL)
 RETURNS VOID AS $$
 BEGIN
-  INSERT INTO notifications (user_email, title, message, link, type, course_id)
-  VALUES (p_email, p_title, p_message, p_link, p_type, p_course_id);
+  -- Enterprise Grade Validation: Leverage custom domain for validation
+  BEGIN
+    INSERT INTO notifications (user_email, title, message, link, type, course_id)
+    VALUES (p_email, p_title, p_message, p_link, p_type::notification_type, p_course_id);
+  EXCEPTION WHEN OTHERS THEN
+    -- Fallback to system type if invalid type provided (handles domain check violation)
+    INSERT INTO notifications (user_email, title, message, link, type, course_id)
+    VALUES (p_email, p_title, p_message, p_link, 'system'::notification_type, p_course_id);
+  END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -394,7 +407,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   link TEXT,
-  type VARCHAR(50) DEFAULT 'system' CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected')),
+  type notification_type DEFAULT 'system',
   is_read BOOLEAN DEFAULT FALSE,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -409,7 +422,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   link TEXT,
-  type VARCHAR(50) DEFAULT 'system',
+  type notification_type DEFAULT 'system',
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -839,12 +852,16 @@ BEGIN
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS course_id UUID REFERENCES courses(id) ON DELETE CASCADE;
     BEGIN
         ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-        ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+        ALTER TABLE notifications ALTER COLUMN type TYPE notification_type USING type::notification_type;
     EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- broadcasts
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
+    BEGIN
+        ALTER TABLE broadcasts DROP CONSTRAINT IF EXISTS broadcasts_type_check;
+        ALTER TABLE broadcasts ALTER COLUMN type TYPE notification_type USING type::notification_type;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- maintenance
     ALTER TABLE maintenance ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
@@ -997,7 +1014,7 @@ CREATE TRIGGER tr_live_class_event AFTER INSERT OR UPDATE ON live_classes FOR EA
 CREATE OR REPLACE FUNCTION tr_notify_assignment() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'published'))) THEN
+  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
     PERFORM create_broadcast(NEW.course_id, 'student', 'New Assignment', 'A new assignment "' || NEW.title || '" has been published.', 'student.html?page=assignments', 'assignment_published');
   END IF;
   RETURN NEW;
@@ -1010,7 +1027,7 @@ CREATE TRIGGER tr_assignment_published AFTER INSERT OR UPDATE ON assignments FOR
 CREATE OR REPLACE FUNCTION tr_notify_quiz() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'published'))) THEN
+  IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
     PERFORM create_broadcast(NEW.course_id, 'student', 'New Quiz Available', 'A new quiz "' || NEW.title || '" has been published.', 'student.html?page=quizzes', 'quiz_published');
   END IF;
   RETURN NEW;
@@ -1100,7 +1117,7 @@ CREATE TRIGGER tr_submission_regrade_request AFTER UPDATE ON submissions FOR EAC
 CREATE OR REPLACE FUNCTION tr_notify_grade() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
-  IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'graded'))) THEN
+  IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'graded'))) THEN
     PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted', NEW.course_id);
   END IF;
   RETURN NEW;
@@ -2668,19 +2685,31 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    DELETE FROM broadcasts WHERE expires_at < NOW();
+    -- Enterprise Grade Optimization: Batch deletions using CTE with LIMIT 500
+    WITH to_delete AS (SELECT id FROM broadcasts WHERE expires_at < NOW() LIMIT 500)
+    DELETE FROM broadcasts WHERE id IN (SELECT id FROM to_delete);
+
     -- Hard limit: Delete all notifications older than 90 days
-    DELETE FROM notifications WHERE created_at < v_expired_cutoff;
+    WITH to_delete AS (SELECT id FROM notifications WHERE created_at < v_expired_cutoff LIMIT 500)
+    DELETE FROM notifications WHERE id IN (SELECT id FROM to_delete);
+
     -- Soft limit: Delete read notifications older than 30 days
-    DELETE FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE;
-    DELETE FROM violations WHERE expires_at < NOW();
+    WITH to_delete AS (SELECT id FROM notifications WHERE created_at < (NOW() - INTERVAL '30 days') AND is_read = TRUE LIMIT 500)
+    DELETE FROM notifications WHERE id IN (SELECT id FROM to_delete);
+
+    WITH to_delete AS (SELECT id FROM violations WHERE expires_at < NOW() LIMIT 500)
+    DELETE FROM violations WHERE id IN (SELECT id FROM to_delete);
 
     -- Automatically clear expired password reset requests (24h window)
     UPDATE users
     SET reset_request = NULL
-    WHERE reset_request IS NOT NULL
-    AND reset_request->>'expires_at' IS NOT NULL
-    AND (reset_request->>'expires_at')::TIMESTAMP WITH TIME ZONE < NOW();
+    WHERE email IN (
+        SELECT email FROM users
+        WHERE reset_request IS NOT NULL
+        AND reset_request->>'expires_at' IS NOT NULL
+        AND (reset_request->>'expires_at')::TIMESTAMP WITH TIME ZONE < NOW()
+        LIMIT 500
+    );
 
     RETURN NULL;
 END;
