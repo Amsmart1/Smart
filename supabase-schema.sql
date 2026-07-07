@@ -11,7 +11,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Enterprise Grade Custom Domains
 DO $$ BEGIN
     CREATE DOMAIN notification_type AS VARCHAR(50)
-    CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+    CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected', 'discussion_post', 'discussion_reply'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- 0. Internal Auth Helpers (Defined early for use in triggers and RPCs)
@@ -141,17 +141,28 @@ $$ LANGUAGE plpgsql STABLE;
 -- We drop it first to handle potential parameter name/type changes (ERROR 42P13)
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCADE;
-CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL)
+CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL, p_metadata JSONB DEFAULT '{}'::jsonb)
 RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
+  v_auth_role VARCHAR;
 BEGIN
+  -- ABAC: Only Admins, Teachers or system triggers (NULL session) can notify users
+  v_auth_email := get_auth_email();
+  v_auth_role := get_auth_role();
+
+  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+     RAISE EXCEPTION 'Unauthorized: Only staff can send direct notifications';
+  END IF;
+
   -- Enterprise Grade Validation: Leverage custom domain for validation
   BEGIN
-    INSERT INTO notifications (user_email, title, message, link, type, course_id)
-    VALUES (p_email, p_title, p_message, p_link, p_type::notification_type, p_course_id);
+    INSERT INTO notifications (user_email, title, message, link, type, course_id, metadata)
+    VALUES (p_email, p_title, p_message, p_link, p_type::notification_type, p_course_id, p_metadata);
   EXCEPTION WHEN OTHERS THEN
     -- Fallback to system type if invalid type provided (handles domain check violation)
-    INSERT INTO notifications (user_email, title, message, link, type, course_id)
-    VALUES (p_email, p_title, p_message, p_link, 'system'::notification_type, p_course_id);
+    INSERT INTO notifications (user_email, title, message, link, type, course_id, metadata)
+    VALUES (p_email, p_title, p_message, p_link, 'system'::notification_type, p_course_id, p_metadata);
   END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -409,6 +420,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   link TEXT,
   type notification_type DEFAULT 'system',
   is_read BOOLEAN DEFAULT FALSE,
+  metadata JSONB DEFAULT '{}'::jsonb,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -423,6 +435,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   message TEXT NOT NULL,
   link TEXT,
   type notification_type DEFAULT 'system',
+  metadata JSONB DEFAULT '{}'::jsonb,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -657,7 +670,9 @@ BEGIN
         ALTER TABLE support_tickets ADD CONSTRAINT ticket_user_email_lower_check CHECK (user_email = LOWER(user_email));
     EXCEPTION WHEN OTHERS THEN NULL; END;
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days');
+    ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days');
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
@@ -978,13 +993,25 @@ CREATE OR REPLACE FUNCTION create_broadcast(
     p_message TEXT DEFAULT '',
     p_link TEXT DEFAULT NULL,
     p_type TEXT DEFAULT 'system',
-    p_expires_in INTERVAL DEFAULT INTERVAL '30 days'
+    p_expires_in INTERVAL DEFAULT INTERVAL '30 days',
+    p_metadata JSONB DEFAULT '{}'::jsonb
 ) RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
+  v_auth_role VARCHAR;
 BEGIN
+  -- ABAC: Only Admins or Teachers can create broadcasts
+  v_auth_email := get_auth_email();
+  v_auth_role := get_auth_role();
+
+  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+     RAISE EXCEPTION 'Unauthorized: Only staff can create broadcasts';
+  END IF;
+
   -- Security: Only authorized roles or system triggers (SECURITY DEFINER) can create broadcasts
   -- Note: p_target_role 'all' is normalized to NULL in the table
-  INSERT INTO broadcasts (course_id, target_role, title, message, link, type, expires_at)
-  VALUES (p_course_id, NULLIF(p_target_role, 'all'), p_title, p_message, p_link, p_type, NOW() + p_expires_in);
+  INSERT INTO broadcasts (course_id, target_role, title, message, link, type, expires_at, metadata)
+  VALUES (p_course_id, NULLIF(p_target_role, 'all'), p_title, p_message, p_link, p_type, NOW() + p_expires_in, p_metadata);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -1046,7 +1073,7 @@ BEGIN
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     -- Notify teacher
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
+      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
     END IF;
 
     -- Notify student
@@ -1066,7 +1093,7 @@ BEGIN
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     -- Notify Teacher
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id);
+      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
     END IF;
     -- Notify Student (Confirmation)
     PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id);
@@ -1088,7 +1115,7 @@ BEGIN
   SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
 
   IF v_teacher_email IS NOT NULL THEN
-    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student ' || NEW.student_email || ' has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system', NEW.course_id);
+    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
   END IF;
 
   RETURN NEW;
@@ -1104,7 +1131,7 @@ BEGIN
   -- Only trigger if regrade_request is newly added or changed and not null
   IF (NEW.regrade_request IS NOT NULL AND (OLD.regrade_request IS NULL OR OLD.regrade_request != NEW.regrade_request)) THEN
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
+      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
     END IF;
   END IF;
   RETURN NEW;
@@ -1140,13 +1167,13 @@ BEGIN
     IF NEW.type = 'consolidated' THEN
       -- Notify all admins
       FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
-        PERFORM notify_user(v_admin_email, 'Consolidated Certificate Requested', 'Student ' || NEW.student_email || ' requested a consolidated certificate.', 'admin.html?page=users', 'cert_requested');
+        PERFORM notify_user(v_admin_email, 'Consolidated Certificate Requested', 'A student requested a consolidated certificate.', 'admin.html?page=users', 'cert_requested', NULL, jsonb_build_object('student_email', NEW.student_email));
       END LOOP;
     ELSE
       -- Single course certificate
       SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
       IF NEW.teacher_email IS NOT NULL THEN
-        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'Student ' || NEW.student_email || ' requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id);
+        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'A student requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
       END IF;
     END IF;
   END IF;
@@ -1154,9 +1181,8 @@ BEGIN
   -- 2. Teacher Issues Certificate (status: 'pending_approval')
   IF (NEW.status = 'pending_approval' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'pending_approval'))) THEN
      -- Notify all admins
-     SELECT full_name INTO v_student_name FROM users WHERE email = NEW.student_email;
      FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
-       PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate for ' || COALESCE(v_student_name, NEW.student_email) || ' is pending approval.', 'admin.html?page=users', 'cert_issued');
+       PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate is pending approval.', 'admin.html?page=users', 'cert_issued', NULL, jsonb_build_object('student_email', NEW.student_email));
      END LOOP;
   END IF;
 
@@ -1199,22 +1225,23 @@ BEGIN
   SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
 
   IF NEW.parent_id IS NULL THEN
-    -- New Thread
+    -- New Thread: Notify teacher if student posts
     IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Discussion Thread', 'A new discussion thread has been started in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'system', NEW.course_id);
+      INSERT INTO broadcasts (course_id, target_role, title, message, type, metadata)
+      VALUES (NEW.course_id, 'teacher', 'New Discussion Thread', 'A student started a new thread in "' || COALESCE(v_course_title, 'Unknown') || '".', 'discussion_post', jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
     END IF;
   ELSE
-    -- Reply
+    -- Reply: Notify root thread author or parent author
+    -- Use a recursive CTE to find the root author if needed, or just notify parent
     SELECT user_email INTO v_parent_author FROM discussions WHERE id = NEW.parent_id;
 
-    -- Notify Parent Author
     IF v_parent_author IS NOT NULL AND v_parent_author != NEW.user_email THEN
-      PERFORM notify_user(v_parent_author, 'New Reply', 'Someone replied to your discussion post.', null, 'system', NEW.course_id);
+    PERFORM notify_user(v_parent_author, 'New Discussion Reply', 'Someone replied to your post in "' || COALESCE(v_course_title, 'Unknown') || '".', 'student.html?page=discussions', 'discussion_reply', NEW.course_id, jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
     END IF;
 
-    -- Notify Teacher (if not the one replying and not already notified as parent author)
+    -- Also notify teacher if it's a student reply and teacher isn't the parent author
     IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email AND v_parent_author != NEW.teacher_email THEN
-       PERFORM notify_user(NEW.teacher_email, 'New Discussion Reply', 'A reply was posted in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'system', NEW.course_id);
+     PERFORM notify_user(NEW.teacher_email, 'New Discussion Reply', 'A student replied to a post in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'discussion_reply', NEW.course_id, jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
     END IF;
   END IF;
 
@@ -1363,7 +1390,8 @@ BEGIN
 
   -- 1. Populate assessment metadata if session_id is provided but assessment info is missing
   -- This helps in linking proctoring logs that might only have session_id initially
-  IF NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
+  -- Safety: Use dynamic SQL or table check to avoid 42703 if session_id column doesn't exist on NEW
+  IF TG_TABLE_NAME = 'violations' AND NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
       SELECT assessment_id, assessment_type, course_id, teacher_email
       INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
       FROM violations
@@ -1743,6 +1771,7 @@ CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_session_timestamp ON violations(session_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_session_severity ON violations(session_id, severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
 CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);

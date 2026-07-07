@@ -90,7 +90,7 @@
                 if (e.message.includes('suspended')) throw e;
             }
 
-            this.state.sessionId = 'asmt_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
+            this.state.sessionId = 'asmt_' + (window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substring(2, 10)) + '_' + Date.now();
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
             this.state.courseId = config.courseId || null;
@@ -285,12 +285,8 @@
             const metadata = violation.event_data || violation.data || violation;
 
             // Standardize severity for proctoring logs if not provided
-            const logTypes = ['ASSESSMENT_SESSION_STARTED', 'ASSESSMENT_SESSION_ENDED', 'SNAPSHOT_CAPTURED', 'CHUNK_RECORDED', 'AUDIO_RECORDED', 'FACE_DETECTED', 'SCREEN_RECORDING_STARTED', 'SCREEN_RECORDING_FINALIZED', 'AUDIO_RECORDING_STARTED', 'AUDIO_RECORDING_FINALIZED', 'WEBCAM_SWITCHED'];
-            // Explicitly exclude actual violations from being downgraded to INFO
-            const isViolation = ['MULTIPLE_FACES', 'NOISE_DETECTED', 'SCREEN_SHARE_STOPPED', 'PROCTORING_FAILURE'].includes(violation.type);
-            const isLog = !isViolation && logTypes.includes(violation.type);
-            const severity = violation.severity || (isLog ? 'INFO' : this.getViolationSeverity(violation.type));
-            const score = violation.score || (isLog ? 0 : this.getViolationScore(violation.type));
+            const severity = violation.severity || this.getViolationSeverity(violation.type);
+            const score = violation.score !== undefined ? violation.score : this.getViolationScore(violation.type);
 
             this.logViolation(violation.type, metadata, { severity, score, elapsed: violation.elapsed });
         }

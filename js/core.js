@@ -908,7 +908,6 @@ const NotificationManager = {
             const metadata = freshUser?.metadata || {};
 
             // 2. Fetch personal notifications and active broadcasts
-            // We apply a reasonable limit for the dropdown UI performance
             const [personalRes, broadcastsRes] = await Promise.all([
                 SupabaseDB.getNotifications(user.email, { pageSize: limit }),
                 SupabaseDB.getBroadcasts({ targetRole: user.role })
@@ -934,10 +933,14 @@ const NotificationManager = {
                     is_broadcast: true
                 }));
 
-            // 5. Combine, deduplicate, and sort
+            // 5. Combine, deduplicate, filter out self-authored, and sort
             const all = [...personal, ...activeBroadcasts];
             const uniqueMap = new Map();
-            all.forEach(n => { if (!uniqueMap.has(n.id)) uniqueMap.set(n.id, n); });
+            all.forEach(n => {
+                // Enterprise Guard: Filter out self-authored notifications using metadata
+                if (n.metadata?.author_email === user.email) return;
+                if (!uniqueMap.has(n.id)) uniqueMap.set(n.id, n);
+            });
 
             // 6. Enforce final limit after combination
             return Array.from(uniqueMap.values())
@@ -2105,7 +2108,7 @@ UI.renderDiscussion = function(containerId, discussions, options = {}) {
     const {
         onEdit = (id) => {},
         onDelete = (id) => {},
-        onPost = (content, parentId) => {},
+            onPost = (content, parentId, extra) => {},
         onViewDetails = (id) => {}
     } = options;
 
@@ -2174,20 +2177,31 @@ UI.renderDiscussion = function(containerId, discussions, options = {}) {
                 <textarea id="discInputMain" placeholder="What's on your mind?" class="m-0" style="min-height:100px"></textarea>
                 <div id="attachments-main"></div>
                 <div class="flex-between">
-                    <button class="button secondary small w-auto" onclick="UI.createFileUploader('attachments-main', {
-                        pathPrefix: 'discussions',
-                        onUploadSuccess: (url, name) => {
-                            const list = UI._getDiscussionAttachments('main');
-                            list.push({url, name});
-                            UI._renderDiscussionAttachments('main', list);
-                        }
-                    })">📎 Attach File</button>
+                    <button class="button secondary small w-auto" id="main-uploader-btn">📎 Attach File</button>
                     <button class="button w-auto px-40" id="post-main-btn" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post Thread</button>
                 </div>
                 <div id="attachment-list-main" class="flex gap-5 mt-10"></div>
             </div>
         </div>
     `;
+
+    // Manually init uploader for main thread to ensure proper container selection
+    UI.createFileUploader('attachments-main', {
+        pathPrefix: 'discussions',
+        onUploadSuccess: (url, name) => {
+            const list = UI._getDiscussionAttachments('main');
+            list.push({url, name});
+            UI._renderDiscussionAttachments('main', list);
+        }
+    });
+
+    const uploaderBtn = document.getElementById('main-uploader-btn');
+    if (uploaderBtn) {
+        uploaderBtn.onclick = () => {
+            const input = document.querySelector('#attachments-main input[type="file"]');
+            if (input) input.click();
+        };
+    }
 
     // Record views for posts currently in viewport
     const recordVisibleViews = () => {
@@ -3000,7 +3014,8 @@ const DiscussionManager = {
                 title: extra.title || null,
                 attachments: extra.attachments || [],
                 parent_id: parentId,
-                created_at: new Date().toISOString()
+                created_at: new Date().toISOString(),
+                metadata: { author_email: user.email }
             });
             return this.render(containerId, courseId);
         } catch (e) {
@@ -3047,6 +3062,7 @@ const DiscussionManager = {
             btn.textContent = 'Saving...';
             try {
                 const user = await SessionManager.getCurrentUser();
+                // Ensure user_email is preserved for RLS update policy
                 await SupabaseDB.saveDiscussion({ ...existing, content, title, user_email: user.email });
                 this.render(containerId, courseId);
             } catch (e) {

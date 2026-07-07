@@ -2568,7 +2568,10 @@ async function startQuiz(quizId) {
                 btn.textContent = 'Securing...';
 
                 try {
-                    // Initialize Anti-Cheat within the user gesture
+                    // 1. Authoritative start via RPC first
+                    StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
+
+                    // 2. Only if successful, initialize Anti-Cheat within the same user gesture
                     await AntiCheat.init(quiz.id, 'quiz', user.email, {
                         ...quiz.anti_cheat_config,
                         courseId: quiz.course_id,
@@ -2580,7 +2583,32 @@ async function startQuiz(quizId) {
                     });
                     resolve(true);
                 } catch (e) {
-                    UI.showNotification('Failed to initialize security: ' + e.message, 'danger');
+                    // Handle 409 Conflict if an attempt already exists (idempotency fallback)
+                    if (e.code === '23505' || e.message?.includes('already exists') || e.status === 409) {
+                        await SupabaseDB.invalidateCache(`quiz_submissions`);
+                        const subsRes = await SupabaseDB.getQuizSubmissions(quizId, user.email, null, { status: 'in-progress' });
+                        if (subsRes.data && subsRes.data.length > 0) {
+                            StudentState.currentSubmission = subsRes.data[0];
+                            // Continue to Anti-Cheat init
+                            try {
+                                await AntiCheat.init(quiz.id, 'quiz', user.email, {
+                                    ...quiz.anti_cheat_config,
+                                    courseId: quiz.course_id,
+                                    callbacks: {
+                                        onViolation: (v) => {
+                                            UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                                        }
+                                    }
+                                });
+                                resolve(true);
+                                return;
+                            } catch (acErr) {
+                                e = acErr;
+                            }
+                        }
+                    }
+
+                    UI.showNotification('Failed to start quiz: ' + e.message, 'danger');
                     if (listBtn) {
                         listBtn.disabled = false;
                         listBtn.textContent = 'Start New Attempt';
@@ -2593,37 +2621,42 @@ async function startQuiz(quizId) {
         if (!success) return;
 
         UI.showLoading('questionContainer', 'Starting attempt...');
-    } else if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
-      // Initialize other anti-cheat features that don't strictly require a fresh gesture
-      await AntiCheat.init(quiz.id, 'quiz', user.email, {
-          ...quiz.anti_cheat_config,
-          courseId: quiz.course_id,
-          callbacks: {
-              onViolation: (v) => {
-                  UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
-              }
-          }
-      });
-    }
+    } else {
+        // No gesture needed, but we still strictly enforce order: Start RPC -> Init AC
+        try {
+            StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
 
-    // Authoritative start via RPC with Idempotency
-    try {
-        StudentState.currentSubmission = await SupabaseDB.startQuizAttempt(quizId);
-    } catch (startErr) {
-        // Handle 409 Conflict if an attempt already exists (idempotency fallback)
-        // We re-fetch without cache to ensure we get the latest state from the DB
-        if (startErr.code === '23505' || startErr.message?.includes('already exists') || startErr.status === 409) {
-            await SupabaseDB.invalidateCache(`quiz_submissions`);
-            const subsRes = await SupabaseDB.getQuizSubmissions(quizId, user.email, null, { status: 'in-progress' });
-            if (subsRes.data && subsRes.data.length > 0) {
-                StudentState.currentSubmission = subsRes.data[0];
-            } else {
-                await AntiCheat.destroy();
-                throw startErr; // Rethrow if we can't find the existing attempt
+            if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
+                await AntiCheat.init(quiz.id, 'quiz', user.email, {
+                    ...quiz.anti_cheat_config,
+                    courseId: quiz.course_id,
+                    callbacks: {
+                        onViolation: (v) => {
+                            UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected and logged.`, 'danger');
+                        }
+                    }
+                });
             }
-        } else {
-            await AntiCheat.destroy();
-            throw startErr;
+        } catch (startErr) {
+             // Handle 409 Conflict if an attempt already exists (idempotency fallback)
+            if (startErr.code === '23505' || startErr.message?.includes('already exists') || startErr.status === 409) {
+                await SupabaseDB.invalidateCache(`quiz_submissions`);
+                const subsRes = await SupabaseDB.getQuizSubmissions(quizId, user.email, null, { status: 'in-progress' });
+                if (subsRes.data && subsRes.data.length > 0) {
+                    StudentState.currentSubmission = subsRes.data[0];
+                    if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
+                        await AntiCheat.init(quiz.id, 'quiz', user.email, {
+                            ...quiz.anti_cheat_config,
+                            courseId: quiz.course_id,
+                            callbacks: { onViolation: (v) => UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected.`, 'danger') }
+                        });
+                    }
+                } else {
+                    throw startErr;
+                }
+            } else {
+                throw startErr;
+            }
         }
     }
     if (renderId !== window.currentRenderId) return;
