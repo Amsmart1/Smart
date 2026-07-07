@@ -8,6 +8,12 @@ SET client_min_messages TO NOTICE;
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Enterprise Grade Custom Domains
+DO $$ BEGIN
+    CREATE DOMAIN notification_type AS VARCHAR(50)
+    CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- 0. Internal Auth Helpers (Defined early for use in triggers and RPCs)
 
 -- Internal helper to retrieve session ID from headers (DRY)
@@ -138,13 +144,15 @@ DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCA
 CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL)
 RETURNS VOID AS $$
 BEGIN
-  -- Enterprise Grade Validation: Ensure p_type is within allowed values
-  IF p_type NOT IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected') THEN
-    p_type := 'system';
-  END IF;
-
-  INSERT INTO notifications (user_email, title, message, link, type, course_id)
-  VALUES (p_email, p_title, p_message, p_link, p_type, p_course_id);
+  -- Enterprise Grade Validation: Leverage custom domain for validation
+  BEGIN
+    INSERT INTO notifications (user_email, title, message, link, type, course_id)
+    VALUES (p_email, p_title, p_message, p_link, p_type::notification_type, p_course_id);
+  EXCEPTION WHEN OTHERS THEN
+    -- Fallback to system type if invalid type provided (handles domain check violation)
+    INSERT INTO notifications (user_email, title, message, link, type, course_id)
+    VALUES (p_email, p_title, p_message, p_link, 'system'::notification_type, p_course_id);
+  END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -399,7 +407,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   link TEXT,
-  type VARCHAR(50) DEFAULT 'system' CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected')),
+  type notification_type DEFAULT 'system',
   is_read BOOLEAN DEFAULT FALSE,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -414,7 +422,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   link TEXT,
-  type VARCHAR(50) DEFAULT 'system' CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected')),
+  type notification_type DEFAULT 'system',
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days'),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -844,12 +852,16 @@ BEGIN
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS course_id UUID REFERENCES courses(id) ON DELETE CASCADE;
     BEGIN
         ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-        ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (type IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected'));
+        ALTER TABLE notifications ALTER COLUMN type TYPE notification_type USING type::notification_type;
     EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- broadcasts
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
+    BEGIN
+        ALTER TABLE broadcasts DROP CONSTRAINT IF EXISTS broadcasts_type_check;
+        ALTER TABLE broadcasts ALTER COLUMN type TYPE notification_type USING type::notification_type;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- maintenance
     ALTER TABLE maintenance ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
