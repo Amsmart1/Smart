@@ -1380,7 +1380,6 @@ let maintCountdown = null;
 const SessionGuard = {
     _lastCheck: 0,
     _throttle: 5000, // 5 seconds
-    _channel: window.BroadcastChannel ? new BroadcastChannel('smartlms_session') : null,
 
     async validate(force = false) {
         const now = Date.now();
@@ -1435,11 +1434,6 @@ const SessionGuard = {
                     msg = 'Your permissions have been updated. Please login again.';
                 }
 
-                // Broadcast logout to all other tabs BEFORE performing local logout
-                if (this._channel) {
-                    this._channel.postMessage({ type: 'LOGOUT', message: msg });
-                }
-
                 await this.logout(msg);
             }
         } catch (e) {
@@ -1460,14 +1454,6 @@ const SessionGuard = {
     init() {
         if (this._initialized) return;
         this._initialized = true;
-
-        if (this._channel) {
-            this._channel.onmessage = (event) => {
-                if (event.data?.type === 'LOGOUT') {
-                    this.logout(event.data.message);
-                }
-            };
-        }
 
         // Listen for visibility changes and focus to trigger immediate validation
         document.addEventListener('visibilitychange', () => {
