@@ -1081,7 +1081,7 @@ const NotificationManager = {
                 `;
             }
 
-            // Enforce One-Time Alert Policy
+            // Enforce One-Time Alert Policy (Enterprise Grade Singleton Delivery)
             const user = await SessionManager.getCurrentUser();
             if (user) {
                 const freshUser = await SupabaseDB.getUser(user.email, true);
@@ -1089,15 +1089,26 @@ const NotificationManager = {
                 const alertedIds = metadata.alerted_ids || [];
                 const prefs = await this.getPreferences();
 
-                // Find ALL un-alerted notifications
-                const unalerted = notifications.filter(n => !n.is_read && !alertedIds.includes(n.id) && !this._alertedSessionIds.has(n.id));
+                // 1. Initial filter for un-alerted notifications
+                let unalerted = notifications.filter(n => !n.is_read && !alertedIds.includes(n.id) && !this._alertedSessionIds.has(n.id));
 
                 if (unalerted.length > 0 && prefs.inApp) {
-                    // Update session-level Set immediately to prevent redundant toasts within THIS tab
+                    // 2. Random stagger (50-150ms) to coordinate singleton delivery across tabs
+                    await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+
+                    // 3. Re-filter after stagger to see if another tab claimed them
+                    unalerted = unalerted.filter(n => !this._alertedSessionIds.has(n.id));
+                    if (unalerted.length === 0) return;
+
+                    // 4. Broadcast CLAIM immediately to other tabs
+                    if (this._channel) {
+                        this._channel.postMessage({ type: 'ALERT_CLAIMED', ids: unalerted.map(n => n.id) });
+                    }
+
+                    // 5. Update local session-level Set immediately
                     unalerted.forEach(n => this._alertedSessionIds.add(n.id));
 
-                    // Mark as alerted globally using atomic RPC to avoid tab race conditions
-                    // We batch IDs into a single JSONB array call for efficiency
+                    // 6. Mark as alerted globally using atomic RPC
                     const ids = unalerted.map(n => n.id);
                     await SupabaseDB.updateMetadataAtomic(user.email, 'alerted_ids', ids, 'append');
 
@@ -1106,7 +1117,7 @@ const NotificationManager = {
                         UI.showNotification(n.title, 'info');
                     });
 
-                    // Sync other tabs
+                    // 7. Final sync for UI consistency
                     if (this._channel) {
                         this._channel.postMessage({ type: 'ALERT_SHOWN', ids: unalerted.map(n => n.id) });
                     }
@@ -1261,13 +1272,58 @@ const NotificationManager = {
             return;
         }
 
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-            UI.showNotification('Push notifications enabled successfully!', 'success');
-            // Logic for actual push token registration would go here
-        } else {
-            UI.showNotification('Notification permission was denied.', 'warn');
+        if (!('serviceWorker' in navigator)) {
+            UI.showNotification('Service Worker not supported. Push notifications unavailable.', 'error');
+            return;
         }
+
+        try {
+            const permission = await Notification.requestPermission();
+            if (permission !== 'granted') {
+                UI.showNotification('Notification permission was denied.', 'warn');
+                return;
+            }
+
+            const registration = await navigator.serviceWorker.ready;
+
+            // Enterprise Grade VAPID Configuration
+            // We use a public application server key for the push subscription
+            const publicVapidKey = 'BEl62i_SJHiBy7_X62-z8u271TInC-v_v0q7r6v-r-v-r-v-r-v-r-v-r-v-r-v-v-r-v-r-v-r-v-r-v'; // Placeholder
+
+            let subscription = await registration.pushManager.getSubscription();
+
+            if (!subscription) {
+                subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: this._urlBase64ToUint8Array('BEl62i_SJHiBy7_X62-z8u271TInC-v_v0q7r6v-r-v-r-v-r-v-r-v-r-v-r-v-v-r-v-r-v-r-v-r-v')
+                });
+            }
+
+            const user = await SessionManager.getCurrentUser();
+            if (user) {
+                // Save subscription to user metadata for server-side push targeting
+                await SupabaseDB.updateMetadataAtomic(user.email, 'push_subscription', JSON.stringify(subscription), 'append');
+                UI.showNotification('Push notifications enabled successfully!', 'success');
+            }
+        } catch (e) {
+            console.error('[NotificationManager] Push subscription failed:', e);
+            UI.showNotification('Failed to enable push notifications: ' + e.message, 'error');
+        }
+    },
+
+    _urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding)
+            .replace(/\-/g, '+')
+            .replace(/_/g, '/');
+
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+
+        for (let i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
     },
 
     /**
@@ -1294,9 +1350,9 @@ const NotificationManager = {
                     if (event.data.type === 'UPDATE_UI' || event.data.type === 'STATE_CHANGED') {
                         if (typeof SupabaseDB !== 'undefined') SupabaseDB.invalidateCache();
                         this.queueUpdate(false);
-                    } else if (event.data.type === 'ALERT_SHOWN') {
+                    } else if (event.data.type === 'ALERT_SHOWN' || event.data.type === 'ALERT_CLAIMED') {
                         if (typeof SupabaseDB !== 'undefined') SupabaseDB.invalidateCache();
-                        // Synchronization: Sync local alerted Set with other tabs
+                        // Synchronization: Sync local alerted Set with other tabs to enforce singleton delivery
                         if (event.data.ids && Array.isArray(event.data.ids)) {
                             event.data.ids.forEach(id => this._alertedSessionIds.add(id));
                         }
