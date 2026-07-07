@@ -12,7 +12,10 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 DO $$ BEGIN
     CREATE DOMAIN notification_type AS VARCHAR(50)
     CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected', 'discussion_post', 'discussion_reply'));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+EXCEPTION WHEN duplicate_object THEN
+    ALTER DOMAIN notification_type DROP CONSTRAINT notification_type_check;
+    ALTER DOMAIN notification_type ADD CONSTRAINT notification_type_check CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected', 'discussion_post', 'discussion_reply'));
+END $$;
 
 -- 0. Internal Auth Helpers (Defined early for use in triggers and RPCs)
 
@@ -141,6 +144,7 @@ $$ LANGUAGE plpgsql STABLE;
 -- We drop it first to handle potential parameter name/type changes (ERROR 42P13)
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCADE;
+DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID, JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL, p_metadata JSONB DEFAULT '{}'::jsonb)
 RETURNS VOID AS $$
 DECLARE
@@ -863,6 +867,7 @@ BEGIN
     ALTER TABLE discussions ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 
     -- notifications
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS course_id UUID REFERENCES courses(id) ON DELETE CASCADE;
     BEGIN
@@ -871,6 +876,7 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN NULL; END;
 
     -- broadcasts
+    ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
     BEGIN
@@ -1020,15 +1026,15 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (TG_OP = 'INSERT') THEN
     IF (NEW.status = 'scheduled') THEN
-      PERFORM create_broadcast(NEW.course_id, 'student', 'Live Class Scheduled', 'A new live class "' || NEW.title || '" has been scheduled for ' || NEW.start_at, 'student.html?page=live', 'live_class');
+      PERFORM create_broadcast(NEW.course_id, 'student', 'Live Class Scheduled', 'A new live class "' || NEW.title || '" has been scheduled for ' || NEW.start_at, 'student.html?page=live', 'live_class', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
     END IF;
   ELSIF (TG_OP = 'UPDATE') THEN
-    IF (NEW.status = 'live' AND OLD.status != 'live') THEN
-      PERFORM create_broadcast(NEW.course_id, 'student', 'Live Class Started', 'The class "' || NEW.title || '" has started! Join now.', 'student.html?page=live', 'live_class');
+    IF (NEW.status = 'live' AND OLD.status IS DISTINCT FROM 'live') THEN
+      PERFORM create_broadcast(NEW.course_id, 'student', 'Live Class Started', 'The class "' || NEW.title || '" has started! Join now.', 'student.html?page=live', 'live_class', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
     ELSIF (NEW.status = 'scheduled' AND OLD.status = 'live') THEN
-      PERFORM create_broadcast(NEW.course_id, 'student', 'Teacher Left Room', 'The teacher has left the session for "' || NEW.title || '". Please wait for them to rejoin.', 'student.html?page=live', 'teacher_left');
+      PERFORM create_broadcast(NEW.course_id, 'student', 'Teacher Left Room', 'The teacher has left the session for "' || NEW.title || '". Please wait for them to rejoin.', 'student.html?page=live', 'teacher_left', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
     ELSIF (NEW.status = 'completed' AND OLD.status = 'live') THEN
-      PERFORM create_broadcast(NEW.course_id, 'student', 'Class Ended', 'The live class "' || NEW.title || '" has ended.', 'student.html?page=live', 'class_ended');
+      PERFORM create_broadcast(NEW.course_id, 'student', 'Class Ended', 'The live class "' || NEW.title || '" has ended.', 'student.html?page=live', 'class_ended', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
     END IF;
   END IF;
   RETURN NEW;
@@ -1042,7 +1048,7 @@ CREATE OR REPLACE FUNCTION tr_notify_assignment() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
-    PERFORM create_broadcast(NEW.course_id, 'student', 'New Assignment', 'A new assignment "' || NEW.title || '" has been published.', 'student.html?page=assignments', 'assignment_published');
+    PERFORM create_broadcast(NEW.course_id, 'student', 'New Assignment', 'A new assignment "' || NEW.title || '" has been published.', 'student.html?page=assignments', 'assignment_published', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
   END IF;
   RETURN NEW;
 END;
@@ -1055,7 +1061,7 @@ CREATE OR REPLACE FUNCTION tr_notify_quiz() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'published' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'published'))) THEN
-    PERFORM create_broadcast(NEW.course_id, 'student', 'New Quiz Available', 'A new quiz "' || NEW.title || '" has been published.', 'student.html?page=quizzes', 'quiz_published');
+    PERFORM create_broadcast(NEW.course_id, 'student', 'New Quiz Available', 'A new quiz "' || NEW.title || '" has been published.', 'student.html?page=quizzes', 'quiz_published', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
   END IF;
   RETURN NEW;
 END;
@@ -1073,12 +1079,12 @@ BEGIN
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     -- Notify teacher
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
+      PERFORM notify_user(NEW.teacher_email, 'New Submission', 'A student has submitted an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
     END IF;
 
     -- Notify student
     SELECT title INTO v_assign_title FROM assignments WHERE id = NEW.assignment_id;
-    PERFORM notify_user(NEW.student_email, 'Assignment Submitted', 'You have successfully submitted "' || COALESCE(v_assign_title, 'Assignment') || '".', 'student.html?page=assignments', 'system', NEW.course_id);
+    PERFORM notify_user(NEW.student_email, 'Assignment Submitted', 'You have successfully submitted "' || COALESCE(v_assign_title, 'Assignment') || '".', 'student.html?page=assignments', 'system', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
   END IF;
   RETURN NEW;
 END;
@@ -1093,10 +1099,10 @@ BEGIN
   IF (NEW.status = 'submitted' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'submitted'))) THEN
     -- Notify Teacher
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
+      PERFORM notify_user(NEW.teacher_email, 'New Quiz Submission', 'A student has submitted a quiz.', 'teacher.html?page=quizzes', 'submission_received', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
     END IF;
     -- Notify Student (Confirmation)
-    PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id);
+    PERFORM notify_user(NEW.student_email, 'Quiz Submitted', 'Your quiz attempt has been successfully recorded.', 'student.html?page=quizzes', 'system', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
   END IF;
   RETURN NEW;
 END;
@@ -1115,7 +1121,7 @@ BEGIN
   SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
 
   IF v_teacher_email IS NOT NULL THEN
-    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
+    PERFORM notify_user(v_teacher_email, 'New Student Enrollment', 'A new student has enrolled in your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=students', 'system', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
   END IF;
 
   RETURN NEW;
@@ -1145,7 +1151,7 @@ CREATE OR REPLACE FUNCTION tr_notify_grade() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (NEW.status = 'graded' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM 'graded'))) THEN
-    PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted', NEW.course_id);
+    PERFORM notify_user(NEW.student_email, 'Assignment Graded', 'Your assignment has been graded. Score: ' || NEW.final_grade || '%', 'student.html?page=assignments', 'grade_posted', NEW.course_id, jsonb_build_object('author_email', NEW.teacher_email));
   END IF;
   RETURN NEW;
 END;
@@ -1167,13 +1173,13 @@ BEGIN
     IF NEW.type = 'consolidated' THEN
       -- Notify all admins
       FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
-        PERFORM notify_user(v_admin_email, 'Consolidated Certificate Requested', 'A student requested a consolidated certificate.', 'admin.html?page=users', 'cert_requested', NULL, jsonb_build_object('student_email', NEW.student_email));
+        PERFORM notify_user(v_admin_email, 'Consolidated Certificate Requested', 'A student requested a consolidated certificate.', 'admin.html?page=users', 'cert_requested', NULL, jsonb_build_object('author_email', NEW.student_email));
       END LOOP;
     ELSE
       -- Single course certificate
       SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
       IF NEW.teacher_email IS NOT NULL THEN
-        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'A student requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
+        PERFORM notify_user(NEW.teacher_email, 'New Certificate Request', 'A student requested a certificate for your course "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=certificates', 'cert_requested', NEW.course_id, jsonb_build_object('author_email', NEW.student_email));
       END IF;
     END IF;
   END IF;
@@ -1182,7 +1188,7 @@ BEGIN
   IF (NEW.status = 'pending_approval' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'pending_approval'))) THEN
      -- Notify all admins
      FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
-       PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate is pending approval.', 'admin.html?page=users', 'cert_issued', NULL, jsonb_build_object('student_email', NEW.student_email));
+       PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate for ' || COALESCE(v_student_name, 'a student') || ' is pending approval.', 'admin.html?page=users', 'cert_issued', NEW.course_id, jsonb_build_object('author_email', NEW.teacher_email, 'student_email', NEW.student_email));
      END LOOP;
   END IF;
 
@@ -1206,7 +1212,7 @@ CREATE OR REPLACE FUNCTION tr_notify_material_published() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   IF (TG_OP = 'INSERT') THEN
-    PERFORM create_broadcast(NEW.course_id, 'student', 'New Material Added', 'New learning material "' || NEW.title || '" has been uploaded.', 'student.html?page=materials', 'system');
+    PERFORM create_broadcast(NEW.course_id, 'student', 'New Material Added', 'New learning material "' || NEW.title || '" has been uploaded.', 'student.html?page=materials', 'system', INTERVAL '30 days', jsonb_build_object('author_email', NEW.teacher_email));
   END IF;
   RETURN NEW;
 END;
@@ -1218,30 +1224,62 @@ CREATE TRIGGER tr_material_published AFTER INSERT ON materials FOR EACH ROW EXEC
 CREATE OR REPLACE FUNCTION tr_notify_discussion() RETURNS TRIGGER AS $$
 DECLARE
   v_course_title TEXT;
-  v_parent_author VARCHAR(255);
+  v_teacher_email VARCHAR(255);
+  v_root_author VARCHAR(255);
+  v_author_name TEXT;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
+  SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
+  SELECT full_name INTO v_author_name FROM users WHERE email = NEW.user_email;
 
   IF NEW.parent_id IS NULL THEN
-    -- New Thread: Notify teacher if student posts
-    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email THEN
-      INSERT INTO broadcasts (course_id, target_role, title, message, type, metadata)
-      VALUES (NEW.course_id, 'teacher', 'New Discussion Thread', 'A student started a new thread in "' || COALESCE(v_course_title, 'Unknown') || '".', 'discussion_post', jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
+    -- New Thread (Post)
+    -- 1. Broadcast to all enrolled students
+    PERFORM create_broadcast(
+        NEW.course_id,
+        'student',
+        'New Discussion Post',
+        COALESCE(v_author_name, 'Someone') || ' started a new discussion: "' || COALESCE(NEW.title, 'No Title') || '"',
+        'student.html?page=discussions',
+        'discussion_post',
+        INTERVAL '7 days',
+        jsonb_build_object('author_email', NEW.user_email)
+    );
+
+    -- 2. If a student post, notify the course teacher (if not the one who posted)
+    IF v_teacher_email IS NOT NULL AND NEW.user_email != v_teacher_email THEN
+      PERFORM notify_user(
+          v_teacher_email,
+          'New Discussion Thread',
+          COALESCE(v_author_name, 'A student') || ' started a new thread in "' || COALESCE(v_course_title, 'Unknown') || '".',
+          'teacher.html?page=discussions',
+          'discussion_post',
+          NEW.course_id,
+          jsonb_build_object('author_email', NEW.user_email)
+      );
     END IF;
   ELSE
-    -- Reply: Notify root thread author or parent author
-    -- Use a recursive CTE to find the root author if needed, or just notify parent
-    SELECT user_email INTO v_parent_author FROM discussions WHERE id = NEW.parent_id;
+    -- Reply: Alert only the ORIGINAL post owner (root of the thread)
+    WITH RECURSIVE thread_root AS (
+        SELECT id, user_email, parent_id FROM discussions WHERE id = NEW.parent_id
+        UNION ALL
+        SELECT d.id, d.user_email, d.parent_id FROM discussions d
+        JOIN thread_root tr ON d.id = tr.parent_id
+    )
+    SELECT user_email INTO v_root_author FROM thread_root WHERE parent_id IS NULL LIMIT 1;
 
-    IF v_parent_author IS NOT NULL AND v_parent_author != NEW.user_email THEN
-    PERFORM notify_user(v_parent_author, 'New Discussion Reply', 'Someone replied to your post in "' || COALESCE(v_course_title, 'Unknown') || '".', 'student.html?page=discussions', 'discussion_reply', NEW.course_id, jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
-    END IF;
-
-    -- Also notify teacher if it's a student reply and teacher isn't the parent author
-    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email AND v_parent_author != NEW.teacher_email THEN
-     PERFORM notify_user(NEW.teacher_email, 'New Discussion Reply', 'A student replied to a post in "' || COALESCE(v_course_title, 'Unknown') || '".', 'teacher.html?page=discussions', 'discussion_reply', NEW.course_id, jsonb_build_object('author_email', NEW.user_email, 'discussion_id', NEW.id));
+    -- Notify Root Author
+    IF v_root_author IS NOT NULL AND v_root_author != NEW.user_email THEN
+      PERFORM notify_user(
+          v_root_author,
+          'New Reply',
+          COALESCE(v_author_name, 'Someone') || ' replied to your discussion post.',
+          'student.html?page=discussions',
+          'discussion_reply',
+          NEW.course_id,
+          jsonb_build_object('author_email', NEW.user_email)
+      );
     END IF;
   END IF;
 

@@ -916,12 +916,21 @@ const NotificationManager = {
             const personal = personalRes.data || [];
             const broadcasts = broadcastsRes.data || [];
 
-            // 3. Filter broadcasts based on recency (last 14 days)
+            // 3. Filter notifications/broadcasts authored by the current user to prevent self-alerting
+            const filterSelf = (items) => items.filter(item => {
+                const authorEmail = item.metadata?.author_email;
+                return !authorEmail || authorEmail !== user.email;
+            });
+
+            const filteredPersonal = filterSelf(personal);
+            const filteredBroadcasts = filterSelf(broadcasts);
+
+            // 4. Filter broadcasts based on recency (last 14 days)
             const recentDate = new Date();
             recentDate.setDate(recentDate.getDate() - 14);
-            const relevantBroadcasts = broadcasts.filter(b => new Date(b.created_at) >= recentDate);
+            const relevantBroadcasts = filteredBroadcasts.filter(b => new Date(b.created_at) >= recentDate);
 
-            // 4. Filter broadcasts based on clearance metadata
+            // 5. Filter broadcasts based on clearance metadata
             const clearedBroadcasts = metadata.cleared_broadcasts || [];
             const readBroadcasts = metadata.read_broadcasts || [];
 
@@ -933,8 +942,8 @@ const NotificationManager = {
                     is_broadcast: true
                 }));
 
-            // 5. Combine, deduplicate, filter out self-authored, and sort
-            const all = [...personal, ...activeBroadcasts];
+            // 6. Combine, deduplicate, and sort
+            const all = [...filteredPersonal, ...activeBroadcasts];
             const uniqueMap = new Map();
             all.forEach(n => {
                 // Enterprise Guard: Filter out self-authored notifications using metadata
@@ -942,7 +951,7 @@ const NotificationManager = {
                 if (!uniqueMap.has(n.id)) uniqueMap.set(n.id, n);
             });
 
-            // 6. Enforce final limit after combination
+            // 7. Enforce final limit after combination
             return Array.from(uniqueMap.values())
                 .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
                 .slice(0, limit);
@@ -1052,11 +1061,23 @@ const NotificationManager = {
             }
 
             if (list) {
+                const getIcon = (type) => {
+                    switch(type) {
+                        case 'discussion_post': return '💬';
+                        case 'discussion_reply': return '↪️';
+                        case 'assignment_published': return '📝';
+                        case 'quiz_published': return '❓';
+                        case 'grade_posted': return '🎓';
+                        case 'live_class': return '📹';
+                        default: return '📢';
+                    }
+                };
+
                 const itemsHtml = notifications.map(n => `
                     <div class="notif-item" style="padding:12px; border-bottom:1px solid #f0f0f0; background:${n.is_read ? '#fff' : '#f0f4ff'}; cursor:pointer; transition: background 0.2s"
                             onclick="NotificationManager.handleNotificationClick('${n.id}', ${!!n.is_broadcast}, '${n.link || ''}')">
                         <div style="display:flex; justify-content:space-between; align-items:start">
-                            <div style="font-weight:600; font-size:13px; color:var(--text)">${n.is_broadcast ? '📢 ' : ''}${escapeHtml(n.title)}</div>
+                            <div style="font-weight:600; font-size:13px; color:var(--text)">${getIcon(n.type)} ${escapeHtml(n.title)}</div>
                             ${!n.is_read ? '<div style="width:8px; height:8px; background:var(--purple); border-radius:50%; margin-top:4px"></div>' : ''}
                         </div>
                         <div style="font-size:12px; color:#555; margin-top:4px; line-height:1.4">${escapeHtml(n.message)}</div>
