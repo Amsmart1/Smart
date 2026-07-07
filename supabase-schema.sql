@@ -137,7 +137,30 @@ DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCADE;
 CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL)
 RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
 BEGIN
+  v_auth_email := get_auth_email();
+
+  -- ABAC: Authorization check for direct RPC calls
+  -- Allows: Admins, Course Teachers notifying students, or Students notifying their Course Teacher
+  IF v_auth_email IS NOT NULL AND NOT is_admin() AND v_auth_email <> p_email THEN
+    IF NOT (
+      EXISTS (SELECT 1 FROM courses WHERE id = p_course_id AND (teacher_email = v_auth_email OR teacher_email = p_email))
+    ) THEN
+      -- Fallback: check if they are in ANY shared course if course_id is missing
+      IF NOT EXISTS (
+        SELECT 1 FROM enrollments e1
+        JOIN enrollments e2 ON e1.course_id = e2.course_id
+        WHERE e1.student_email = v_auth_email AND e2.student_email = p_email
+      ) AND NOT EXISTS (
+        SELECT 1 FROM courses WHERE teacher_email = v_auth_email OR teacher_email = p_email
+      ) THEN
+        RAISE EXCEPTION 'Unauthorized: No shared course context found for notification.';
+      END IF;
+    END IF;
+  END IF;
+
   INSERT INTO notifications (user_email, title, message, link, type, course_id)
   VALUES (p_email, p_title, p_message, p_link, p_type, p_course_id);
 END;
@@ -963,7 +986,19 @@ CREATE OR REPLACE FUNCTION create_broadcast(
     p_type TEXT DEFAULT 'system',
     p_expires_in INTERVAL DEFAULT INTERVAL '30 days'
 ) RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
 BEGIN
+  v_auth_email := get_auth_email();
+
+  -- ABAC: Only Admins or the Course Teacher can create a broadcast
+  IF NOT (
+    is_admin() OR
+    (p_course_id IS NOT NULL AND EXISTS (SELECT 1 FROM courses WHERE id = p_course_id AND teacher_email = v_auth_email))
+  ) THEN
+    RAISE EXCEPTION 'Unauthorized: Only administrators or course teachers can create broadcasts.';
+  END IF;
+
   -- Security: Only authorized roles or system triggers (SECURITY DEFINER) can create broadcasts
   -- Note: p_target_role 'all' is normalized to NULL in the table
   INSERT INTO broadcasts (course_id, target_role, title, message, link, type, expires_at)
@@ -1636,6 +1671,43 @@ CREATE TRIGGER tr_validate_submissions_answers BEFORE INSERT OR UPDATE ON submis
 DROP TRIGGER IF EXISTS tr_validate_quiz_submissions_answers ON quiz_submissions;
 CREATE TRIGGER tr_validate_quiz_submissions_answers BEFORE INSERT OR UPDATE ON quiz_submissions FOR EACH ROW EXECUTE PROCEDURE validate_jsonb_object();
 
+-- Trigger to prevent non-admins from updating sensitive user columns (ABAC Hardening)
+CREATE OR REPLACE FUNCTION tr_protect_user_fields() RETURNS TRIGGER AS $$
+BEGIN
+  IF _is_migration_mode() OR is_admin() THEN
+    RETURN NEW;
+  END IF;
+
+  -- Prevent changes to sensitive columns by non-admins
+  IF NEW.role IS DISTINCT FROM OLD.role THEN
+    RAISE EXCEPTION 'Unauthorized: Only administrators can change user roles.';
+  END IF;
+
+  IF NEW.flagged IS DISTINCT FROM OLD.flagged THEN
+    RAISE EXCEPTION 'Unauthorized: Only administrators can flag/unflag users.';
+  END IF;
+
+  IF NEW.active IS DISTINCT FROM OLD.active THEN
+    -- Allow users to deactivate themselves maybe? Usually restricted in enterprise.
+    -- For now, let's restrict it to admins only for status management.
+    RAISE EXCEPTION 'Unauthorized: Only administrators can change account activation status.';
+  END IF;
+
+  IF NEW.locked_until IS DISTINCT FROM OLD.locked_until OR
+     NEW.lockouts IS DISTINCT FROM OLD.lockouts OR
+     NEW.failed_attempts IS DISTINCT FROM OLD.failed_attempts THEN
+    RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_users_protect_fields ON users;
+CREATE TRIGGER tr_users_protect_fields
+BEFORE UPDATE ON users
+FOR EACH ROW EXECUTE PROCEDURE tr_protect_user_fields();
+
 CREATE OR REPLACE FUNCTION tr_populate_reset_request_metadata() RETURNS TRIGGER AS $$
 DECLARE
     v_reason TEXT;
@@ -1783,9 +1855,11 @@ CREATE INDEX IF NOT EXISTS idx_topics_course_id ON topics(course_id);
 
 -- Composite Indexes for Foreign Key Pairs & Common Lookups
 CREATE INDEX IF NOT EXISTS idx_enrollments_composite ON enrollments(course_id, student_email);
+CREATE INDEX IF NOT EXISTS idx_enrollments_student_course ON enrollments(student_email, course_id);
 CREATE INDEX IF NOT EXISTS idx_submissions_composite ON submissions(assignment_id, student_email);
 CREATE INDEX IF NOT EXISTS idx_attendance_composite ON attendance(live_class_id, student_email);
 CREATE INDEX IF NOT EXISTS idx_quiz_submissions_composite ON quiz_submissions(quiz_id, student_email);
+CREATE INDEX IF NOT EXISTS idx_quiz_submissions_student_lookup ON quiz_submissions(student_email, quiz_id, status);
 
 -- Composite Indexes for Dashboard Filters
 CREATE INDEX IF NOT EXISTS idx_courses_teacher_status ON courses(teacher_email, status);
@@ -2341,6 +2415,15 @@ DECLARE
 BEGIN
     v_auth_email := get_auth_email();
 
+    -- ABAC: Must be Admin, Course Teacher, or Enrolled Student
+    IF NOT (
+        is_admin() OR
+        EXISTS (SELECT 1 FROM courses WHERE id = p_course_id AND teacher_email = v_auth_email) OR
+        EXISTS (SELECT 1 FROM enrollments WHERE course_id = p_course_id AND student_email = v_auth_email)
+    ) THEN
+        RETURN;
+    END IF;
+
     RETURN QUERY
     SELECT
         d.id,
@@ -2370,12 +2453,20 @@ RETURNS TABLE (
     role VARCHAR,
     viewed_at TIMESTAMP WITH TIME ZONE
 ) AS $$
+DECLARE
+    v_auth_email VARCHAR;
 BEGIN
-    -- Security: Only teacher or post author or admin can see who viewed
+    v_auth_email := get_auth_email();
+
+    -- ABAC Security: Only Course Teacher or post author or admin can see who viewed
     IF NOT (
         is_admin() OR
-        is_teacher() OR
-        EXISTS (SELECT 1 FROM discussions WHERE id = p_discussion_id AND user_email = get_auth_email())
+        EXISTS (
+            SELECT 1 FROM discussions d
+            LEFT JOIN courses c ON d.course_id = c.id
+            WHERE d.id = p_discussion_id
+            AND (d.user_email = v_auth_email OR c.teacher_email = v_auth_email)
+        )
     ) THEN
         RETURN;
     END IF;
@@ -2426,8 +2517,19 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
     v_auth_email VARCHAR;
+    v_course_id UUID;
 BEGIN
     v_auth_email := get_auth_email();
+    SELECT course_id INTO v_course_id FROM discussions WHERE id = p_id;
+
+    -- ABAC: Must be Admin, Course Teacher, or Enrolled Student
+    IF NOT (
+        is_admin() OR
+        EXISTS (SELECT 1 FROM courses WHERE id = v_course_id AND teacher_email = v_auth_email) OR
+        EXISTS (SELECT 1 FROM enrollments WHERE course_id = v_course_id AND student_email = v_auth_email)
+    ) THEN
+        RETURN;
+    END IF;
 
     RETURN QUERY
     SELECT
@@ -2498,7 +2600,15 @@ RETURNS VOID AS $$
 DECLARE
     v_sub RECORD;
     v_score_data RECORD;
+    v_auth_email VARCHAR;
 BEGIN
+    v_auth_email := get_auth_email();
+
+    -- ABAC: Students can only reconcile their own attempts. Teachers/Admins can reconcile any.
+    IF NOT (is_admin() OR is_teacher()) AND p_student_email IS DISTINCT FROM v_auth_email THEN
+        p_student_email := v_auth_email;
+    END IF;
+
     FOR v_sub IN
         SELECT qs.id, qs.quiz_id, qs.answers, qs.started_at,
                LEAST(
@@ -2750,7 +2860,15 @@ DECLARE
   v_course_status VARCHAR;
   v_enrollment_limit INTEGER;
   v_current_enrollments INTEGER;
+  v_auth_email VARCHAR;
 BEGIN
+  v_auth_email := get_auth_email();
+
+  -- ABAC: Only Admins or the student themselves can enroll
+  IF NOT (is_admin() OR v_auth_email = p_student_email) THEN
+    RAISE EXCEPTION 'Unauthorized: You can only enroll yourself.';
+  END IF;
+
   SELECT enrollment_id, status, enrollment_limit
   INTO v_actual_enrollment_id, v_course_status, v_enrollment_limit
   FROM courses WHERE id = p_course_id;
@@ -2839,7 +2957,22 @@ CREATE POLICY "Secrets: Admin Manage" ON user_secrets FOR ALL USING (is_admin())
 
 -- 1. Users Table
 DROP POLICY IF EXISTS "Users: Select" ON users;
-CREATE POLICY "Users: Select" ON users FOR SELECT USING (true);
+CREATE POLICY "Users: Select" ON users FOR SELECT USING (
+  is_admin() OR
+  is_teacher() OR
+  email = get_auth_email_raw() OR
+  EXISTS (
+    SELECT 1 FROM enrollments e1
+    JOIN enrollments e2 ON e1.course_id = e2.course_id
+    WHERE e1.student_email = get_auth_email() AND e2.student_email = users.email
+  ) OR
+  EXISTS (
+    SELECT 1 FROM courses
+    WHERE teacher_email = users.email AND id IN (
+      SELECT course_id FROM enrollments WHERE student_email = get_auth_email()
+    )
+  )
+);
 DROP POLICY IF EXISTS "Users: Update" ON users;
 CREATE POLICY "Users: Update" ON users FOR UPDATE USING (email = get_auth_email_raw() OR is_admin());
 DROP POLICY IF EXISTS "Users: No Direct Insert" ON users;
@@ -3360,7 +3493,20 @@ RETURNS TABLE (
     status TEXT,
     is_online BOOLEAN
 ) AS $$
+DECLARE
+    v_auth_email VARCHAR;
+    v_is_admin BOOLEAN;
+    v_is_teacher BOOLEAN;
 BEGIN
+    v_auth_email := get_auth_email();
+    v_is_admin := is_admin();
+    v_is_teacher := is_teacher();
+
+    -- ABAC: Only Admins or Teachers can view active proctored sessions
+    IF v_auth_email IS NULL OR NOT (v_is_admin OR v_is_teacher) THEN
+        RETURN;
+    END IF;
+
     RETURN QUERY
     WITH latest_violations AS (
         -- Get unique sessions with activity in the last 4 hours
@@ -3375,6 +3521,11 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
         FROM violations v
         WHERE v.timestamp > NOW() - INTERVAL '4 hours'
+        -- ABAC: Filter based on role
+        AND (
+            v_is_admin OR
+            (v_is_teacher AND v.teacher_email = v_auth_email)
+        )
         GROUP BY v.session_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
@@ -3402,4 +3553,4 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION get_active_proctored_sessions() TO authenticated, anon;
+GRANT EXECUTE ON FUNCTION get_active_proctored_sessions() TO authenticated;

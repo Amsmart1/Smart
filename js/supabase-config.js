@@ -136,41 +136,85 @@ class SupabaseDB {
         'reset_data', 'device_info'
     ];
 
+    /**
+     * Strict whitelist of columns per table to ensure data integrity and prevent unauthorized updates.
+     */
+    static TABLE_WHITELISTS = {
+        users: ['id', 'email', 'full_name', 'phone', 'created_at', 'updated_at', 'notification_preferences', 'metadata', 'active'], // Restricted: Removed administrative fields (role, flagged, lockouts, etc) from client update whitelist
+        user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
+        courses: ['id', 'title', 'description', 'teacher_email', 'created_by', 'enrollment_id', 'enrollment_limit', 'status', 'created_at', 'updated_at', 'metadata'],
+        topics: ['id', 'course_id', 'teacher_email', 'title', 'description', 'order_index', 'created_at', 'updated_at'],
+        lessons: ['id', 'course_id', 'topic_id', 'teacher_email', 'title', 'content', 'video_url', 'order_index', 'created_at', 'updated_at'],
+        enrollments: ['course_id', 'student_email', 'enrolled_at', 'updated_at', 'progress', 'completed', 'completed_lessons'],
+        assignments: ['id', 'course_id', 'title', 'description', 'teacher_email', 'start_at', 'due_date', 'points_possible', 'allow_late_submissions', 'late_penalty_per_day', 'allowed_extensions', 'created_at', 'updated_at', 'questions', 'attachments', 'status', 'anti_cheat_config'],
+        submissions: ['id', 'course_id', 'assignment_id', 'student_email', 'teacher_email', 'submitted_at', 'updated_at', 'answers', 'question_scores', 'question_feedback', 'late_penalty_applied', 'attachments', 'grade', 'final_grade', 'feedback', 'regrade_request', 'graded_at', 'status'],
+        live_classes: ['id', 'course_id', 'teacher_email', 'title', 'description', 'start_at', 'end_at', 'room_name', 'meeting_url', 'recording_url', 'recurring_config', 'metadata', 'status', 'actual_end_at', 'created_at', 'updated_at'],
+        attendance: ['id', 'course_id', 'live_class_id', 'student_email', 'teacher_email', 'join_time', 'leave_time', 'duration', 'is_present', 'created_at', 'updated_at'],
+        quizzes: ['id', 'course_id', 'teacher_email', 'title', 'description', 'time_limit', 'start_at', 'end_at', 'attempts_allowed', 'passing_score', 'questions', 'shuffle_questions', 'status', 'anti_cheat_config', 'created_at', 'updated_at'],
+        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at'],
+        materials: ['id', 'course_id', 'teacher_email', 'title', 'description', 'file_url', 'file_type', 'created_at', 'updated_at'],
+        discussions: ['id', 'course_id', 'user_email', 'teacher_email', 'parent_id', 'title', 'content', 'attachments', 'metadata', 'created_at', 'updated_at'],
+        discussion_views: ['id', 'discussion_id', 'user_email', 'viewed_at'],
+        notifications: ['id', 'user_email', 'course_id', 'title', 'message', 'link', 'type', 'is_read', 'expires_at', 'created_at', 'updated_at'],
+        broadcasts: ['id', 'course_id', 'teacher_email', 'target_role', 'title', 'message', 'link', 'type', 'expires_at', 'created_at', 'updated_at'],
+        maintenance: ['id', 'enabled', 'manual_until', 'message', 'schedules', 'metadata', 'created_at', 'updated_at'],
+        planner: ['id', 'user_email', 'title', 'description', 'due_date', 'priority', 'completed', 'created_at', 'updated_at'],
+        certificates: ['id', 'course_id', 'student_email', 'teacher_email', 'issued_at', 'updated_at', 'certificate_url', 'status', 'type', 'request_reason', 'metadata'],
+        study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
+        invites: ['id', 'token', 'email', 'role', 'created_at', 'updated_at', 'expires_at', 'used_at', 'created_by'],
+        violations: ['id', 'session_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'created_at', 'updated_at', 'expires_at'],
+        support_tickets: ['id', 'user_email', 'role', 'subject', 'message', 'status', 'resolution_notes', 'created_at', 'updated_at'],
+        system_settings: ['key', 'value', 'updated_at']
+    };
+
     static _sanitizePayload(payload, table = null) {
         if (!payload || typeof payload !== 'object') return payload;
         const sanitized = { ...payload };
 
         // 1. Explicitly strip virtual/internal fields that don't belong in database tables
-        // We also strip internal UI states (starting with _) to prevent leakage
-        const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data', 'full_name', 'role', 'is_mine', 'replies_count'];
-        VIRTUAL_FIELDS.forEach(field => {
-            // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets or violations table
-            // Also preserve session_id during migration/restoration
-            const isMigration = sessionStorage.getItem('migrationMode') === 'true';
-            if ((table === 'user_secrets' || table === 'violations') && (field === 'session_id' || field === 'reset_data' || isMigration)) return;
-            delete sanitized[field];
-        });
+        // These are fields that are often joined or used for UI state but never persisted directly.
+        const UI_ONLY_FIELDS = ['has_secret', 'is_mine', 'replies_count', 'password'];
+        UI_ONLY_FIELDS.forEach(field => delete sanitized[field]);
+
+        // 2. Sensitive field preservation logic (session_id, reset_data)
+        const isMigration = sessionStorage.getItem('migrationMode') === 'true';
+        if (!isMigration && table !== 'user_secrets' && table !== 'violations') {
+            delete sanitized.session_id;
+            delete sanitized.reset_data;
+        }
+
+        // 2. Table-specific Whitelisting (Enterprise Hardening)
+        if (table && this.TABLE_WHITELISTS[table]) {
+            const whitelist = this.TABLE_WHITELISTS[table];
+            Object.keys(sanitized).forEach(key => {
+                if (!whitelist.includes(key)) {
+                    delete sanitized[key];
+                }
+            });
+        }
 
         Object.keys(sanitized).forEach(key => {
             const value = sanitized[key];
 
-            // 2. Remove internal state fields (keys starting with _)
+            // 3. Remove internal state fields (keys starting with _)
             if (key.startsWith('_')) {
                 delete sanitized[key];
                 return;
             }
 
-            // 3. Remove joined objects/arrays that are NOT known JSONB/Array columns
-            if (value !== null && typeof value === 'object' && !this.JSONB_COLUMNS.includes(key)) {
-                delete sanitized[key];
+            // 4. Remove joined objects/arrays that are NOT known JSONB/Array columns (Fallback)
+            if (!table || !this.TABLE_WHITELISTS[table]) {
+                if (value !== null && typeof value === 'object' && !this.JSONB_COLUMNS.includes(key)) {
+                    delete sanitized[key];
+                }
             }
-            // 4. Convert empty strings to null for better database integrity (especially FKs)
+
+            // 5. Convert empty strings to null
             if (sanitized[key] === '') {
                 sanitized[key] = null;
             }
 
-            // 5. Enforce unique email constraints through strict normalization
-            // We use a targeted whitelist to avoid side-effects on fields like 'created_by' (which store names)
+            // 6. Enforce email normalization
             const EMAIL_FIELDS = ['email', 'student_email', 'teacher_email', 'user_email'];
             if ((EMAIL_FIELDS.includes(key) || (table === 'invites' && key === 'created_by')) && typeof sanitized[key] === 'string') {
                 sanitized[key] = sanitized[key].trim().toLowerCase();
