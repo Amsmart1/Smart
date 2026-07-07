@@ -1000,8 +1000,6 @@
       this.state.isPaused = false;
       this.state.startTime = this.state.startTime || Date.now();
 
-      this.emit('session:starting', { attemptId: this.config.attemptId });
-
       try {
         // Initialize Supabase client
         await this._initSupabase();
@@ -1045,16 +1043,10 @@
         // Start connection monitoring
         this._startConnectionMonitor();
 
-        this.emit('session:started', {
-          attemptId: this.config.attemptId,
-          sessionId: this.state.sessionId,
-        });
-
-        this.debug('ProctorEngine: Session started', { sessionId: this.state.sessionId });
+        this.debug('ProctorEngine: Tasks started', { sessionId: this.state.sessionId });
       } catch (err) {
         this.state.isActive = false;
         this._cleanup();
-        this.emit('session:error', { error: err.message, code: err.code });
         throw err;
       }
     }
@@ -1129,8 +1121,6 @@
       const endTime = Date.now();
       const duration = endTime - (this.state.startTime || endTime);
 
-      this.emit('session:stopping', { duration });
-
       // Stop all subsystems
       this._stopSnapshots();
       this.faceDetector.stop();
@@ -1166,8 +1156,7 @@
         sessionId: this.state.sessionId,
       };
 
-      this.emit('session:stopped', stats);
-      this.debug('ProctorEngine: Session stopped', stats);
+      this.debug('ProctorEngine: Tasks stopped', stats);
 
       return stats;
     }

@@ -136,18 +136,34 @@ class SupabaseDB {
         'reset_data', 'device_info'
     ];
 
+    static TABLE_WHITELISTS = {
+        users: ['email', 'full_name', 'phone', 'active', 'notification_preferences', 'metadata', 'updated_at'],
+        user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
+        violations: ['session_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
+        study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
+        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at']
+    };
+
     static _sanitizePayload(payload, table = null) {
         if (!payload || typeof payload !== 'object') return payload;
         const sanitized = { ...payload };
 
-        // 1. Explicitly strip virtual/internal fields that don't belong in database tables
-        // We also strip internal UI states (starting with _) to prevent leakage
+        // 1. Apply strict table whitelisting if defined
+        if (table && this.TABLE_WHITELISTS[table]) {
+            const whitelist = this.TABLE_WHITELISTS[table];
+            Object.keys(sanitized).forEach(key => {
+                if (!whitelist.includes(key)) delete sanitized[key];
+            });
+        }
+
+        // 2. Explicitly strip virtual/internal fields that don't belong in database tables
         const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data', 'full_name', 'role', 'is_mine', 'replies_count'];
         VIRTUAL_FIELDS.forEach(field => {
-            // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets or violations table
-            // Also preserve session_id during migration/restoration
+            // Preservation logic: Do NOT strip session_id or reset_data if targeting whitelisted tables or during migration
             const isMigration = sessionStorage.getItem('migrationMode') === 'true';
-            if ((table === 'user_secrets' || table === 'violations') && (field === 'session_id' || field === 'reset_data' || isMigration)) return;
+            if (isMigration) return;
+            if (table === 'violations' && field === 'session_id') return;
+            if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data')) return;
             delete sanitized[field];
         });
 
