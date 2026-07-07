@@ -142,7 +142,7 @@ class SupabaseDB {
 
         // 1. Explicitly strip virtual/internal fields that don't belong in database tables
         // We also strip internal UI states (starting with _) to prevent leakage
-        const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data'];
+        const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data', 'full_name', 'role', 'is_mine', 'replies_count'];
         VIRTUAL_FIELDS.forEach(field => {
             // Preservation logic: Do NOT strip session_id or reset_data if targeting user_secrets or violations table
             // Also preserve session_id during migration/restoration
@@ -1078,13 +1078,9 @@ class SupabaseDB {
     static async getDiscussion(id) {
         return _cache.fetch(`discussion_${id}`, async () => {
             return this._request(async () => {
-                const { data, error } = await supabaseClient
-                    .from('discussions')
-                    .select('*, users!user_email(full_name, role)')
-                    .eq('id', id)
-                    .single();
+                const { data, error } = await supabaseClient.rpc('get_discussion_secure', { p_id: id });
                 if (error) throw error;
-                return data;
+                return data?.[0] || null;
             });
         });
     }
@@ -1092,19 +1088,9 @@ class SupabaseDB {
     static async getDiscussions(courseId, options = {}) {
         return _cache.fetch(`discussions_${courseId}`, async () => {
             return this._request(async () => {
-                const { data, count, error } = await supabaseClient
-                    .from('discussions')
-                    .select('*, users!user_email(full_name, role), discussion_views(count)', { count: 'exact' })
-                    .eq('course_id', courseId)
-                    .order('created_at', { ascending: true });
+                const { data, error } = await supabaseClient.rpc('get_course_discussions', { p_course_id: courseId });
                 if (error) throw error;
-
-                const transformed = (data || []).map(d => ({
-                    ...d,
-                    view_count: d.discussion_views?.[0]?.count || 0
-                }));
-
-                return { data: transformed, total: count || 0 };
+                return { data: data || [], total: data?.length || 0 };
             });
         });
     }
@@ -1117,28 +1103,21 @@ class SupabaseDB {
         return data?.[0];
     }
 
-    static async recordDiscussionView(discussionId, userEmail) {
+    static async recordDiscussionView(discussionId) {
         return this._request(async () => {
-            const { data, error } = await supabaseClient
-                .from('discussion_views')
-                .upsert({ discussion_id: discussionId, user_email: userEmail }, { onConflict: 'discussion_id,user_email' });
+            const { error } = await supabaseClient.rpc('record_discussion_view_secure', { p_discussion_id: discussionId });
             if (error) throw error;
 
             // Invalidate discussions cache to ensure view counts are updated on next fetch
-            // We fetch the course_id if we want to be specific, or just broad invalidate.
             // Since views are high-frequency, a broad invalidation of the 'discussions' prefix is safer.
             _cache.invalidate('discussions');
-            return data;
+            return { success: true };
         });
     }
 
     static async getDiscussionViews(discussionId) {
         return this._request(async () => {
-            const { data, error } = await supabaseClient
-                .from('discussion_views')
-                .select('user_email, viewed_at, users!user_email(full_name, role)')
-                .eq('discussion_id', discussionId)
-                .order('viewed_at', { ascending: false });
+            const { data, error } = await supabaseClient.rpc('get_discussion_views_secure', { p_discussion_id: discussionId });
             if (error) throw error;
             return data || [];
         });

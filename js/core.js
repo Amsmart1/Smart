@@ -2042,7 +2042,7 @@ UI.createFileUploader = function(containerId, options = {}) {
     });
 };
 
-UI.renderDiscussion = function(containerId, discussions, currentUserEmail, options = {}) {
+UI.renderDiscussion = function(containerId, discussions, options = {}) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
@@ -2055,15 +2055,16 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
 
     const renderThread = (parentId = null, depth = 0) => {
         return discussions.filter(d => d.parent_id === parentId).map(d => {
-            const isMine = d.user_email === currentUserEmail;
+            const isMine = d.is_mine;
             const canDelete = isMine || options.isTeacher;
-            const isStaff = d.users?.role === 'teacher' || d.users?.role === 'admin';
+            const isStaff = d.role === 'teacher' || d.role === 'admin';
+            const attachments = d.attachments || [];
 
             return `
                 <div class="question mb-10 discussion-post" style="margin-left:${depth * 20}px" id="disc-${d.id}" data-id="${d.id}">
                     <div class="flex-between" style="align-items:start">
                         <div class="small">
-                            <strong>${escapeHtml(d.users?.full_name || d.user_email)}</strong>
+                            <strong>${escapeHtml(d.full_name || 'Anonymous User')}</strong>
                             ${isStaff ? '<span class="badge badge-purple tiny ml-5">STAFF</span>' : ''}
                             <span class="text-muted ml-5">- ${new Date(d.created_at).toLocaleString()}</span>
                             <div class="mt-5">
@@ -2083,7 +2084,21 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                             ` : ''}
                         </div>
                     </div>
+                    ${d.title ? `<div class="bold mt-10" style="font-size:1.1rem">${escapeHtml(d.title)}</div>` : ''}
                     <div class="mt-5 disc-content" data-raw="${escapeHtml(d.content)}">${UI.renderRichText(d.content)}</div>
+
+                    ${attachments.length > 0 ? `
+                        <div class="flex gap-10 mt-10 overflow-x-auto pb-5">
+                            ${attachments.map(att => `
+                                <div class="card p-10 bg-light flex-center-y gap-10 w-auto" style="min-width:150px">
+                                    <span class="tiny bold text-muted">${escapeHtml(att.name.split('.').pop().toUpperCase())}</span>
+                                    <div class="flex-1 truncate small" title="${escapeAttr(att.name)}">${escapeHtml(att.name)}</div>
+                                    <button class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(att.url)}', '${escapeAttr(att.name)}')">View</button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+
                     <div id="reply-area-${d.id}"></div>
                     ${renderThread(d.id, depth + 1)}
                 </div>
@@ -2097,9 +2112,23 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
             <div id="disc-list" class="mt-20 mb-20" style="max-height:600px; overflow-y:auto">
                 ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
             </div>
-            <div class="flex-column gap-10">
-                <textarea id="discInputMain" placeholder="Start a new thread..." class="m-0"></textarea>
-                <button class="button w-auto" id="post-main-btn" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post</button>
+            <div class="flex-column gap-10 p-15 border-radius-md" style="background:#f8fafc; border:1px solid #e2e8f0">
+                <h4 class="m-0">Start a New Thread</h4>
+                <input type="text" id="discTitleMain" placeholder="Thread Title (Optional)" class="m-0">
+                <textarea id="discInputMain" placeholder="What's on your mind?" class="m-0" style="min-height:100px"></textarea>
+                <div id="attachments-main"></div>
+                <div class="flex-between">
+                    <button class="button secondary small w-auto" onclick="UI.createFileUploader('attachments-main', {
+                        pathPrefix: 'discussions',
+                        onUploadSuccess: (url, name) => {
+                            const list = UI._getDiscussionAttachments('main');
+                            list.push({url, name});
+                            UI._renderDiscussionAttachments('main', list);
+                        }
+                    })">📎 Attach File</button>
+                    <button class="button w-auto px-40" id="post-main-btn" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', null)">Post Thread</button>
+                </div>
+                <div id="attachment-list-main" class="flex gap-5 mt-10"></div>
             </div>
         </div>
     `;
@@ -2118,7 +2147,7 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
                 const id = post.dataset.id;
                 if (id && !post.dataset.viewed) {
                     post.dataset.viewed = 'true';
-                    SupabaseDB.recordDiscussionView(id, currentUserEmail).catch(console.error);
+                    SupabaseDB.recordDiscussionView(id).catch(console.error);
                 }
             }
         });
@@ -2136,6 +2165,28 @@ UI.renderDiscussion = function(containerId, discussions, currentUserEmail, optio
     UI._discussionOptions[containerId] = options;
 };
 
+UI._getDiscussionAttachments = function(id) {
+    UI._discussionAttachments = UI._discussionAttachments || {};
+    return UI._discussionAttachments[id] || (UI._discussionAttachments[id] = []);
+};
+
+UI._renderDiscussionAttachments = function(id, list) {
+    const container = document.getElementById(`attachment-list-${id}`);
+    if (!container) return;
+    container.innerHTML = list.map((att, idx) => `
+        <div class="badge secondary flex-center-y gap-5">
+            <span>${escapeHtml(att.name)}</span>
+            <span class="pointer" onclick="UI._removeDiscussionAttachment('${id}', ${idx})">✕</span>
+        </div>
+    `).join('');
+};
+
+UI._removeDiscussionAttachment = function(id, idx) {
+    const list = UI._getDiscussionAttachments(id);
+    list.splice(idx, 1);
+    UI._renderDiscussionAttachments(id, list);
+};
+
 UI._dispatchDiscussionAction = function(containerId, action, id) {
     const opts = UI._discussionOptions[containerId];
     if (!opts) return;
@@ -2143,20 +2194,40 @@ UI._dispatchDiscussionAction = function(containerId, action, id) {
     if (action === 'reply') {
         const area = document.getElementById(`reply-area-${id}`);
         area.innerHTML = `
-            <div class="flex-column gap-10 mt-10">
-                <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10"></textarea>
-                <div class="flex gap-10">
-                    <button class="button small w-auto" id="post-reply-${id}" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
-                    <button class="button secondary small w-auto" onclick="this.parentElement.parentElement.remove()">Cancel</button>
+            <div class="flex-column gap-10 mt-10 p-10 border-radius-sm" style="background:#f1f5f9; border:1px solid #cbd5e1">
+                <textarea id="replyInput-${id}" placeholder="Write a reply..." class="m-0 small p-10" style="min-height:80px"></textarea>
+                <div id="attachments-${id}"></div>
+                <div class="flex-between">
+                    <button class="button secondary tiny w-auto" onclick="UI.createFileUploader('attachments-${id}', {
+                        pathPrefix: 'discussions',
+                        onUploadSuccess: (url, name) => {
+                            const list = UI._getDiscussionAttachments('${id}');
+                            list.push({url, name});
+                            UI._renderDiscussionAttachments('${id}', list);
+                        }
+                    })">📎 Attach</button>
+                    <div class="flex gap-5">
+                        <button class="button small w-auto" id="post-reply-${id}" onclick="UI._dispatchDiscussionAction('${containerId}', 'post', '${id}')">Reply</button>
+                        <button class="button secondary small w-auto" onclick="this.closest('.flex-column').remove()">Cancel</button>
+                    </div>
                 </div>
+                <div id="attachment-list-${id}" class="flex gap-5 mt-5"></div>
             </div>
         `;
     } else if (action === 'post') {
         const inputId = id ? `replyInput-${id}` : 'discInputMain';
+        const titleId = id ? null : 'discTitleMain';
         const input = document.getElementById(inputId);
+        const titleInput = titleId ? document.getElementById(titleId) : null;
+
         const content = input?.value?.trim();
+        const title = titleInput?.value?.trim();
+        const attachments = UI._getDiscussionAttachments(id || 'main');
+
         if (content) {
-            opts.onPost(content, id);
+            opts.onPost(content, id, { title, attachments });
+            // Clean up attachments for this ID after posting
+            delete (UI._discussionAttachments || {})[id || 'main'];
         } else {
             UI.showNotification('Please enter a message.', 'warn');
         }
@@ -2815,9 +2886,9 @@ const DiscussionManager = {
                 <div id="discussionContent"></div>
             `;
 
-            UI.renderDiscussion('discussionContent', discussions, user.email, {
+            UI.renderDiscussion('discussionContent', discussions, {
                 isTeacher,
-                onPost: (content, parentId) => DiscussionManager.post(containerId, courseId, content, parentId),
+                onPost: (content, parentId, extra) => DiscussionManager.post(containerId, courseId, content, parentId, extra),
                 onEdit: (id) => DiscussionManager.edit(containerId, courseId, id),
                 onDelete: (id) => DiscussionManager.delete(containerId, courseId, id),
                 onViewDetails: async (id) => {
@@ -2826,7 +2897,8 @@ const DiscussionManager = {
                         const list = views.map(v => `
                             <div class="flex-between py-10 border-bottom">
                                 <div>
-                                    <div class="bold small">${escapeHtml(v.users?.full_name || 'N/A')}</div>
+                                    <div class="bold small">${escapeHtml(v.full_name || 'Anonymous')}</div>
+                                    <div class="tiny text-muted uppercase">${escapeHtml(v.role || '')}</div>
                                 </div>
                                 <div class="text-right">
                                     <div class="tiny text-muted">${new Date(v.viewed_at).toLocaleDateString()}</div>
@@ -2852,7 +2924,7 @@ const DiscussionManager = {
         }
     },
 
-    async post(containerId, courseId, content, parentId = null) {
+    async post(containerId, courseId, content, parentId = null, extra = {}) {
         if (!content) return;
 
         const btnId = parentId ? `post-reply-${parentId}` : 'post-main-btn';
@@ -2869,6 +2941,8 @@ const DiscussionManager = {
                 course_id: courseId,
                 user_email: user.email,
                 content: content,
+                title: extra.title || null,
+                attachments: extra.attachments || [],
                 parent_id: parentId,
                 created_at: new Date().toISOString()
             });
@@ -2890,10 +2964,17 @@ const DiscussionManager = {
         const currentHTML = contentDiv.innerHTML;
         const raw = contentDiv.getAttribute('data-raw') || UI.htmlToPlainText(currentHTML);
 
+        // Find existing title if any
+        const existing = await SupabaseDB.getDiscussion(id);
+        const titleHtml = existing.parent_id === null ? `
+            <input type="text" id="edit-disc-title-${id}" class="input mb-10" value="${escapeAttr(existing.title || '')}" placeholder="Title">
+        ` : '';
+
         contentDiv.innerHTML = `
-            <textarea id="edit-disc-input-${id}" class="input mt-10">${escapeHtml(raw)}</textarea>
+            ${titleHtml}
+            <textarea id="edit-disc-input-${id}" class="input mt-10" style="min-height:100px">${escapeHtml(raw)}</textarea>
             <div class="flex gap-10 mt-10">
-                <button class="button small" id="save-disc-${id}">Save</button>
+                <button class="button small" id="save-disc-${id}">Save Changes</button>
                 <button class="button secondary small" id="cancel-disc-${id}">Cancel</button>
             </div>
         `;
@@ -2901,14 +2982,16 @@ const DiscussionManager = {
         document.getElementById(`save-disc-${id}`).onclick = async () => {
             const btn = document.getElementById(`save-disc-${id}`);
             const content = document.getElementById(`edit-disc-input-${id}`).value;
+            const titleInput = document.getElementById(`edit-disc-title-${id}`);
+            const title = titleInput ? titleInput.value.trim() : existing.title;
+
             if (!content) return;
 
             btn.disabled = true;
             btn.textContent = 'Saving...';
             try {
-                const existing = await SupabaseDB.getDiscussion(id);
-                if (!existing) throw new Error('Post not found');
-                await SupabaseDB.saveDiscussion({ ...existing, content });
+                const user = await SessionManager.getCurrentUser();
+                await SupabaseDB.saveDiscussion({ ...existing, content, title, user_email: user.email });
                 this.render(containerId, courseId);
             } catch (e) {
                 UI.showNotification('Error updating: ' + e.message, 'error');

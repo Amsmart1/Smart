@@ -373,6 +373,8 @@ CREATE TABLE IF NOT EXISTS discussions (
   parent_id UUID REFERENCES discussions(id) ON DELETE CASCADE,
   title VARCHAR(255),
   content TEXT NOT NULL,
+  attachments JSONB DEFAULT '[]'::jsonb,
+  metadata JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -829,6 +831,8 @@ BEGIN
 
     -- discussions
     ALTER TABLE discussions ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
+    ALTER TABLE discussions ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT '[]'::jsonb;
+    ALTER TABLE discussions ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 
     -- notifications
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
@@ -1367,7 +1371,7 @@ BEGIN
       END IF;
     ELSIF TG_TABLE_NAME = 'discussions' THEN
       IF NEW.parent_id IS NOT NULL THEN
-        SELECT course_id INTO NEW.course_id FROM discussions WHERE id = NEW.parent_id;
+        SELECT course_id, teacher_email INTO NEW.course_id, NEW.teacher_email FROM discussions WHERE id = NEW.parent_id;
       END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
       IF NEW.assessment_id IS NOT NULL THEN
@@ -1800,6 +1804,8 @@ CREATE INDEX IF NOT EXISTS idx_submissions_answers_gin ON submissions USING GIN 
 CREATE INDEX IF NOT EXISTS idx_quiz_submissions_answers_gin ON quiz_submissions USING GIN (answers);
 CREATE INDEX IF NOT EXISTS idx_quiz_submissions_analytics_gin ON quiz_submissions USING GIN (analytics);
 CREATE INDEX IF NOT EXISTS idx_violations_metadata_gin ON violations USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS idx_discussions_attachments_gin ON discussions USING GIN (attachments);
+CREATE INDEX IF NOT EXISTS idx_discussions_metadata_gin ON discussions USING GIN (metadata);
 
 -- 7. Helper Functions
 
@@ -2312,7 +2318,139 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 7b. Quiz Authoritative Logic RPCs
+-- 7b. Discussion System Secure RPCs
+-- Returns discussions for a course, joining user names and hiding emails
+CREATE OR REPLACE FUNCTION get_course_discussions(p_course_id UUID)
+RETURNS TABLE (
+    id UUID,
+    parent_id UUID,
+    course_id UUID,
+    title VARCHAR,
+    content TEXT,
+    attachments JSONB,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE,
+    full_name VARCHAR,
+    role VARCHAR,
+    is_mine BOOLEAN,
+    view_count BIGINT
+) AS $$
+DECLARE
+    v_auth_email VARCHAR;
+BEGIN
+    v_auth_email := get_auth_email();
+
+    RETURN QUERY
+    SELECT
+        d.id,
+        d.parent_id,
+        d.course_id,
+        d.title,
+        d.content,
+        d.attachments,
+        d.metadata,
+        d.created_at,
+        d.updated_at,
+        u.full_name,
+        u.role,
+        (d.user_email = v_auth_email) as is_mine,
+        (SELECT COUNT(*) FROM discussion_views dv WHERE dv.discussion_id = d.id) as view_count
+    FROM discussions d
+    JOIN users u ON d.user_email = u.email
+    WHERE d.course_id = p_course_id
+    ORDER BY d.created_at ASC;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- Returns discussion views with user names, hiding emails
+CREATE OR REPLACE FUNCTION get_discussion_views_secure(p_discussion_id UUID)
+RETURNS TABLE (
+    full_name VARCHAR,
+    role VARCHAR,
+    viewed_at TIMESTAMP WITH TIME ZONE
+) AS $$
+BEGIN
+    -- Security: Only teacher or post author or admin can see who viewed
+    IF NOT (
+        is_admin() OR
+        is_teacher() OR
+        EXISTS (SELECT 1 FROM discussions WHERE id = p_discussion_id AND user_email = get_auth_email())
+    ) THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        u.full_name,
+        u.role,
+        dv.viewed_at
+    FROM discussion_views dv
+    JOIN users u ON dv.user_email = u.email
+    WHERE dv.discussion_id = p_discussion_id
+    ORDER BY dv.viewed_at DESC;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- Atomically records a discussion view using server-side auth identity
+CREATE OR REPLACE FUNCTION record_discussion_view_secure(p_discussion_id UUID)
+RETURNS VOID AS $$
+DECLARE
+    v_email VARCHAR;
+BEGIN
+    v_email := get_auth_email();
+    IF v_email IS NOT NULL THEN
+        INSERT INTO discussion_views (discussion_id, user_email)
+        VALUES (p_discussion_id, v_email)
+        ON CONFLICT (discussion_id, user_email) DO UPDATE
+        SET viewed_at = NOW();
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Returns a single discussion post securely
+CREATE OR REPLACE FUNCTION get_discussion_secure(p_id UUID)
+RETURNS TABLE (
+    id UUID,
+    parent_id UUID,
+    course_id UUID,
+    title VARCHAR,
+    content TEXT,
+    attachments JSONB,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE,
+    full_name VARCHAR,
+    role VARCHAR,
+    is_mine BOOLEAN
+) AS $$
+DECLARE
+    v_auth_email VARCHAR;
+BEGIN
+    v_auth_email := get_auth_email();
+
+    RETURN QUERY
+    SELECT
+        d.id,
+        d.parent_id,
+        d.course_id,
+        d.title,
+        d.content,
+        d.attachments,
+        d.metadata,
+        d.created_at,
+        d.updated_at,
+        u.full_name,
+        u.role,
+        (d.user_email = v_auth_email) as is_mine
+    FROM discussions d
+    JOIN users u ON d.user_email = u.email
+    WHERE d.id = p_id
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- 7c. Quiz Authoritative Logic RPCs
 
 -- Helper for centralized scoring
 CREATE OR REPLACE FUNCTION calculate_quiz_score(p_quiz_id UUID, p_answers JSONB)
