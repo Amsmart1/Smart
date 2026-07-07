@@ -3349,12 +3349,11 @@ async function terminateSession(sessionId, email) {
     if (!await UI.confirm(`Are you sure you want to terminate the session for ${email}? This will stop their assessment immediately.`, 'Terminate Session')) return;
 
     try {
-        // We log a CRITICAL violation of type 'SESSION_TERMINATED' which the client-side system will listen for
+        // We log a CRITICAL violation of type 'SESSION_TERMINATED' which the client-side system will listen for.
+        // We omit assessment metadata to let the DB trigger inherit it from the session history, ensuring correct course/teacher links.
         await SupabaseDB.saveViolation({
             session_id: sessionId,
             user_email: email,
-            assessment_id: '00000000-0000-0000-0000-000000000000', // System level
-            assessment_type: 'quiz', // Default to quiz for schema compliance
             type: 'SESSION_TERMINATED',
             severity: 'CRITICAL',
             score: 100,
@@ -3490,12 +3489,11 @@ async function sendMessageToStudent(email, sessionId = null) {
 
         // If we have a session ID, also send as a real-time 'STAFF_MESSAGE' violation
         // which the AntiCheatSystem will pick up immediately during the assessment.
+        // We omit assessment metadata to let the DB trigger inherit it from the session history.
         if (sessionId) {
             await SupabaseDB.saveViolation({
                 session_id: sessionId,
                 user_email: email,
-                assessment_id: '00000000-0000-0000-0000-000000000000',
-                assessment_type: 'quiz',
                 type: 'STAFF_MESSAGE',
                 severity: 'INFO',
                 score: 0,

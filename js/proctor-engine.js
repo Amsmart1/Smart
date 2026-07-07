@@ -997,7 +997,8 @@
       this._checkBrowserSupport();
 
       this.state.isActive = true;
-      this.state.startTime = Date.now();
+      this.state.isPaused = false;
+      this.state.startTime = this.state.startTime || Date.now();
 
       this.emit('session:starting', { attemptId: this.config.attemptId });
 
@@ -1044,15 +1045,6 @@
         // Start connection monitoring
         this._startConnectionMonitor();
 
-        // Log session start
-        await this._reportEvent('SESSION_STARTED', {
-          config: {
-            webcam: this.config.webcam,
-            screen: this.config.screen,
-            faceDetection: this.config.faceDetection,
-          },
-        });
-
         this.emit('session:started', {
           attemptId: this.config.attemptId,
           sessionId: this.state.sessionId,
@@ -1068,16 +1060,66 @@
     }
 
     /**
+     * Pauses all proctoring activities (streams, recording, detection).
+     * @returns {Promise<void>}
+     */
+    async pause() {
+      if (!this.state.isActive || this.state.isPaused) return;
+      this.state.isPaused = true;
+      this.debug('Proctoring paused');
+
+      this._stopSnapshots();
+      this.faceDetector.stop();
+      this.noiseDetector.stop();
+
+      if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'recording') {
+        this.state.mediaRecorder.pause();
+      }
+      if (this.state.audioRecorder && this.state.audioRecorder.state === 'recording') {
+        this.state.audioRecorder.pause();
+      }
+
+      this.emit('session:paused', {});
+    }
+
+    /**
+     * Resumes all proctoring activities.
+     * @returns {Promise<void>}
+     */
+    async resume() {
+      if (!this.state.isActive || !this.state.isPaused) return;
+      this.state.isPaused = false;
+      this.debug('Proctoring resumed');
+
+      if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'paused') {
+        this.state.mediaRecorder.resume();
+      }
+      if (this.state.audioRecorder && this.state.audioRecorder.state === 'paused') {
+        this.state.audioRecorder.resume();
+      }
+
+      if (this.config.faceDetection.enabled && this._webcamVideo) {
+        this.faceDetector.start(this._webcamVideo);
+      }
+
+      if (this.config.noiseDetection.enabled && this.state.webcamStream) {
+        this.noiseDetector.start();
+      }
+
+      this._startSnapshots();
+      this.emit('session:resumed', {});
+    }
+
+    /**
      * Stops the proctoring session gracefully.
      * Stops all streams, finalizes recordings, processes the retry queue,
      * clears resources, and returns session metadata.
      *
      * @param {Object} [options]
-     * @param {boolean} [options.saveLogs=true] - Whether to save logs to file
      * @param {boolean} [options.waitForUploads=true] - Wait for retry queue to drain
      * @returns {Promise<{duration: number, snapshots: number, chunks: number, stats: Object}>}
      */
-    async stop({ saveLogs = true, waitForUploads = false } = {}) {
+    async stop({ waitForUploads = false } = {}) {
       if (!this.state.isActive) {
         this.debug('stop() called but not active — ignoring');
         return null;
@@ -1112,17 +1154,6 @@
         await this._drainRetryQueue();
       }
 
-      // Log session end
-      await this._reportEvent('SESSION_ENDED', {
-        duration,
-        snapshotsUploaded: this.state.snapshotIndex,
-        chunksRecorded: this.state.chunkIndex,
-        audioChunksRecorded: this.state.audioChunkIndex,
-        totalSnapshotSize: this.state.totalSnapshotSize,
-        totalChunkSize: this.state.totalChunkSize,
-        totalAudioSize: this.state.totalAudioSize,
-      });
-
       const stats = {
         duration,
         snapshots: this.state.snapshotIndex,
@@ -1134,10 +1165,6 @@
         retryQueue: this.retryQueue.getStatus(),
         sessionId: this.state.sessionId,
       };
-
-      if (saveLogs) {
-        this._saveLocalLogs(stats);
-      }
 
       this.emit('session:stopped', stats);
       this.debug('ProctorEngine: Session stopped', stats);
@@ -2018,98 +2045,24 @@
 
     /**
      * Initializes the Supabase client.
-     * Supports using a global client, direct Supabase JS SDK, or minimal REST API fallback.
+     * Prioritizes global client and avoids redundant REST fallbacks.
      * @private
      */
     async _initSupabase() {
-      // Prioritize global window.supabaseClient to avoid multiple GoTrueClient instances
-      // and ensure consistent authentication headers.
       if (window.supabaseClient) {
         this._sb = window.supabaseClient;
         this.debug('Using global window.supabaseClient');
         return;
       }
 
-      if (!this.config.supabaseUrl || !this.config.supabaseKey) {
-        this.debug('Supabase credentials not provided — storage/DB disabled');
-        this._sb = null;
-        return;
-      }
-
-      // Try to use official Supabase SDK if available
-      if (typeof window.supabase !== 'undefined') {
+      if (typeof window.supabase !== 'undefined' && this.config.supabaseUrl && this.config.supabaseKey) {
         this._sb = window.supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey);
         this.debug('Using Supabase JS SDK');
         return;
       }
 
-      // Minimal REST client fallback
-      this._sb = {
-        storage: {
-          from: (bucket) => ({
-            upload: async (path, blob, opts = {}) => {
-              const formData = new FormData();
-              formData.append('file', blob);
-
-              const sid = this.state.sessionId || sessionStorage.getItem('sessionId');
-              const res = await fetch(
-                `${this.config.supabaseUrl}/storage/v1/object/${bucket}/${path}`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${this.config.supabaseKey}`,
-                    'apikey': this.config.supabaseKey,
-                    'x-session-id': sid || '',
-                    'x-upsert': opts.upsert ? 'true' : 'false',
-                    ...(opts.contentType ? { 'Content-Type': opts.contentType } : {}),
-                  },
-                  body: blob,
-                }
-              );
-
-              if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                return { data: null, error: { message: err.message || 'Upload failed' } };
-              }
-
-              const data = await res.json();
-              return { data: { path }, error: null };
-            },
-            getPublicUrl: (path) => ({
-              publicUrl: `${this.config.supabaseUrl}/storage/v1/object/public/${bucket}/${path}`,
-            }),
-          }),
-        },
-        from: (table) => ({
-          insert: async (record) => {
-            const sid = this.state.sessionId || sessionStorage.getItem('sessionId');
-            const res = await fetch(
-              `${this.config.supabaseUrl}/rest/v1/${table}`,
-              {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.config.supabaseKey}`,
-                  'apikey': this.config.supabaseKey,
-                  'x-session-id': sid || '',
-                  'Content-Type': 'application/json',
-                  'Prefer': 'return=minimal',
-                  ...this.config.database.headers,
-                },
-                body: JSON.stringify(record),
-              }
-            );
-
-            if (!res.ok) {
-              const err = await res.json().catch(() => ({}));
-              return { data: null, error: { message: err.message || 'Insert failed' } };
-            }
-
-            return { data: record, error: null };
-          },
-        }),
-      };
-
-      this.debug('Using Supabase REST fallback client');
+      this.debug('Supabase client unavailable');
+      this._sb = null;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2280,52 +2233,6 @@
       this._workerPending.clear();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Local Logging
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Saves logs locally as a JSON file.
-     * @private
-     * @param {Object} stats
-     */
-    _saveLocalLogs(stats) {
-      try {
-        const logs = {
-          version: '2.0.0',
-          engine: 'ProctorEngine',
-          sessionId: this.state.sessionId,
-          attemptId: this.config.attemptId,
-          userId: this.config.userId,
-          startedAt: this.state.startTime ? new Date(this.state.startTime).toISOString() : null,
-          endedAt: new Date().toISOString(),
-          duration: stats.duration,
-          stats,
-          deviceInfo: this.state.deviceInfo,
-          config: {
-            webcam: this.config.webcam,
-            screen: this.config.screen,
-            upload: { ...this.config.upload, supabaseKey: '[REDACTED]' },
-            database: { ...this.config.database, supabaseKey: '[REDACTED]' },
-            faceDetection: this.config.faceDetection,
-          },
-          features: FEATURES,
-        };
-
-        const blob = new Blob([safeSerialize(logs)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `proctor-${this.state.sessionId}.json`;
-        a.click();
-
-        URL.revokeObjectURL(url);
-        this.debug('Local logs saved');
-      } catch (e) {
-        this.debug('Local log save failed: ' + e.message);
-      }
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
