@@ -161,12 +161,55 @@ async function syncDatabaseOperations() {
 
 // Push Notifications
 self.addEventListener('push', (event) => {
-  const data = event.data.json();
-  const options = {
-    body: data.body,
-    icon: 'https://cdn-icons-png.flaticon.com/512/3135/3135665.png'
-  };
-  event.waitUntil(
-    self.registration.showNotification(data.title, options)
-  );
+  if (!event.data) return;
+
+  try {
+    const data = event.data.json();
+    const options = {
+      body: data.body || 'New update from SmartLMS',
+      icon: data.icon || 'https://cdn-icons-png.flaticon.com/512/3135/3135665.png',
+      badge: '/favicon.ico',
+      data: {
+        link: data.link || './index.html'
+      },
+      tag: 'smartlms-push',
+      renotify: true,
+      vibrate: [100, 50, 100]
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(data.title || 'SmartLMS', options)
+    );
+  } catch (err) {
+    console.error('[SW] Push processing failed:', err);
+  }
+});
+
+// Notification Click Event
+self.addEventListener('notificationclick', (event) => {
+  const notification = event.notification;
+  const link = notification.data?.link;
+
+  notification.close();
+
+  if (link) {
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        // 1. Try to find an existing window with the same URL
+        for (const client of clientList) {
+          const url = new URL(client.url);
+          const targetUrl = new URL(link, self.location.origin);
+
+          if (url.pathname === targetUrl.pathname && client.focus) {
+            return client.focus();
+          }
+        }
+
+        // 2. If no matching window, open a new one
+        if (clients.openWindow) {
+          return clients.openWindow(link);
+        }
+      })
+    );
+  }
 });
