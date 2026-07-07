@@ -1201,12 +1201,13 @@ CREATE TRIGGER tr_material_published AFTER INSERT ON materials FOR EACH ROW EXEC
 CREATE OR REPLACE FUNCTION tr_notify_discussion() RETURNS TRIGGER AS $$
 DECLARE
   v_course_title TEXT;
+  v_teacher_email VARCHAR(255);
   v_root_author VARCHAR(255);
   v_author_name TEXT;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  SELECT title INTO v_course_title FROM courses WHERE id = NEW.course_id;
+  SELECT title, teacher_email INTO v_course_title, v_teacher_email FROM courses WHERE id = NEW.course_id;
   SELECT full_name INTO v_author_name FROM users WHERE email = NEW.user_email;
 
   IF NEW.parent_id IS NULL THEN
@@ -1224,9 +1225,9 @@ BEGIN
     );
 
     -- 2. If a student post, notify the course teacher (if not the one who posted)
-    IF NEW.teacher_email IS NOT NULL AND NEW.user_email != NEW.teacher_email THEN
+    IF v_teacher_email IS NOT NULL AND NEW.user_email != v_teacher_email THEN
       PERFORM notify_user(
-          NEW.teacher_email,
+          v_teacher_email,
           'New Discussion Thread',
           COALESCE(v_author_name, 'A student') || ' started a new thread in "' || COALESCE(v_course_title, 'Unknown') || '".',
           'teacher.html?page=discussions',
