@@ -3164,7 +3164,7 @@ function renderSessionsTable(sessions) {
             '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
 
         return `
-            <tr data-session-id="${s.session_id}">
+            <tr data-attempt-id="${s.attempt_id}">
                 <td>
                     <div class="flex-center-y">
                         ${onlineIndicator}
@@ -3181,9 +3181,9 @@ function renderSessionsTable(sessions) {
                 <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
                 <td>
                     <div class="flex gap-5">
-                        <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.session_id}')">Message</button>
-                        <button class="button danger tiny w-auto" onclick="terminateSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                        <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                        <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
                     </div>
                 </td>
             </tr>
@@ -3206,7 +3206,7 @@ function addLiveViolationToFeed(v) {
             <div class="bold small" style="color:#c53030">${escapeHtml(v.type.replace(/_/g, ' '))}</div>
             <div class="tiny text-muted">Student: ${escapeHtml(v.user_email)} - ${new Date(v.timestamp).toLocaleTimeString()}</div>
         </div>
-        <button class="button secondary tiny w-auto" onclick="monitorLiveSession('${v.session_id}', '${escapeAttr(v.user_email)}')">View</button>
+        <button class="button secondary tiny w-auto" onclick="monitorLiveSession('${v.attempt_id}', '${escapeAttr(v.user_email)}')">View</button>
     `;
 
     feed.prepend(entry);
@@ -3225,7 +3225,7 @@ async function updateProctoringStatus(status) {
 
 let _liveSurveillanceActive = false;
 
-async function monitorLiveSession(sessionId, email) {
+async function monitorLiveSession(attemptId, email) {
     const backdrop = UI.showModal('Live Session Monitor: ' + email, `
         <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
             <div class="flex-center-y gap-10">
@@ -3279,7 +3279,7 @@ async function monitorLiveSession(sessionId, email) {
 
     try {
         const fetchAndUpdate = async (isIncremental = false) => {
-            const violations = await SupabaseDB.getViolations(null, email, null, { sessionId, all: true });
+            const violations = await SupabaseDB.getViolations(null, email, null, { attemptId, all: true });
 
             // To provide a smooth enterprise experience, we only update the main container if it's the first load
             // or if the surveillance toggle just changed. Otherwise we can target specific areas if needed.
@@ -3310,12 +3310,12 @@ async function monitorLiveSession(sessionId, email) {
         await fetchAndUpdate(false);
 
         // Subscribe to live updates for THIS session
-        const channel = window.supabaseClient.channel('monitor-' + sessionId)
+        const channel = window.supabaseClient.channel('monitor-' + attemptId)
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',
                 table: 'violations',
-                filter: `session_id=eq.${sessionId}`
+                filter: `attempt_id=eq.${attemptId}`
             }, async (payload) => {
                 const newViolation = payload.new;
 
@@ -3347,14 +3347,14 @@ async function monitorLiveSession(sessionId, email) {
     }
 }
 
-async function terminateSession(sessionId, email) {
+async function terminateSession(attemptId, email) {
     if (!await UI.confirm(`Are you sure you want to terminate the session for ${email}? This will stop their assessment immediately.`, 'Terminate Session')) return;
 
     try {
         // We log a CRITICAL violation of type 'SESSION_TERMINATED' which the client-side system will listen for.
         // We omit assessment metadata to let the DB trigger inherit it from the session history, ensuring correct course/teacher links.
         await SupabaseDB.saveViolation({
-            session_id: sessionId,
+            attempt_id: attemptId,
             user_email: email,
             type: 'SESSION_TERMINATED',
             severity: 'CRITICAL',
@@ -3476,7 +3476,7 @@ async function showProctoringConfigModal() {
     };
 }
 
-async function sendMessageToStudent(email, sessionId = null) {
+async function sendMessageToStudent(email, attemptId = null) {
     const msg = await UI.prompt(`Send a priority message to student ${email}:`, '', 'Priority Message');
     if (!msg) return;
 
@@ -3491,12 +3491,12 @@ async function sendMessageToStudent(email, sessionId = null) {
             metadata: { author_email: user.email }
         });
 
-        // If we have a session ID, also send as a real-time 'STAFF_MESSAGE' violation
+        // If we have an attempt ID, also send as a real-time 'STAFF_MESSAGE' violation
         // which the AntiCheatSystem will pick up immediately during the assessment.
         // We omit assessment metadata to let the DB trigger inherit it from the session history.
-        if (sessionId) {
+        if (attemptId) {
             await SupabaseDB.saveViolation({
-                session_id: sessionId,
+                attempt_id: attemptId,
                 user_email: email,
                 type: 'STAFF_MESSAGE',
                 severity: 'INFO',
@@ -3552,7 +3552,7 @@ async function showLiveFeedModal() {
                 <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
                     ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
                     <div class="absolute bottom-5 right-5 flex gap-5">
-                        <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.session_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                        <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
                     </div>
                 </div>
             </div>

@@ -507,7 +507,7 @@ CREATE TABLE IF NOT EXISTS invites (
 
 CREATE TABLE IF NOT EXISTS violations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  session_id VARCHAR(255), -- Links multiple events to a single assessment session
+  attempt_id VARCHAR(255), -- Links multiple events to a single assessment session
   course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
   teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
@@ -680,7 +680,7 @@ BEGIN
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
-    ALTER TABLE violations ADD COLUMN IF NOT EXISTS session_id VARCHAR(255);
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS attempt_id VARCHAR(255);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_id UUID;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_type VARCHAR(50);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS type VARCHAR(100);
@@ -699,7 +699,7 @@ BEGIN
     -- Data Migration: Consolidate proctoring_logs into violations
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'proctoring_logs') THEN
         INSERT INTO violations (
-            session_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
+            attempt_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
             type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
         )
         SELECT
@@ -1426,18 +1426,19 @@ CREATE OR REPLACE FUNCTION tr_inherit_course_data() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  -- 1. Populate assessment metadata if session_id is provided but assessment info is missing
-  -- This helps in linking proctoring logs that might only have session_id initially
-  -- Safety: Use dynamic SQL or table check to avoid 42703 if session_id column doesn't exist on NEW
-  IF TG_TABLE_NAME = 'violations' AND NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
-      SELECT assessment_id, assessment_type, course_id, teacher_email
-      INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
-      FROM violations
-      WHERE session_id = NEW.session_id
-      AND assessment_id IS NOT NULL
-      AND assessment_type IS NOT NULL
-      ORDER BY created_at ASC
-      LIMIT 1;
+  -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
+  -- This helps in linking proctoring logs that might only have attempt_id initially
+  IF TG_TABLE_NAME = 'violations' THEN
+    IF NEW.attempt_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
+        SELECT assessment_id, assessment_type, course_id, teacher_email
+        INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
+        FROM violations
+        WHERE attempt_id = NEW.attempt_id
+        AND assessment_id IS NOT NULL
+        AND assessment_type IS NOT NULL
+        ORDER BY created_at ASC
+        LIMIT 1;
+    END IF;
   END IF;
 
   -- 2. Populate course_id from parent assessments/classes if missing
@@ -1807,11 +1808,11 @@ CREATE INDEX IF NOT EXISTS idx_quizzes_status ON quizzes(status);
 CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
-CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
-CREATE INDEX IF NOT EXISTS idx_violations_session_timestamp ON violations(session_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_violations_session_severity ON violations(session_id, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt ON violations(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt_timestamp ON violations(attempt_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt_severity ON violations(attempt_id, severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
-CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
+CREATE INDEX IF NOT EXISTS idx_violations_teacher_attempt ON violations(teacher_email, attempt_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
 
 -- Ensure uniqueness for certificates to prevent duplicates
@@ -3444,7 +3445,7 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
-    session_id VARCHAR,
+    attempt_id VARCHAR,
     user_email VARCHAR,
     full_name VARCHAR,
     assessment_id UUID,
@@ -3461,7 +3462,7 @@ BEGIN
     WITH latest_violations AS (
         -- Get unique sessions with activity in the last 4 hours
         SELECT
-            v.session_id,
+            v.attempt_id,
             v.user_email,
             v.assessment_id,
             v.assessment_type,
@@ -3471,10 +3472,10 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
         FROM violations v
         WHERE v.timestamp > NOW() - INTERVAL '4 hours'
-        GROUP BY v.session_id, v.user_email, v.assessment_id, v.assessment_type
+        GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
-        lv.session_id,
+        lv.attempt_id,
         lv.user_email,
         u.full_name,
         lv.assessment_id,

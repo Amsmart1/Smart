@@ -42,7 +42,7 @@
 
             this.state = {
                 isActive: false,
-                sessionId: null, // Unique ID for this specific assessment attempt
+                attemptId: null, // Unique ID for this specific assessment attempt
                 assessmentId: null,
                 assessmentType: null, // 'quiz' or 'assignment'
                 userEmail: null,
@@ -77,6 +77,9 @@
         async init(assessmentId, assessmentType, userEmail, config = {}) {
             if (this.state.isActive) await this.destroy();
 
+            const customAttemptId = config.attemptId;
+            delete config.attemptId;
+
             // Check Global Proctoring Status before starting
             try {
                 if (window.SupabaseDB) {
@@ -90,7 +93,7 @@
                 if (e.message.includes('suspended')) throw e;
             }
 
-            this.state.sessionId = 'asmt_' + (window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substring(2, 10)) + '_' + Date.now();
+            this.state.attemptId = customAttemptId || ('asmt_' + (window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substring(2, 10)) + '_' + Date.now());
             this.state.assessmentId = assessmentId;
             this.state.assessmentType = assessmentType;
             this.state.courseId = config.courseId || null;
@@ -126,15 +129,15 @@
         }
 
         initTerminationListener() {
-            if (!window.supabaseClient || !this.state.sessionId) return;
+            if (!window.supabaseClient || !this.state.attemptId) return;
 
-            const channelId = `live-session-${this.state.sessionId}`;
+            const channelId = `live-session-${this.state.attemptId}`;
             this.terminationChannel = window.supabaseClient.channel(channelId)
                 .on('postgres_changes', {
                     event: 'INSERT',
                     schema: 'public',
                     table: 'violations',
-                    filter: `session_id=eq.${this.state.sessionId}`
+                    filter: `attempt_id=eq.${this.state.attemptId}`
                 }, (payload) => {
                     const v = payload.new;
                     if (v.type === 'SESSION_TERMINATED') {
@@ -243,8 +246,8 @@
                 this.proctor = new ProctorEngine({
                     supabaseUrl: window.supabaseClient?.supabaseUrl,
                     supabaseKey: window.supabaseClient?.supabaseKey,
-                    sessionId: this.state.sessionId,
-                    attemptId: this.state.assessmentId,
+                    attemptId: this.state.attemptId,
+                    assessmentId: this.state.assessmentId,
                     courseId: this.state.courseId,
                     userId: this.state.userEmail,
                     debug: this.config.DEBUG,
@@ -307,7 +310,7 @@
             const score = options.score !== undefined ? options.score : this.getViolationScore(type);
 
             const violation = {
-                session_id: this.state.sessionId,
+                attempt_id: this.state.attemptId,
                 user_email: this.state.userEmail,
                 assessment_id: this.state.assessmentId,
                 assessment_type: this.state.assessmentType,

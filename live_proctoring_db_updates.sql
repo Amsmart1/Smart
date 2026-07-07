@@ -26,7 +26,7 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
-    session_id VARCHAR,
+    attempt_id VARCHAR,
     user_email VARCHAR,
     full_name VARCHAR,
     assessment_id UUID,
@@ -43,7 +43,7 @@ BEGIN
     WITH latest_violations AS (
         -- Get unique sessions with activity in the last 4 hours
         SELECT
-            v.session_id,
+            v.attempt_id,
             v.user_email,
             v.assessment_id,
             v.assessment_type,
@@ -53,10 +53,10 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
         FROM violations v
         WHERE v.timestamp > NOW() - INTERVAL '4 hours'
-        GROUP BY v.session_id, v.user_email, v.assessment_id, v.assessment_type
+        GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
-        lv.session_id,
+        lv.attempt_id,
         lv.user_email,
         u.full_name,
         lv.assessment_id,
@@ -88,17 +88,19 @@ CREATE OR REPLACE FUNCTION tr_inherit_course_data() RETURNS TRIGGER AS $$
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
 
-  -- 1. Populate assessment metadata if session_id is provided but assessment info is missing
-  -- This helps in linking proctoring logs that might only have session_id initially
-  IF NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
-      SELECT assessment_id, assessment_type, course_id, teacher_email
-      INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
-      FROM violations
-      WHERE session_id = NEW.session_id
-      AND assessment_id IS NOT NULL
-      AND assessment_type IS NOT NULL
-      ORDER BY created_at ASC
-      LIMIT 1;
+  -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
+  -- This helps in linking proctoring logs that might only have attempt_id initially
+  IF TG_TABLE_NAME = 'violations' THEN
+    IF NEW.attempt_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
+        SELECT assessment_id, assessment_type, course_id, teacher_email
+        INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
+        FROM violations
+        WHERE attempt_id = NEW.attempt_id
+        AND assessment_id IS NOT NULL
+        AND assessment_type IS NOT NULL
+        ORDER BY created_at ASC
+        LIMIT 1;
+    END IF;
   END IF;
 
   -- 2. Populate course_id from parent assessments/classes if missing
