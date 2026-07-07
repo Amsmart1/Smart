@@ -892,12 +892,14 @@ async function broadcastNotif() {
   }
 
   try {
+    const user = await SessionManager.getCurrentUser();
     await SupabaseDB.createBroadcast({
         title,
         message: msg,
         link: link,
         targetRole: role,
-        expiresInDays: expiryDays
+        expiresInDays: expiryDays,
+        metadata: { author_email: user.email }
     });
 
     UI.showNotification(`Broadcast sent successfully.`, 'success');
@@ -3480,11 +3482,13 @@ async function sendMessageToStudent(email, sessionId = null) {
 
     try {
         // Send as a system notification
+        const user = await SessionManager.getCurrentUser();
         await SupabaseDB.notifyUser({
             email: email,
             title: 'Proctoring Alert',
             message: msg,
-            type: 'system'
+            type: 'system',
+            metadata: { author_email: user.email }
         });
 
         // If we have a session ID, also send as a real-time 'STAFF_MESSAGE' violation

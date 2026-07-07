@@ -1420,7 +1420,8 @@ class SupabaseDB {
                 p_message: params.message,
                 p_link: params.link || null,
                 p_type: params.type || 'system',
-                p_expires_in: params.expiresInDays ? `${params.expiresInDays} days` : '30 days'
+                p_expires_in: params.expiresInDays ? `${params.expiresInDays} days` : '30 days',
+                p_metadata: params.metadata || {}
             });
             if (error) throw error;
             // Invalidate all potential broadcast cache keys
@@ -1466,7 +1467,8 @@ class SupabaseDB {
                 p_message: params.message,
                 p_link: params.link || null,
                 p_type: params.type || 'system',
-                p_course_id: params.courseId || null
+                p_course_id: params.courseId || null,
+                p_metadata: params.metadata || {}
             });
             if (error) throw error;
             _cache.invalidate(`notifications_${params.email}`);
