@@ -951,7 +951,6 @@ const NotificationManager = {
             // 7. Enforce final limit after combination
             return Array.from(uniqueMap.values())
                 .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                .reverse() // Sort Descending: Latest first
                 .slice(0, limit);
         } catch (e) {
             console.warn('Failed to fetch notifications:', e);
