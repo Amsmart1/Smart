@@ -147,7 +147,18 @@ DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID) CASCA
 DROP FUNCTION IF EXISTS notify_user(VARCHAR, TEXT, TEXT, TEXT, TEXT, UUID, JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION notify_user(p_email VARCHAR, p_title TEXT, p_message TEXT, p_link TEXT DEFAULT NULL, p_type TEXT DEFAULT 'system', p_course_id UUID DEFAULT NULL, p_metadata JSONB DEFAULT '{}'::jsonb)
 RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
+  v_auth_role VARCHAR;
 BEGIN
+  -- ABAC: Only Admins, Teachers or system triggers (NULL session) can notify users
+  v_auth_email := get_auth_email();
+  v_auth_role := get_auth_role();
+
+  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+     RAISE EXCEPTION 'Unauthorized: Only staff can send direct notifications';
+  END IF;
+
   -- Enterprise Grade Validation: Leverage custom domain for validation
   BEGIN
     INSERT INTO notifications (user_email, title, message, link, type, course_id, metadata)
@@ -663,7 +674,9 @@ BEGIN
         ALTER TABLE support_tickets ADD CONSTRAINT ticket_user_email_lower_check CHECK (user_email = LOWER(user_email));
     EXCEPTION WHEN OTHERS THEN NULL; END;
     ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '30 days');
+    ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE notifications ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days');
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
@@ -989,7 +1002,18 @@ CREATE OR REPLACE FUNCTION create_broadcast(
     p_expires_in INTERVAL DEFAULT INTERVAL '30 days',
     p_metadata JSONB DEFAULT '{}'::jsonb
 ) RETURNS VOID AS $$
+DECLARE
+  v_auth_email VARCHAR;
+  v_auth_role VARCHAR;
 BEGIN
+  -- ABAC: Only Admins or Teachers can create broadcasts
+  v_auth_email := get_auth_email();
+  v_auth_role := get_auth_role();
+
+  IF v_auth_email IS NOT NULL AND v_auth_role NOT IN ('admin', 'teacher') THEN
+     RAISE EXCEPTION 'Unauthorized: Only staff can create broadcasts';
+  END IF;
+
   -- Security: Only authorized roles or system triggers (SECURITY DEFINER) can create broadcasts
   -- Note: p_target_role 'all' is normalized to NULL in the table
   INSERT INTO broadcasts (course_id, target_role, title, message, link, type, expires_at, metadata)
@@ -1113,7 +1137,7 @@ BEGIN
   -- Only trigger if regrade_request is newly added or changed and not null
   IF (NEW.regrade_request IS NOT NULL AND (OLD.regrade_request IS NULL OR OLD.regrade_request != NEW.regrade_request)) THEN
     IF NEW.teacher_email IS NOT NULL THEN
-      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id);
+      PERFORM notify_user(NEW.teacher_email, 'Regrade Requested', 'A student has requested a regrade for an assignment.', 'teacher.html?page=grading', 'submission_received', NEW.course_id, jsonb_build_object('student_email', NEW.student_email));
     END IF;
   END IF;
   RETURN NEW;
@@ -1163,7 +1187,6 @@ BEGIN
   -- 2. Teacher Issues Certificate (status: 'pending_approval')
   IF (NEW.status = 'pending_approval' AND (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.status != 'pending_approval'))) THEN
      -- Notify all admins
-     SELECT full_name INTO v_student_name FROM users WHERE email = NEW.student_email;
      FOR v_admin_email IN SELECT email FROM users WHERE role = 'admin' AND active = TRUE LOOP
        PERFORM notify_user(v_admin_email, 'Certificate Approval Required', 'A certificate for ' || COALESCE(v_student_name, 'a student') || ' is pending approval.', 'admin.html?page=users', 'cert_issued', NEW.course_id, jsonb_build_object('author_email', NEW.teacher_email, 'student_email', NEW.student_email));
      END LOOP;
@@ -1405,7 +1428,8 @@ BEGIN
 
   -- 1. Populate assessment metadata if session_id is provided but assessment info is missing
   -- This helps in linking proctoring logs that might only have session_id initially
-  IF NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
+  -- Safety: Use dynamic SQL or table check to avoid 42703 if session_id column doesn't exist on NEW
+  IF TG_TABLE_NAME = 'violations' AND NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
       SELECT assessment_id, assessment_type, course_id, teacher_email
       INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
       FROM violations
@@ -1785,6 +1809,7 @@ CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
 CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_session_timestamp ON violations(session_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_session_severity ON violations(session_id, severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
 CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
