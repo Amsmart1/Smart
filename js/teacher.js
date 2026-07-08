@@ -6,7 +6,8 @@ const TeacherState = {
   myCourses: null,
   studentsPage: 1,
   _warnedEnd: false,
-  liveClassTimer: null
+  liveClassTimer: null,
+  analyticsCache: new Map()
 };
 
 function clearActiveCountdowns() {
@@ -3374,6 +3375,7 @@ function initNav() {
         else if(page === 'assignments') renderAssignments();
         else if(page === 'grading') renderGrading();
         else if(page === 'gradebook') renderGradeBook();
+        else if(page === 'analytics') renderAnalytics();
         else if(page === 'students') renderStudents();
         else if(page === 'discussions') renderDiscussions();
         else if(page === 'certificates') renderCertificates();
@@ -3806,6 +3808,7 @@ window.renderCertificates = renderCertificates;
 window.renderQuizzes = renderQuizzes;
 window.renderLiveClasses = renderLiveClasses;
 window.renderGradeBook = renderGradeBook;
+window.renderAnalytics = renderAnalytics;
 window.renderCalendar = renderCalendar;
 window.renderHelp = renderHelp;
 window.renderAntiCheat = renderAntiCheat;
@@ -3840,6 +3843,198 @@ window.toggleQuizOptions = toggleQuizOptions;
 window.shuffleQuizQuestions = shuffleQuizQuestions;
 window.addQuestionField = addQuestionField;
 window.updateAssignmentTotalPoints = updateAssignmentTotalPoints;
+
+async function renderAnalytics() {
+  const renderId = ++window.currentRenderId;
+  const content = document.getElementById('pageContent');
+  if (!content) return;
+  clearActiveCountdowns();
+
+  try {
+    const user = await SessionManager.getCurrentUser();
+    if (renderId !== window.currentRenderId) return;
+
+    const { data: courses } = await SupabaseDB.getCourses(user.email, null, { all: true });
+    if (renderId !== window.currentRenderId) return;
+
+    content.innerHTML = `
+      <div class="card mb-20 flex-between flex-wrap gap-15">
+        <h2 class="m-0">Course Analytics & Insights</h2>
+        <div class="flex gap-10">
+          <select id="analyticsCourseSelect" class="m-0" style="width:250px">
+            <option value="">All My Courses</option>
+            ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
+          </select>
+          <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, true)">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="analyticsDashboard"></div>
+    `;
+
+    const select = document.getElementById('analyticsCourseSelect');
+    select.addEventListener('change', () => renderAnalyticsDashboard(select.value));
+
+    renderAnalyticsDashboard(select.value);
+  } catch (error) {
+    console.error('Analytics Error:', error);
+    UI.showNotification('Error loading analytics: ' + error.message, 'error');
+  }
+}
+
+async function renderAnalyticsDashboard(courseId, bypassCache = false) {
+  const dashboard = document.getElementById('analyticsDashboard');
+  if (!dashboard) return;
+  const renderId = window.currentRenderId;
+
+  const cacheKey = courseId || 'all';
+  const now = Date.now();
+  if (!bypassCache && TeacherState.analyticsCache.has(cacheKey)) {
+    const cached = TeacherState.analyticsCache.get(cacheKey);
+    if (now - cached.timestamp < 300000) { // 5 min cache
+      renderAnalyticsUI(cached.data);
+      return;
+    }
+  }
+
+  dashboard.innerHTML = '<div class="flex-center p-40"><div class="loading-spinner"></div></div>';
+
+  try {
+    const user = await SessionManager.getCurrentUser();
+    const [summary, students, assessments, gaps] = await Promise.all([
+      SupabaseDB.getCourseAnalyticsSummary(user.email, courseId),
+      courseId ? SupabaseDB.getStudentPerformanceComparison(courseId) : Promise.resolve([]),
+      courseId ? SupabaseDB.getAssessmentPerformanceAnalysis(courseId) : Promise.resolve([]),
+      courseId ? SupabaseDB.getLearningGapsAndInterventions(courseId) : Promise.resolve({ low_performing_students: [], course_average: 0 })
+    ]);
+
+    if (renderId !== window.currentRenderId) return;
+
+    const data = { summary, students, assessments, gaps };
+    TeacherState.analyticsCache.set(cacheKey, { data, timestamp: now });
+    renderAnalyticsUI(data);
+  } catch (error) {
+    console.error('Dashboard Error:', error);
+    dashboard.innerHTML = `<div class="card danger-border"><h3>Error Loading Analytics</h3><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+function renderAnalyticsUI(data) {
+  const dashboard = document.getElementById('analyticsDashboard');
+  if (!dashboard) return;
+
+  const { summary, students, assessments, gaps } = data;
+  const totalStudents = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
+  const avgScore = summary.length > 0 ? (summary.reduce((sum, c) => sum + (parseFloat(c.avg_assignment_score) || 0) + (parseFloat(c.avg_quiz_score) || 0), 0) / (summary.length * 2)).toFixed(1) : 0;
+
+  dashboard.innerHTML = `
+    <div class="stats-grid mb-20">
+      <div class="stat-card"><h4>Active Students</h4><div class="value">${totalStudents}</div></div>
+      <div class="stat-card"><h4>Avg Performance</h4><div class="value">${avgScore}%</div></div>
+      <div class="stat-card warn"><h4>At Risk</h4><div class="value">${gaps?.low_performing_students?.length || 0}</div></div>
+      <div class="stat-card"><h4>Assessments</h4><div class="value">${assessments?.length || 0}</div></div>
+    </div>
+
+    <div class="grid-2 gap-20">
+      <div class="card">
+        <h3>Performance Trends</h3>
+        <canvas id="performanceChart" height="200"></canvas>
+      </div>
+      <div class="card">
+        <h3>Student Comparison</h3>
+        <canvas id="studentChart" height="200"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-2 gap-20 mt-20">
+      <div class="card">
+        <h3>Assessment Breakdown</h3>
+        <div class="p-0 mt-10" style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Assessment</th><th>Type</th><th>Avg Score</th><th>Submissions</th></tr></thead>
+            <tbody>
+              ${assessments.map(a => `
+                <tr>
+                  <td><div class="bold small">${escapeHtml(a.title)}</div></td>
+                  <td><span class="badge tiny">${escapeHtml(a.type.toUpperCase())}</span></td>
+                  <td>${a.avg_score ? parseFloat(a.avg_score).toFixed(1) + '%' : '---'}</td>
+                  <td>${a.submission_count}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="4" class="empty">No assessments found.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="danger-text">Students Needing Intervention</h3>
+        <div class="p-0 mt-10" style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Student</th><th>Email</th><th>Average</th><th>Risk</th></tr></thead>
+            <tbody>
+              ${gaps?.low_performing_students?.map(s => `
+                <tr>
+                  <td><div class="bold small">${escapeHtml(s.full_name)}</div></td>
+                  <td class="tiny">${escapeHtml(s.email)}</td>
+                  <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg).toFixed(1)}%</td>
+                  <td><span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${s.risk_level}</span></td>
+                </tr>
+              `).join('') || '<tr><td colspan="4" class="empty success-text">All students are performing well.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  renderAnalyticsCharts(students, assessments);
+}
+
+function renderAnalyticsCharts(students, assessments) {
+  const perfCtx = document.getElementById('performanceChart')?.getContext('2d');
+  const studCtx = document.getElementById('studentChart')?.getContext('2d');
+
+  if (perfCtx) {
+    new Chart(perfCtx, {
+      type: 'bar',
+      data: {
+        labels: assessments.map(a => a.title.substring(0, 10) + '...'),
+        datasets: [{
+          label: 'Average Score (%)',
+          data: assessments.map(a => a.avg_score || 0),
+          backgroundColor: 'rgba(102, 126, 234, 0.6)',
+          borderColor: 'rgba(102, 126, 234, 1)',
+          borderWidth: 1
+        }]
+      },
+      options: { scales: { y: { beginAtZero: true, max: 100 } } }
+    });
+  }
+
+  if (studCtx) {
+    const topStudents = [...students].sort((a,b) => b.overall_average - a.overall_average).slice(0, 5);
+    new Chart(studCtx, {
+      type: 'radar',
+      data: {
+        labels: topStudents.map(s => s.full_name.split(' ')[0]),
+        datasets: [{
+          label: 'Quiz Avg',
+          data: topStudents.map(s => s.avg_quiz_grade || 0),
+          fill: true,
+          backgroundColor: 'rgba(255, 99, 132, 0.2)',
+          borderColor: 'rgb(255, 99, 132)',
+          pointBackgroundColor: 'rgb(255, 99, 132)'
+        }, {
+          label: 'Assignment Avg',
+          data: topStudents.map(s => s.avg_assignment_grade || 0),
+          fill: true,
+          backgroundColor: 'rgba(54, 162, 235, 0.2)',
+          borderColor: 'rgb(54, 162, 235)',
+          pointBackgroundColor: 'rgb(54, 162, 235)'
+        }]
+      },
+      options: { elements: { line: { borderWidth: 3 } } }
+    });
+  }
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   const user = await initDashboard('teacher');
