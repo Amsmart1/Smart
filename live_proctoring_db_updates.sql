@@ -1,3 +1,8 @@
+-- Ensure Violations table has the correct effort-linked attempt_id column
+-- and remove the redundant session_id column.
+ALTER TABLE violations DROP COLUMN IF EXISTS session_id;
+ALTER TABLE violations ADD COLUMN IF NOT EXISTS attempt_id UUID;
+
 -- System settings table for global controls
 CREATE TABLE IF NOT EXISTS system_settings (
     key TEXT PRIMARY KEY,
@@ -39,7 +44,12 @@ RETURNS TABLE (
     is_online BOOLEAN
 ) AS $$
 BEGIN
-    RETURN QUERY
+    -- Resilience: Ensure attempt_id column exists before trying to query it
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'violations' AND column_name = 'attempt_id') THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY EXECUTE '
     WITH latest_violations AS (
         -- Get unique attempts with activity in the last 4 hours
         SELECT
@@ -49,8 +59,8 @@ BEGIN
             v.assessment_type,
             MAX(v.timestamp) as last_act,
             MIN(v.timestamp) as first_act,
-            COUNT(*) FILTER (WHERE v.severity NOT IN ('INFO', 'LOW')) as high_v_count,
-            COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
+            COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
+            COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
         WHERE v.timestamp > NOW() - INTERVAL '4 hours'
         GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
@@ -60,23 +70,23 @@ BEGIN
         lv.user_email,
         u.full_name,
         lv.assessment_id,
-        COALESCE(q.title, a.title, 'Unknown Assessment') as assessment_title,
+        COALESCE(q.title, a.title, ''Unknown Assessment'') as assessment_title,
         lv.assessment_type::VARCHAR,
         lv.first_act as started_at,
         lv.last_act as last_activity,
         lv.total_v_count as violation_count,
         CASE
-            WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN 'Flagged'
-            WHEN lv.total_v_count > 0 THEN 'Warning'
-            WHEN lv.last_act < NOW() - INTERVAL '5 minutes' THEN 'Idle'
-            ELSE 'Active'
+            WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN ''Flagged''
+            WHEN lv.total_v_count > 0 THEN ''Warning''
+            WHEN lv.last_act < NOW() - INTERVAL ''5 minutes'' THEN ''Idle''
+            ELSE ''Active''
         END as status,
-        (lv.last_act > NOW() - INTERVAL '2 minutes') as is_online
+        (lv.last_act > NOW() - INTERVAL ''2 minutes'')::BOOLEAN as is_online
     FROM latest_violations lv
     JOIN users u ON lv.user_email = u.email
-    LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = 'quiz'
-    LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = 'assignment'
-    ORDER BY lv.last_act DESC;
+    LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = ''quiz''
+    LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = ''assignment''
+    ORDER BY lv.last_act DESC';
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
