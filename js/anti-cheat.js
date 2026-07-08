@@ -74,6 +74,17 @@
             }
         }
 
+        /**
+         * Mark the assessment session as truly started.
+         * This logs the START event and begins proctoring media streams.
+         */
+        async start() {
+            if (!this.state.isActive) return;
+            this.state.startTime = Date.now();
+            this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
+            await this.startProctoring();
+        }
+
         async init(assessmentId, assessmentType, userEmail, config = {}) {
             if (this.state.isActive) await this.destroy();
 
@@ -95,7 +106,7 @@
             this.state.assessmentType = assessmentType;
             this.state.courseId = config.courseId || null;
             this.state.userEmail = userEmail;
-            this.state.startTime = Date.now();
+            this.state.startTime = null; // Set when start() is called
             this.state.isActive = true;
 
             // Re-sync device info in case of changes
@@ -258,11 +269,24 @@
                     }
                 });
 
-                await this.proctor.start();
-                if (this.config.DEBUG) console.log('Anti-Cheat: Proctoring started');
             } catch (err) {
-                console.error('Anti-Cheat: Failed to start proctoring', err);
-                this.logViolation('PROCTORING_FAILURE', { error: err.message, severity: 'MEDIUM' });
+                console.error('Anti-Cheat: Failed to initialize Proctoring Engine', err);
+            }
+        }
+
+        /**
+         * Starts the proctoring engine if initialized.
+         */
+        async startProctoring() {
+            if (this.proctor && !this.proctor.state.isActive) {
+                try {
+                    await this.proctor.start();
+                    if (this.config.DEBUG) console.log('Anti-Cheat: Proctoring started');
+                } catch (err) {
+                    console.error('Anti-Cheat: Failed to start proctoring', err);
+                    this.logViolation('PROCTORING_FAILURE', { error: err.message, severity: 'MEDIUM' });
+                    throw err;
+                }
             }
         }
 

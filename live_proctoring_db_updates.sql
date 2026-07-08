@@ -1,6 +1,6 @@
 -- Ensure Violations table has the correct effort-linked attempt_id column
 -- and remove the redundant session_id column.
-ALTER TABLE violations DROP COLUMN IF EXISTS session_id;
+ALTER TABLE violations DROP COLUMN IF EXISTS session_id CASCADE;
 ALTER TABLE violations ADD COLUMN IF NOT EXISTS attempt_id UUID;
 
 -- System settings table for global controls
@@ -62,7 +62,7 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
             COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL '4 hours'
+        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''
         GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
@@ -105,8 +105,8 @@ BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   v_new_json := to_jsonb(NEW);
 
-  v_course_id := NEW.course_id;
-  v_teacher_email := NEW.teacher_email;
+  v_course_id := (v_new_json->>'course_id')::UUID;
+  v_teacher_email := (v_new_json->>'teacher_email')::VARCHAR;
 
   -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
   -- Safety: Use JSONB to avoid "record has no field" errors on shared trigger function
@@ -125,9 +125,6 @@ BEGIN
               LIMIT 1;
 
               IF v_assessment_id IS NOT NULL THEN
-                  NEW.assessment_id := v_assessment_id;
-                  NEW.assessment_type := v_assessment_type;
-                  -- Use JSONB to avoid "record has no field" on other tables
                   v_new_json := v_new_json || jsonb_build_object(
                       'assessment_id', v_assessment_id,
                       'assessment_type', v_assessment_type,
@@ -170,7 +167,7 @@ BEGIN
               IF v_course_id IS NULL THEN
                   SELECT course_id, 'assignment'::VARCHAR INTO v_course_id, v_assessment_type FROM assignments WHERE id = v_assessment_id;
               END IF;
-              NEW.assessment_type := v_assessment_type;
+              v_new_json := v_new_json || jsonb_build_object('assessment_type', v_assessment_type);
           END IF;
       END IF;
     END IF;
