@@ -199,9 +199,9 @@
       mimeType: 'audio/webm',
     },
     /** @type {string} */
-    sessionId: null,
-    /** @type {string} */
     attemptId: null,
+    /** @type {string} */
+    assessmentId: null,
     /** @type {string} */
     courseId: null,
     /** @type {string} */
@@ -922,6 +922,7 @@
       // ── State ──────────────────────────────────────────────────────────────
       this.state = {
         isActive: false,
+        isStarting: false, // Protection flag
         startTime: null,
         webcamStream: null,
         screenStream: null,
@@ -934,7 +935,7 @@
         totalSnapshotSize: 0,
         totalChunkSize: 0,
         totalAudioSize: 0,
-        sessionId: this.config.sessionId || uid(),
+        attemptId: this.config.attemptId,
         deviceInfo: window.DeviceUtils ? window.DeviceUtils.getFullContext() : this._getDeviceInfo(),
         networkStatus: navigator.onLine,
         reconnectAttempts: 0,
@@ -989,11 +990,12 @@
      * @throws {Error} If permissions are denied or browser unsupported
      */
     async start({ webcamElement } = {}) {
-      if (this.state.isActive) {
-        this.debug('start() called but already active — ignoring');
+      if (this.state.isActive || this.state.isStarting) {
+        this.debug('start() called but already active or starting — ignoring');
         return;
       }
 
+      this.state.isStarting = true;
       this._checkBrowserSupport();
 
       this.state.isActive = true;
@@ -1043,11 +1045,13 @@
         // Start connection monitoring
         this._startConnectionMonitor();
 
-        this.debug('ProctorEngine: Tasks started', { sessionId: this.state.sessionId });
+        this.debug('ProctorEngine: Tasks started', { attemptId: this.state.attemptId });
       } catch (err) {
         this.state.isActive = false;
         this._cleanup();
         throw err;
+      } finally {
+        this.state.isStarting = false;
       }
     }
 
@@ -1153,7 +1157,7 @@
         totalChunkSize: this.state.totalChunkSize,
         totalAudioSize: this.state.totalAudioSize,
         retryQueue: this.retryQueue.getStatus(),
-        sessionId: this.state.sessionId,
+        attemptId: this.state.attemptId,
       };
 
       this.debug('ProctorEngine: Tasks stopped', stats);
@@ -1184,7 +1188,7 @@
         totalSnapshotSize: this.state.totalSnapshotSize,
         totalChunkSize: this.state.totalChunkSize,
         totalAudioSize: this.state.totalAudioSize,
-        sessionId: this.state.sessionId,
+        attemptId: this.state.attemptId,
         retryQueue: this.retryQueue.getStatus(),
         networkStatus: this.state.networkStatus,
       };
@@ -1502,11 +1506,10 @@
       const size = blob.size;
 
       this.state.totalChunkSize += size;
-      const path = this._storagePath(`chunks/${this.state.sessionId}/chunk-${chunkIndex}.webm`);
+      const path = this._storagePath(`chunks/chunk-${chunkIndex}.webm`);
 
       const metadata = {
-        sessionId: this.state.sessionId,
-        attemptId: this.config.attemptId,
+        attemptId: this.state.attemptId,
         user_email: this.config.userId,
         chunkIndex,
         timestamp,
@@ -1624,11 +1627,10 @@
       const size = blob.size;
 
       this.state.totalAudioSize += size;
-      const path = this._storagePath(`audio/${this.state.sessionId}/chunk-${chunkIndex}.webm`);
+      const path = this._storagePath(`audio/chunk-${chunkIndex}.webm`);
 
       const metadata = {
-        sessionId: this.state.sessionId,
-        attemptId: this.config.attemptId,
+        attemptId: this.state.attemptId,
         user_email: this.config.userId,
         chunkIndex,
         timestamp,
@@ -1728,11 +1730,10 @@
         const blob = await this._compressSnapshot(this._webcamVideo);
         const size = blob.size;
         this.state.totalSnapshotSize += size;
-        const path = this._storagePath(`snapshots/${this.state.sessionId}/snap-${idx}.jpg`);
+        const path = this._storagePath(`snapshots/snap-${idx}.jpg`);
 
         const metadata = {
-          sessionId: this.state.sessionId,
-          attemptId: this.config.attemptId,
+          attemptId: this.state.attemptId,
           user_email: this.config.userId,
           snapshotIndex: idx,
           timestamp,
@@ -1920,7 +1921,7 @@
       this.debug('Chunked upload: ' + totalChunks + ' chunks for ' + blob.size + ' bytes');
 
       const manifest = {
-        sessionId: this.state.sessionId,
+        attemptId: this.state.attemptId,
         type,
         totalChunks,
         chunkSize,
@@ -2234,7 +2235,7 @@
      * @returns {string}
      */
     _storagePath(relative) {
-      return `${this.config.upload.storagePath}/${this.config.userId}/${this.config.attemptId}/${relative}`;
+      return `${this.config.upload.storagePath}/${this.config.userId}/${this.state.attemptId}/${relative}`;
     }
 
     /**
