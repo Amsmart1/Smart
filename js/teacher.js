@@ -3909,9 +3909,28 @@ async function renderAnalyticsDashboard(courseId, bypassCache = false) {
 
     if (renderId !== window.currentRenderId) return;
 
-    const data = { summary, students, assessments, gaps };
-    TeacherState.analyticsCache.set(cacheKey, { data, timestamp: now });
-    renderAnalyticsUI(data);
+    // Aggregate data if "All My Courses" is selected
+    let processedData = { summary, students, assessments, gaps };
+
+    if (!courseId) {
+        // Fetch all course analytics in parallel to aggregate
+        const allCourseIds = summary.map(c => c.id);
+        const [allStudents, allAssessments, allGaps] = await Promise.all([
+            Promise.all(allCourseIds.map(id => SupabaseDB.getStudentPerformanceComparison(id))),
+            Promise.all(allCourseIds.map(id => SupabaseDB.getAssessmentPerformanceAnalysis(id))),
+            Promise.all(allCourseIds.map(id => SupabaseDB.getLearningGapsAndInterventions(id)))
+        ]);
+
+        processedData.students = allStudents.flat();
+        processedData.assessments = allAssessments.flat();
+        processedData.gaps = {
+            low_performing_students: allGaps.map(g => g.low_performing_students).flat(),
+            course_average: allGaps.length > 0 ? (allGaps.reduce((sum, g) => sum + (parseFloat(g.course_average) || 0), 0) / allGaps.length) : 0
+        };
+    }
+
+    TeacherState.analyticsCache.set(cacheKey, { data: processedData, timestamp: now });
+    renderAnalyticsUI(processedData);
   } catch (error) {
     console.error('Dashboard Error:', error);
     dashboard.innerHTML = `<div class="card danger-border"><h3>Error Loading Analytics</h3><p>${escapeHtml(error.message)}</p></div>`;

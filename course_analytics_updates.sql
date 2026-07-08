@@ -1,5 +1,24 @@
 -- Enterprise Grade Course Analytics Insights
--- Comprehensive audit and implementation of centralized course analytics
+-- Comprehensive audit and implementation of centralized course analytics with hardened security and correct logic
+
+-- Internal helper to verify teacher ownership (not exposed as RPC)
+-- This ensures all SECURITY DEFINER functions below are safe.
+CREATE OR REPLACE FUNCTION _check_course_teacher(p_course_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+AS $$
+BEGIN
+    RETURN EXISTS (
+        SELECT 1 FROM courses
+        WHERE id = p_course_id
+        AND teacher_email = auth.email()
+    ) OR EXISTS (
+        SELECT 1 FROM users
+        WHERE email = auth.email() AND role = 'admin'
+    );
+END;
+$$;
 
 -- 1. Course Level Performance Summary
 CREATE OR REPLACE FUNCTION get_course_analytics_summary(p_teacher_email TEXT, p_course_id UUID DEFAULT NULL)
@@ -9,10 +28,16 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_result JSONB;
+    v_caller_email TEXT := auth.email();
 BEGIN
-    -- Check if user is teacher or admin
-    IF NOT EXISTS (SELECT 1 FROM users WHERE email = auth.email() AND role IN ('teacher', 'admin')) THEN
-        RAISE EXCEPTION 'Unauthorized';
+    -- Authorization Check: Caller must be the requested teacher or an admin
+    IF v_caller_email != p_teacher_email AND NOT EXISTS (SELECT 1 FROM users WHERE email = v_caller_email AND role = 'admin') THEN
+        RAISE EXCEPTION 'Unauthorized: You can only view your own analytics summary.';
+    END IF;
+
+    -- If course_id is provided, verify ownership of that specific course too
+    IF p_course_id IS NOT NULL AND NOT _check_course_teacher(p_course_id) THEN
+        RAISE EXCEPTION 'Unauthorized: Access to this course is denied.';
     END IF;
 
     WITH course_stats AS (
@@ -40,7 +65,7 @@ BEGIN
     )
     SELECT jsonb_agg(t) INTO v_result FROM course_stats t;
 
-    RETURN v_result;
+    RETURN COALESCE(v_result, '[]'::jsonb);
 END;
 $$;
 
@@ -53,13 +78,21 @@ AS $$
 DECLARE
     v_result JSONB;
 BEGIN
+    -- Authorization Check
+    IF NOT _check_course_teacher(p_course_id) THEN
+        RAISE EXCEPTION 'Unauthorized';
+    END IF;
+
     WITH student_metrics AS (
         SELECT
             u.full_name,
             u.email,
-            AVG(COALESCE(s.final_grade, 0)) as avg_assignment_grade,
-            AVG(COALESCE(qs.score, 0)) as avg_quiz_grade,
-            (AVG(COALESCE(s.final_grade, 0)) + AVG(COALESCE(qs.score, 0))) / 2 as overall_average
+            AVG(s.final_grade) as avg_assignment_grade,
+            AVG(qs.score) as avg_quiz_grade,
+            CASE
+                WHEN AVG(s.final_grade) IS NOT NULL AND AVG(qs.score) IS NOT NULL THEN (AVG(s.final_grade) + AVG(qs.score)) / 2
+                ELSE COALESCE(AVG(s.final_grade), AVG(qs.score), 0)
+            END as overall_average
         FROM enrollments e
         JOIN users u ON e.student_email = u.email
         LEFT JOIN assignments a ON a.course_id = p_course_id
@@ -71,7 +104,7 @@ BEGIN
     )
     SELECT jsonb_agg(t) INTO v_result FROM student_metrics t;
 
-    RETURN v_result;
+    RETURN COALESCE(v_result, '[]'::jsonb);
 END;
 $$;
 
@@ -84,6 +117,11 @@ AS $$
 DECLARE
     v_result JSONB;
 BEGIN
+    -- Authorization Check
+    IF NOT _check_course_teacher(p_course_id) THEN
+        RAISE EXCEPTION 'Unauthorized';
+    END IF;
+
     WITH assignment_analysis AS (
         SELECT
             'assignment' as type,
@@ -118,11 +156,11 @@ BEGIN
         SELECT * FROM quiz_analysis
     ) t;
 
-    RETURN v_result;
+    RETURN COALESCE(v_result, '[]'::jsonb);
 END;
 $$;
 
--- 4, 5, 6, 7. Learning Gaps and Intervention Insights
+-- 4. Learning Gaps and Intervention Insights
 CREATE OR REPLACE FUNCTION get_learning_gaps_and_interventions(p_course_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -131,13 +169,21 @@ AS $$
 DECLARE
     v_result JSONB;
 BEGIN
+    -- Authorization Check
+    IF NOT _check_course_teacher(p_course_id) THEN
+        RAISE EXCEPTION 'Unauthorized';
+    END IF;
+
     WITH student_scores AS (
         SELECT
             u.full_name,
             u.email,
-            COALESCE(AVG(s.final_grade), 0) as avg_assign,
-            COALESCE(AVG(qs.score), 0) as avg_quiz,
-            (COALESCE(AVG(s.final_grade), 0) + COALESCE(AVG(qs.score), 0)) / 2 as total_avg
+            AVG(s.final_grade) as avg_assign,
+            AVG(qs.score) as avg_quiz,
+            CASE
+                WHEN AVG(s.final_grade) IS NOT NULL AND AVG(qs.score) IS NOT NULL THEN (AVG(s.final_grade) + AVG(qs.score)) / 2
+                ELSE COALESCE(AVG(s.final_grade), AVG(qs.score), 0)
+            END as total_avg
         FROM enrollments e
         JOIN users u ON e.student_email = u.email
         LEFT JOIN assignments a ON a.course_id = p_course_id
@@ -161,8 +207,8 @@ BEGIN
         WHERE total_avg < 70
     )
     SELECT jsonb_build_object(
-        'low_performing_students', (SELECT jsonb_agg(i) FROM interventions i),
-        'course_average', (SELECT AVG(total_avg) FROM student_scores)
+        'low_performing_students', COALESCE((SELECT jsonb_agg(i) FROM interventions i), '[]'::jsonb),
+        'course_average', COALESCE((SELECT AVG(total_avg) FROM student_scores), 0)
     ) INTO v_result;
 
     RETURN v_result;
