@@ -2066,6 +2066,39 @@ class SupabaseDB {
         });
     }
 
+    static async getCourseAnalyticsSummary(teacherEmail, courseId = null) {
+        const { data, error } = await supabaseClient.rpc('get_course_analytics_summary', {
+            p_teacher_email: teacherEmail,
+            p_course_id: courseId
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    static async getStudentPerformanceComparison(courseId) {
+        const { data, error } = await supabaseClient.rpc('get_student_performance_comparison', {
+            p_course_id: courseId
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    static async getAssessmentPerformanceAnalysis(courseId) {
+        const { data, error } = await supabaseClient.rpc('get_assessment_performance_analysis', {
+            p_course_id: courseId
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    static async getLearningGapsAndInterventions(courseId) {
+        const { data, error } = await supabaseClient.rpc('get_learning_gaps_and_interventions', {
+            p_course_id: courseId
+        });
+        if (error) throw error;
+        return data;
+    }
+
     static async saveSystemSettings(key, value) {
         return this._request(async () => {
             const { data, error } = await supabaseClient
