@@ -734,6 +734,7 @@ async function showAssignmentForm(assignmentId) {
 
     await AntiCheat.init(a.id, 'assignment', user.email, {
         ...a.anti_cheat_config,
+        attemptId: submission?.id || crypto.randomUUID(), // Pass established ID if available
         courseId: a.course_id,
         callbacks: {
             onViolation: (v) => {
@@ -2574,6 +2575,7 @@ async function startQuiz(quizId) {
                     // 2. Only if successful, initialize Anti-Cheat within the same user gesture
                     await AntiCheat.init(quiz.id, 'quiz', user.email, {
                         ...quiz.anti_cheat_config,
+                        attemptId: StudentState.currentSubmission.id,
                         courseId: quiz.course_id,
                         callbacks: {
                             onViolation: (v) => {
@@ -2593,6 +2595,7 @@ async function startQuiz(quizId) {
                             try {
                                 await AntiCheat.init(quiz.id, 'quiz', user.email, {
                                     ...quiz.anti_cheat_config,
+                                attemptId: StudentState.currentSubmission.id,
                                     courseId: quiz.course_id,
                                     callbacks: {
                                         onViolation: (v) => {
@@ -2629,6 +2632,7 @@ async function startQuiz(quizId) {
             if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
                 await AntiCheat.init(quiz.id, 'quiz', user.email, {
                     ...quiz.anti_cheat_config,
+                    attemptId: StudentState.currentSubmission.id,
                     courseId: quiz.course_id,
                     callbacks: {
                         onViolation: (v) => {
@@ -2647,6 +2651,7 @@ async function startQuiz(quizId) {
                     if (quiz.anti_cheat_config && Object.values(quiz.anti_cheat_config).some(v => v === true)) {
                         await AntiCheat.init(quiz.id, 'quiz', user.email, {
                             ...quiz.anti_cheat_config,
+                            attemptId: StudentState.currentSubmission.id,
                             courseId: quiz.course_id,
                             callbacks: { onViolation: (v) => UI.showNotification(`Security Violation: ${v.type.replace(/_/g, ' ')} detected.`, 'danger') }
                         });

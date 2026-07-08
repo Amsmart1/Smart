@@ -17,6 +17,8 @@ EXCEPTION WHEN duplicate_object THEN
     ALTER DOMAIN notification_type ADD CONSTRAINT notification_type_check CHECK (VALUE IN ('system', 'broadcast', 'assignment_published', 'quiz_published', 'submission_received', 'grade_posted', 'live_class', 'teacher_left', 'class_ended', 'reset_requested', 'password_updated', 'cert_requested', 'cert_issued', 'cert_approved', 'cert_rejected', 'discussion_post', 'discussion_reply'));
 END $$;
 
+-- 0. Schema Pre-Initialization (Ensure critical columns exist early)
+
 -- 0. Internal Auth Helpers (Defined early for use in triggers and RPCs)
 
 -- Internal helper to retrieve session ID from headers (DRY)
@@ -510,7 +512,7 @@ CREATE TABLE IF NOT EXISTS invites (
 
 CREATE TABLE IF NOT EXISTS violations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  session_id VARCHAR(255), -- Links multiple events to a single assessment session
+  attempt_id UUID,
   course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
   teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
@@ -683,7 +685,16 @@ BEGIN
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
-    ALTER TABLE violations ADD COLUMN IF NOT EXISTS session_id VARCHAR(255);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Migration step failed: %', SQLERRM;
+END $$;
+
+-- Hardened Violations Migration (Redundant check for safety)
+-- Hardened Violations Migration (Top-level to ensure availability for functions)
+DO $$
+BEGIN
+    ALTER TABLE violations DROP COLUMN IF EXISTS session_id;
+    ALTER TABLE violations ADD COLUMN IF NOT EXISTS attempt_id UUID;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_id UUID;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_type VARCHAR(50);
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS type VARCHAR(100);
@@ -695,28 +706,33 @@ BEGIN
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS score INTEGER DEFAULT 0;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT 'LOW';
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
-    ALTER TABLE violations DROP COLUMN IF EXISTS details;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days');
+    ALTER TABLE violations DROP COLUMN IF EXISTS details;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Violation schema migration failed: %', SQLERRM;
+END $$;
 
+DO $$
+BEGIN
     -- Data Migration: Consolidate proctoring_logs into violations
+    -- Only attempt if proctoring_logs exists AND has expected structure
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'proctoring_logs') THEN
-        INSERT INTO violations (
-            session_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
-            type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
-        )
-        SELECT
-            session_id, course_id, user_email, teacher_email, attempt_id,
-            CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN 'quiz' ELSE 'assignment' END,
-            event_type, elapsed, device, event_data, timestamp, created_at, updated_at
-        FROM proctoring_logs
-        ON CONFLICT DO NOTHING;
-
-        -- We don't drop the table here yet to avoid parsing errors in subsequent blocks if the script is run in one go,
-        -- but we've migrated the data. The actual DROP happens later in the script.
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'proctoring_logs' AND column_name = 'attempt_id') THEN
+            EXECUTE 'INSERT INTO violations (
+                attempt_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
+                type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
+            )
+            SELECT
+                NULL, course_id, user_email, teacher_email, attempt_id,
+                CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN ''quiz'' ELSE ''assignment'' END,
+                event_type, elapsed, device, event_data, timestamp, created_at, updated_at
+            FROM proctoring_logs
+            ON CONFLICT DO NOTHING';
+        END IF;
     END IF;
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Migration step failed: %', SQLERRM;
+    RAISE NOTICE 'Violation data migration failed: %', SQLERRM;
 END $$;
 
 -- Fix quiz_submissions status check constraint if it was incorrectly initialized
@@ -927,12 +943,12 @@ BEGIN
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS course_id UUID REFERENCES courses(id) ON DELETE CASCADE;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL;
 
-    -- Backfill course_id and teacher_email for existing records
-    UPDATE submissions s SET course_id = a.course_id, teacher_email = a.teacher_email FROM assignments a WHERE s.assignment_id = a.id AND s.course_id IS NULL;
-    UPDATE quiz_submissions s SET course_id = q.course_id, teacher_email = q.teacher_email FROM quizzes q WHERE s.quiz_id = q.id AND s.course_id IS NULL;
-    UPDATE attendance a SET course_id = lc.course_id, teacher_email = lc.teacher_email FROM live_classes lc WHERE a.live_class_id = lc.id AND a.course_id IS NULL;
-    UPDATE violations v SET course_id = a.course_id, teacher_email = a.teacher_email FROM assignments a WHERE v.assessment_id = a.id AND v.assessment_type = 'assignment' AND v.course_id IS NULL;
-    UPDATE violations v SET course_id = q.course_id, teacher_email = q.teacher_email FROM quizzes q WHERE v.assessment_id = q.id AND v.assessment_type = 'quiz' AND v.course_id IS NULL;
+    -- Backfill course_id and teacher_email for existing records (Hardened with EXECUTE)
+    EXECUTE 'UPDATE submissions s SET course_id = a.course_id, teacher_email = a.teacher_email FROM assignments a WHERE s.assignment_id = a.id AND s.course_id IS NULL';
+    EXECUTE 'UPDATE quiz_submissions s SET course_id = q.course_id, teacher_email = q.teacher_email FROM quizzes q WHERE s.quiz_id = q.id AND s.course_id IS NULL';
+    EXECUTE 'UPDATE attendance a SET course_id = lc.course_id, teacher_email = lc.teacher_email FROM live_classes lc WHERE a.live_class_id = lc.id AND a.course_id IS NULL';
+    EXECUTE 'UPDATE violations v SET course_id = a.course_id, teacher_email = a.teacher_email FROM assignments a WHERE v.assessment_id = a.id AND v.assessment_type = ''assignment'' AND v.course_id IS NULL';
+    EXECUTE 'UPDATE violations v SET course_id = q.course_id, teacher_email = q.teacher_email FROM quizzes q WHERE v.assessment_id = q.id AND v.assessment_type = ''quiz'' AND v.course_id IS NULL';
     UPDATE topics t SET teacher_email = c.teacher_email FROM courses c WHERE t.course_id = c.id AND t.teacher_email IS NULL;
     UPDATE lessons l SET teacher_email = c.teacher_email FROM courses c WHERE l.course_id = c.id AND l.teacher_email IS NULL;
     UPDATE discussions d SET teacher_email = c.teacher_email FROM courses c WHERE d.course_id = c.id AND d.teacher_email IS NULL;
@@ -1445,61 +1461,95 @@ AFTER UPDATE OF teacher_email ON courses
 FOR EACH ROW EXECUTE PROCEDURE tr_sync_course_children_owner();
 
 CREATE OR REPLACE FUNCTION tr_inherit_course_data() RETURNS TRIGGER AS $$
+DECLARE
+  v_new_json JSONB;
+  v_assessment_id UUID;
+  v_assessment_type VARCHAR;
+  v_course_id UUID;
+  v_teacher_email VARCHAR;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
+  v_new_json := to_jsonb(NEW);
+  v_course_id := (v_new_json->>'course_id')::UUID;
+  v_teacher_email := (v_new_json->>'teacher_email')::VARCHAR;
 
-  -- 1. Populate assessment metadata if session_id is provided but assessment info is missing
-  -- This helps in linking proctoring logs that might only have session_id initially
-  -- Safety: Use dynamic SQL or table check to avoid 42703 if session_id column doesn't exist on NEW
-  IF TG_TABLE_NAME = 'violations' AND NEW.session_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
-      SELECT assessment_id, assessment_type, course_id, teacher_email
-      INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
-      FROM violations
-      WHERE session_id = NEW.session_id
-      AND assessment_id IS NOT NULL
-      AND assessment_type IS NOT NULL
-      ORDER BY created_at ASC
-      LIMIT 1;
+  -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing (Violations ONLY)
+  -- Safety: Use JSONB and dynamic EXECUTE to avoid compile-time column dependency errors
+  IF TG_TABLE_NAME = 'violations' THEN
+      DECLARE
+          v_attempt_id UUID := (v_new_json->>'attempt_id')::UUID;
+      BEGIN
+          IF v_attempt_id IS NOT NULL AND ( (v_new_json->>'assessment_id') IS NULL OR (v_new_json->>'assessment_type') IS NULL ) THEN
+              EXECUTE 'SELECT assessment_id, assessment_type, course_id, teacher_email
+                       FROM violations
+                       WHERE attempt_id = $1
+                       AND assessment_id IS NOT NULL
+                       AND assessment_type IS NOT NULL
+                       ORDER BY created_at ASC
+                       LIMIT 1'
+              INTO v_assessment_id, v_assessment_type, v_course_id, v_teacher_email
+              USING v_attempt_id;
+
+              IF v_assessment_id IS NOT NULL THEN
+                  v_new_json := v_new_json || jsonb_build_object(
+                      'assessment_id', v_assessment_id,
+                      'assessment_type', v_assessment_type,
+                      'course_id', v_course_id,
+                      'teacher_email', v_teacher_email
+                  );
+              END IF;
+          END IF;
+      END;
   END IF;
 
   -- 2. Populate course_id from parent assessments/classes if missing
-  IF NEW.course_id IS NULL THEN
+  IF v_course_id IS NULL THEN
     IF TG_TABLE_NAME = 'submissions' THEN
-      SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assignment_id;
+      SELECT course_id INTO v_course_id FROM assignments WHERE id = (v_new_json->>'assignment_id')::UUID;
     ELSIF TG_TABLE_NAME = 'quiz_submissions' THEN
-      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.quiz_id;
+      SELECT course_id INTO v_course_id FROM quizzes WHERE id = (v_new_json->>'quiz_id')::UUID;
     ELSIF TG_TABLE_NAME = 'attendance' THEN
-      SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
+      SELECT course_id INTO v_course_id FROM live_classes WHERE id = (v_new_json->>'live_class_id')::UUID;
     ELSIF TG_TABLE_NAME = 'lessons' THEN
-      IF NEW.topic_id IS NOT NULL THEN
-        SELECT course_id INTO NEW.course_id FROM topics WHERE id = NEW.topic_id;
+      IF (v_new_json->>'topic_id') IS NOT NULL THEN
+        SELECT course_id INTO v_course_id FROM topics WHERE id = (v_new_json->>'topic_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'discussions' THEN
-      IF NEW.parent_id IS NOT NULL THEN
-        SELECT course_id, teacher_email INTO NEW.course_id, NEW.teacher_email FROM discussions WHERE id = NEW.parent_id;
+      IF (v_new_json->>'parent_id') IS NOT NULL THEN
+        SELECT course_id, teacher_email INTO v_course_id, v_teacher_email FROM discussions WHERE id = (v_new_json->>'parent_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
-      IF NEW.assessment_id IS NOT NULL THEN
-          IF NEW.assessment_type = 'quiz' THEN
-              SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
-          ELSIF NEW.assessment_type = 'assignment' THEN
-              SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
+      v_assessment_id := (v_new_json->>'assessment_id')::UUID;
+      v_assessment_type := (v_new_json->>'assessment_type')::VARCHAR;
+
+      IF v_assessment_id IS NOT NULL THEN
+          IF v_assessment_type = 'quiz' THEN
+              SELECT course_id INTO v_course_id FROM quizzes WHERE id = v_assessment_id;
+          ELSIF v_assessment_type = 'assignment' THEN
+              SELECT course_id INTO v_course_id FROM assignments WHERE id = v_assessment_id;
           ELSE
               -- Auto-detect if type is missing but ID is present
-              SELECT course_id, 'quiz'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM quizzes WHERE id = NEW.assessment_id;
-              IF NEW.course_id IS NULL THEN
-                  SELECT course_id, 'assignment'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM assignments WHERE id = NEW.assessment_id;
+              SELECT course_id, 'quiz'::VARCHAR INTO v_course_id, v_assessment_type FROM quizzes WHERE id = v_assessment_id;
+              IF v_course_id IS NULL THEN
+                  SELECT course_id, 'assignment'::VARCHAR INTO v_course_id, v_assessment_type FROM assignments WHERE id = v_assessment_id;
               END IF;
+              v_new_json := v_new_json || jsonb_build_object('assessment_type', v_assessment_type);
           END IF;
       END IF;
+    END IF;
+
+    IF v_course_id IS NOT NULL THEN
+        v_new_json := v_new_json || jsonb_build_object('course_id', v_course_id);
     END IF;
   END IF;
 
   -- 3. Populate teacher_email from course if missing
-  IF NEW.teacher_email IS NULL AND NEW.course_id IS NOT NULL THEN
-    SELECT teacher_email INTO NEW.teacher_email FROM courses WHERE id = NEW.course_id;
+  IF v_teacher_email IS NULL AND v_course_id IS NOT NULL THEN
+    SELECT teacher_email INTO v_teacher_email FROM courses WHERE id = v_course_id;
+    v_new_json := v_new_json || jsonb_build_object('teacher_email', v_teacher_email);
   END IF;
 
+  NEW := jsonb_populate_record(NEW, v_new_json);
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -1829,11 +1879,11 @@ CREATE INDEX IF NOT EXISTS idx_quizzes_status ON quizzes(status);
 CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 CREATE INDEX IF NOT EXISTS idx_violations_assessment ON violations(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_violations_user ON violations(user_email);
-CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
-CREATE INDEX IF NOT EXISTS idx_violations_session_timestamp ON violations(session_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_violations_session_severity ON violations(session_id, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt ON violations(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt_timestamp ON violations(attempt_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_violations_attempt_severity ON violations(attempt_id, severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(type);
-CREATE INDEX IF NOT EXISTS idx_violations_teacher_session ON violations(teacher_email, session_id);
+CREATE INDEX IF NOT EXISTS idx_violations_teacher_attempt ON violations(teacher_email, attempt_id);
 CREATE INDEX IF NOT EXISTS idx_violations_reporting ON violations(assessment_id, user_email);
 
 -- Ensure uniqueness for certificates to prevent duplicates
@@ -3420,7 +3470,7 @@ CREATE POLICY "Proctoring: Teacher/Admin Access" ON storage.objects FOR SELECT U
         (is_teacher() AND EXISTS (
             SELECT 1 FROM violations v
             WHERE v.teacher_email = get_auth_email()
-            AND v.session_id = (storage.foldername(name))[5]
+            AND v.attempt_id::text = (storage.foldername(name))[3]
         ))
     )
 );
@@ -3466,7 +3516,7 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
-    session_id VARCHAR,
+    attempt_id UUID,
     user_email VARCHAR,
     full_name VARCHAR,
     assessment_id UUID,
@@ -3479,39 +3529,45 @@ RETURNS TABLE (
     is_online BOOLEAN
 ) AS $$
 BEGIN
-    RETURN QUERY
+    -- Resilience: Ensure attempt_id column exists before trying to query it
+    -- This handles cases where the script might be partially failing or running against old schemas
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'violations' AND column_name = 'attempt_id') THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY EXECUTE '
     WITH latest_violations AS (
-        -- Get unique sessions with activity in the last 4 hours
+        -- Get unique attempts with activity in the last 4 hours
         SELECT
-            v.session_id,
+            v.attempt_id,
             v.user_email,
             v.assessment_id,
             v.assessment_type,
             MAX(v.timestamp) as last_act,
             MIN(v.timestamp) as first_act,
-            COUNT(*) FILTER (WHERE v.severity NOT IN ('INFO', 'LOW')) as high_v_count,
-            COUNT(*) FILTER (WHERE v.severity != 'INFO') as total_v_count
+            COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
+            COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL '4 hours'
-        GROUP BY v.session_id, v.user_email, v.assessment_id, v.assessment_type
+        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''
+        GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
-        lv.session_id,
+        lv.attempt_id,
         lv.user_email,
         u.full_name,
         lv.assessment_id,
-        COALESCE(q.title, a.title, 'Unknown Assessment') as assessment_title,
+        COALESCE(q.title, a.title, ''Unknown Assessment'') as assessment_title,
         lv.assessment_type::VARCHAR,
         lv.first_act as started_at,
         lv.last_act as last_activity,
         lv.total_v_count as violation_count,
         CASE
-            WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN 'Flagged'
-            WHEN lv.total_v_count > 0 THEN 'Warning'
-            WHEN lv.last_act < NOW() - INTERVAL '5 minutes' THEN 'Idle'
-            ELSE 'Active'
+            WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN ''Flagged''
+            WHEN lv.total_v_count > 0 THEN ''Warning''
+            WHEN lv.last_act < NOW() - INTERVAL ''5 minutes'' THEN ''Idle''
+            ELSE ''Active''
         END as status,
-        (lv.last_act > NOW() - INTERVAL '2 minutes') as is_online
+        (lv.last_act > NOW() - INTERVAL ''2 minutes'')::BOOLEAN as is_online
     FROM latest_violations lv
     JOIN users u ON lv.user_email = u.email
     LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = 'quiz'
