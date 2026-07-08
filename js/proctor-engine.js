@@ -287,68 +287,6 @@
     });
   }
 
-  /**
-   * Simple event emitter with wildcard support.
-   */
-  class EventEmitter {
-    constructor() {
-      /** @type {Map<string, Function[]>} */
-      this._listeners = new Map();
-    }
-
-    /**
-     * Subscribe to an event.
-     * @param {string} event
-     * @param {Function} handler
-     * @returns {Function} Unsubscribe function
-     */
-    on(event, handler) {
-      if (!this._listeners.has(event)) this._listeners.set(event, []);
-      this._listeners.get(event).push(handler);
-      return () => this.off(event, handler);
-    }
-
-    /**
-     * Subscribe to an event once.
-     * @param {string} event
-     * @param {Function} handler
-     */
-    once(event, handler) {
-      const unsubscribe = this.on(event, (data) => {
-        unsubscribe();
-        handler(data);
-      });
-    }
-
-    /**
-     * Unsubscribe from an event.
-     * @param {string} event
-     * @param {Function} handler
-     */
-    off(event, handler) {
-      const handlers = this._listeners.get(event);
-      if (!handlers) return;
-      const idx = handlers.indexOf(handler);
-      if (idx !== -1) handlers.splice(idx, 1);
-    }
-
-    /**
-     * Emit an event to all subscribers.
-     * @param {string} event
-     * @param {*} data
-     */
-    emit(event, data) {
-      const handlers = this._listeners.get(event);
-      if (handlers) handlers.forEach(h => { try { h(data); } catch (e) { console.error(e); } });
-
-      const wildcardHandlers = this._listeners.get('*');
-      if (wildcardHandlers) {
-        wildcardHandlers.forEach(h => {
-          try { h({ type: event, data }); } catch (e) { console.error(e); }
-        });
-      }
-    }
-  }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Upload Worker (inline as blob URL — no separate file needed)
@@ -960,6 +898,14 @@
 
       /** @type {NoiseDetector} */
       this.noiseDetector = new NoiseDetector(this);
+
+      // ── Event Orchestration ────────────────────────────────────────────────
+      if (this.config.orchestrator && this.config.orchestrator.on) {
+          this.config.orchestrator.on('ASSESSMENT_STARTED', () => this.start());
+          this.config.orchestrator.on('ASSESSMENT_PAUSED', () => this.pause());
+          this.config.orchestrator.on('ASSESSMENT_RESUMED', () => this.resume());
+          this.config.orchestrator.on('ASSESSMENT_STOPPED', () => this.stop());
+      }
 
       // ── Supabase REST client (no external deps) ─────────────────────────────
       /** @type {Object|null} */
