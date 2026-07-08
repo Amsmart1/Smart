@@ -510,7 +510,7 @@ CREATE TABLE IF NOT EXISTS invites (
 
 CREATE TABLE IF NOT EXISTS violations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  attempt_id UUID, -- Links multiple events to a single assessment attempt
+  attempt_id UUID,
   course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   user_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE CHECK (user_email = LOWER(user_email)),
   teacher_email VARCHAR(255) REFERENCES users(email) ON UPDATE CASCADE ON DELETE SET NULL CHECK (teacher_email = LOWER(teacher_email)),
@@ -683,6 +683,8 @@ BEGIN
     ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS attempt_number INTEGER;
     ALTER TABLE quiz_submissions ALTER COLUMN attempt_number DROP NOT NULL;
     ALTER TABLE quiz_submissions ALTER COLUMN status SET DEFAULT 'in-progress';
+
+    -- Hardened Violations Migration
     ALTER TABLE violations DROP COLUMN IF EXISTS session_id;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS attempt_id UUID;
     ALTER TABLE violations ADD COLUMN IF NOT EXISTS assessment_id UUID;
@@ -702,19 +704,17 @@ BEGIN
 
     -- Data Migration: Consolidate proctoring_logs into violations
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'proctoring_logs') THEN
-        INSERT INTO violations (
+        -- Use EXECUTE for entire block to ensure schema sync for attempt_id
+        EXECUTE 'INSERT INTO violations (
             attempt_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
             type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
         )
         SELECT
             NULL, course_id, user_email, teacher_email, attempt_id,
-            CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN 'quiz' ELSE 'assignment' END,
+            CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN ''quiz'' ELSE ''assignment'' END,
             event_type, elapsed, device, event_data, timestamp, created_at, updated_at
         FROM proctoring_logs
-        ON CONFLICT DO NOTHING;
-
-        -- We don't drop the table here yet to avoid parsing errors in subsequent blocks if the script is run in one go,
-        -- but we've migrated the data. The actual DROP happens later in the script.
+        ON CONFLICT DO NOTHING';
     END IF;
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'Migration step failed: %', SQLERRM;
@@ -1446,50 +1446,70 @@ AFTER UPDATE OF teacher_email ON courses
 FOR EACH ROW EXECUTE PROCEDURE tr_sync_course_children_owner();
 
 CREATE OR REPLACE FUNCTION tr_inherit_course_data() RETURNS TRIGGER AS $$
+DECLARE
+  v_new_json JSONB;
+  v_assessment_id UUID;
+  v_assessment_type VARCHAR;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
+  v_new_json := to_jsonb(NEW);
 
   -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
-  -- This helps in linking proctoring logs that might only have attempt_id initially
-  IF TG_TABLE_NAME = 'violations' AND NEW.attempt_id IS NOT NULL AND (NEW.assessment_id IS NULL OR NEW.assessment_type IS NULL) THEN
-      SELECT assessment_id, assessment_type, course_id, teacher_email
-      INTO NEW.assessment_id, NEW.assessment_type, NEW.course_id, NEW.teacher_email
-      FROM violations
-      WHERE attempt_id = NEW.attempt_id
-      AND assessment_id IS NOT NULL
-      AND assessment_type IS NOT NULL
-      ORDER BY created_at ASC
-      LIMIT 1;
+  -- Safety: Use JSONB to avoid "record has no field" errors on shared trigger function
+  IF TG_TABLE_NAME = 'violations' THEN
+      DECLARE
+          v_attempt_id UUID := (v_new_json->>'attempt_id')::UUID;
+      BEGIN
+          IF v_attempt_id IS NOT NULL AND ( (v_new_json->>'assessment_id') IS NULL OR (v_new_json->>'assessment_type') IS NULL ) THEN
+              SELECT assessment_id, assessment_type, course_id, teacher_email
+              INTO v_assessment_id, v_assessment_type, NEW.course_id, NEW.teacher_email
+              FROM violations
+              WHERE attempt_id = v_attempt_id
+              AND assessment_id IS NOT NULL
+              AND assessment_type IS NOT NULL
+              ORDER BY created_at ASC
+              LIMIT 1;
+
+              IF v_assessment_id IS NOT NULL THEN
+                  NEW.assessment_id := v_assessment_id;
+                  NEW.assessment_type := v_assessment_type;
+              END IF;
+          END IF;
+      END;
   END IF;
 
   -- 2. Populate course_id from parent assessments/classes if missing
   IF NEW.course_id IS NULL THEN
     IF TG_TABLE_NAME = 'submissions' THEN
-      SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assignment_id;
+      SELECT course_id INTO NEW.course_id FROM assignments WHERE id = (v_new_json->>'assignment_id')::UUID;
     ELSIF TG_TABLE_NAME = 'quiz_submissions' THEN
-      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.quiz_id;
+      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = (v_new_json->>'quiz_id')::UUID;
     ELSIF TG_TABLE_NAME = 'attendance' THEN
-      SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = NEW.live_class_id;
+      SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = (v_new_json->>'live_class_id')::UUID;
     ELSIF TG_TABLE_NAME = 'lessons' THEN
-      IF NEW.topic_id IS NOT NULL THEN
-        SELECT course_id INTO NEW.course_id FROM topics WHERE id = NEW.topic_id;
+      IF (v_new_json->>'topic_id') IS NOT NULL THEN
+        SELECT course_id INTO NEW.course_id FROM topics WHERE id = (v_new_json->>'topic_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'discussions' THEN
-      IF NEW.parent_id IS NOT NULL THEN
-        SELECT course_id, teacher_email INTO NEW.course_id, NEW.teacher_email FROM discussions WHERE id = NEW.parent_id;
+      IF (v_new_json->>'parent_id') IS NOT NULL THEN
+        SELECT course_id, teacher_email INTO NEW.course_id, NEW.teacher_email FROM discussions WHERE id = (v_new_json->>'parent_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
-      IF NEW.assessment_id IS NOT NULL THEN
-          IF NEW.assessment_type = 'quiz' THEN
-              SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = NEW.assessment_id;
-          ELSIF NEW.assessment_type = 'assignment' THEN
-              SELECT course_id INTO NEW.course_id FROM assignments WHERE id = NEW.assessment_id;
+      v_assessment_id := (v_new_json->>'assessment_id')::UUID;
+      v_assessment_type := (v_new_json->>'assessment_type')::VARCHAR;
+
+      IF v_assessment_id IS NOT NULL THEN
+          IF v_assessment_type = 'quiz' THEN
+              SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = v_assessment_id;
+          ELSIF v_assessment_type = 'assignment' THEN
+              SELECT course_id INTO NEW.course_id FROM assignments WHERE id = v_assessment_id;
           ELSE
               -- Auto-detect if type is missing but ID is present
-              SELECT course_id, 'quiz'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM quizzes WHERE id = NEW.assessment_id;
+              SELECT course_id, 'quiz'::VARCHAR INTO NEW.course_id, v_assessment_type FROM quizzes WHERE id = v_assessment_id;
               IF NEW.course_id IS NULL THEN
-                  SELECT course_id, 'assignment'::VARCHAR INTO NEW.course_id, NEW.assessment_type FROM assignments WHERE id = NEW.assessment_id;
+                  SELECT course_id, 'assignment'::VARCHAR INTO NEW.course_id, v_assessment_type FROM assignments WHERE id = v_assessment_id;
               END IF;
+              NEW.assessment_type := v_assessment_type;
           END IF;
       END IF;
     END IF;
