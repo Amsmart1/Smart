@@ -139,7 +139,7 @@ class SupabaseDB {
     static TABLE_WHITELISTS = {
         users: ['email', 'full_name', 'phone', 'active', 'notification_preferences', 'metadata', 'updated_at'],
         user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
-        violations: ['session_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
+        violations: ['attempt_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
         study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
         quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at']
     };
@@ -157,12 +157,12 @@ class SupabaseDB {
         }
 
         // 2. Explicitly strip virtual/internal fields that don't belong in database tables
-        const VIRTUAL_FIELDS = ['password', 'session_id', 'has_secret', 'reset_data', 'full_name', 'role', 'is_mine', 'replies_count'];
+        const VIRTUAL_FIELDS = ['password', 'session_id', 'attempt_id', 'has_secret', 'reset_data', 'full_name', 'role', 'is_mine', 'replies_count'];
         VIRTUAL_FIELDS.forEach(field => {
-            // Preservation logic: Do NOT strip session_id or reset_data if targeting whitelisted tables or during migration
+            // Preservation logic: Do NOT strip session_id, attempt_id or reset_data if targeting whitelisted tables or during migration
             const isMigration = sessionStorage.getItem('migrationMode') === 'true';
             if (isMigration) return;
-            if (table === 'violations' && field === 'session_id') return;
+            if (table === 'violations' && field === 'attempt_id') return;
             if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data')) return;
             delete sanitized[field];
         });
@@ -2012,24 +2012,24 @@ class SupabaseDB {
             let result = data || [];
 
             if (options.withLatestSnapshots) {
-                const sessionIds = result.map(s => s.session_id);
-                if (sessionIds.length > 0) {
-                    // Fetch latest snapshots for all sessions in a single query
+                const attemptIds = result.map(s => s.attempt_id);
+                if (attemptIds.length > 0) {
+                    // Fetch latest snapshots for all attempts in a single query
                     const { data: snaps, error: snapErr } = await supabaseClient
                         .from('violations')
-                        .select('session_id, metadata->path')
-                        .in('session_id', sessionIds)
+                        .select('attempt_id, metadata->path')
+                        .in('attempt_id', attemptIds)
                         .eq('type', 'SNAPSHOT_CAPTURED')
                         .order('timestamp', { ascending: false });
 
                     if (!snapErr && snaps) {
-                        // Group by session_id and pick the first one (latest)
+                        // Group by attempt_id and pick the first one (latest)
                         const latestMap = {};
                         snaps.forEach(snap => {
-                            if (!latestMap[snap.session_id]) latestMap[snap.session_id] = snap.path;
+                            if (!latestMap[snap.attempt_id]) latestMap[snap.attempt_id] = snap.path;
                         });
 
-                        result = result.map(s => ({ ...s, latestSnapshotPath: latestMap[s.session_id] }));
+                        result = result.map(s => ({ ...s, latestSnapshotPath: latestMap[s.attempt_id] }));
                     }
                 }
             }
@@ -2096,11 +2096,11 @@ class SupabaseDB {
     }
 
     static async getViolations(assessmentId = null, userEmail = null, teacherEmail = null, options = {}) {
-        const { assessmentType = null, severity = null, sessionId = null } = options;
+        const { assessmentType = null, severity = null, attemptId = null } = options;
         return this._request(async () => {
             let query = supabaseClient.from('violations').select('*', { count: 'exact' });
 
-            if (sessionId) query = query.eq('session_id', sessionId);
+            if (attemptId) query = query.eq('attempt_id', attemptId);
 
             if (teacherEmail) {
                 // Get teacher's course IDs first
@@ -2305,14 +2305,14 @@ class SupabaseDB {
     }
 
     /**
-     * Fetches all violation records for a specific session that contain media.
+     * Fetches all violation records for a specific assessment attempt that contain media.
      */
-    static async getViolationMedia(sessionId) {
+    static async getAttemptMedia(attemptId) {
         return this._request(async () => {
             const { data, error } = await supabaseClient
                 .from('violations')
                 .select('*')
-                .eq('session_id', sessionId)
+                .eq('attempt_id', attemptId)
                 .not('metadata->path', 'is', null)
                 .order('timestamp', { ascending: true });
             if (error) throw error;
