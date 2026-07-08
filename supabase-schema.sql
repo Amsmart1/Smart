@@ -718,18 +718,17 @@ BEGIN
     -- Data Migration: Consolidate proctoring_logs into violations
     -- Only attempt if proctoring_logs exists AND has expected structure
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'proctoring_logs') THEN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'proctoring_logs' AND column_name = 'attempt_id') THEN
-            EXECUTE 'INSERT INTO violations (
-                attempt_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
-                type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
-            )
-            SELECT
-                NULL, course_id, user_email, teacher_email, attempt_id,
-                CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN ''quiz'' ELSE ''assignment'' END,
-                event_type, elapsed, device, event_data, timestamp, created_at, updated_at
-            FROM proctoring_logs
-            ON CONFLICT DO NOTHING';
-        END IF;
+        -- Use EXECUTE for entire block to ensure schema sync for attempt_id
+        EXECUTE 'INSERT INTO violations (
+            attempt_id, course_id, user_email, teacher_email, assessment_id, assessment_type,
+            type, elapsed_time, device_info, metadata, timestamp, created_at, updated_at
+        )
+        SELECT
+            NULL, course_id, user_email, teacher_email, attempt_id,
+            CASE WHEN EXISTS (SELECT 1 FROM quizzes WHERE id = attempt_id) THEN ''quiz'' ELSE ''assignment'' END,
+            event_type, elapsed, device, event_data, timestamp, created_at, updated_at
+        FROM proctoring_logs
+        ON CONFLICT DO NOTHING';
     END IF;
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'Violation data migration failed: %', SQLERRM;
@@ -1465,38 +1464,29 @@ DECLARE
   v_new_json JSONB;
   v_assessment_id UUID;
   v_assessment_type VARCHAR;
-  v_course_id UUID;
-  v_teacher_email VARCHAR;
 BEGIN
   IF _is_migration_mode() THEN RETURN NEW; END IF;
   v_new_json := to_jsonb(NEW);
-  v_course_id := (v_new_json->>'course_id')::UUID;
-  v_teacher_email := (v_new_json->>'teacher_email')::VARCHAR;
 
-  -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing (Violations ONLY)
-  -- Safety: Use JSONB and dynamic EXECUTE to avoid compile-time column dependency errors
+  -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
+  -- Safety: Use JSONB to avoid "record has no field" errors on shared trigger function
   IF TG_TABLE_NAME = 'violations' THEN
       DECLARE
           v_attempt_id UUID := (v_new_json->>'attempt_id')::UUID;
       BEGIN
           IF v_attempt_id IS NOT NULL AND ( (v_new_json->>'assessment_id') IS NULL OR (v_new_json->>'assessment_type') IS NULL ) THEN
-              EXECUTE 'SELECT assessment_id, assessment_type, course_id, teacher_email
-                       FROM violations
-                       WHERE attempt_id = $1
-                       AND assessment_id IS NOT NULL
-                       AND assessment_type IS NOT NULL
-                       ORDER BY created_at ASC
-                       LIMIT 1'
-              INTO v_assessment_id, v_assessment_type, v_course_id, v_teacher_email
-              USING v_attempt_id;
+              SELECT assessment_id, assessment_type, course_id, teacher_email
+              INTO v_assessment_id, v_assessment_type, NEW.course_id, NEW.teacher_email
+              FROM violations
+              WHERE attempt_id = v_attempt_id
+              AND assessment_id IS NOT NULL
+              AND assessment_type IS NOT NULL
+              ORDER BY created_at ASC
+              LIMIT 1;
 
               IF v_assessment_id IS NOT NULL THEN
-                  v_new_json := v_new_json || jsonb_build_object(
-                      'assessment_id', v_assessment_id,
-                      'assessment_type', v_assessment_type,
-                      'course_id', v_course_id,
-                      'teacher_email', v_teacher_email
-                  );
+                  NEW.assessment_id := v_assessment_id;
+                  NEW.assessment_type := v_assessment_type;
               END IF;
           END IF;
       END;
@@ -1505,18 +1495,18 @@ BEGIN
   -- 2. Populate course_id from parent assessments/classes if missing
   IF v_course_id IS NULL THEN
     IF TG_TABLE_NAME = 'submissions' THEN
-      SELECT course_id INTO v_course_id FROM assignments WHERE id = (v_new_json->>'assignment_id')::UUID;
+      SELECT course_id INTO NEW.course_id FROM assignments WHERE id = (v_new_json->>'assignment_id')::UUID;
     ELSIF TG_TABLE_NAME = 'quiz_submissions' THEN
-      SELECT course_id INTO v_course_id FROM quizzes WHERE id = (v_new_json->>'quiz_id')::UUID;
+      SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = (v_new_json->>'quiz_id')::UUID;
     ELSIF TG_TABLE_NAME = 'attendance' THEN
-      SELECT course_id INTO v_course_id FROM live_classes WHERE id = (v_new_json->>'live_class_id')::UUID;
+      SELECT course_id INTO NEW.course_id FROM live_classes WHERE id = (v_new_json->>'live_class_id')::UUID;
     ELSIF TG_TABLE_NAME = 'lessons' THEN
       IF (v_new_json->>'topic_id') IS NOT NULL THEN
-        SELECT course_id INTO v_course_id FROM topics WHERE id = (v_new_json->>'topic_id')::UUID;
+        SELECT course_id INTO NEW.course_id FROM topics WHERE id = (v_new_json->>'topic_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'discussions' THEN
       IF (v_new_json->>'parent_id') IS NOT NULL THEN
-        SELECT course_id, teacher_email INTO v_course_id, v_teacher_email FROM discussions WHERE id = (v_new_json->>'parent_id')::UUID;
+        SELECT course_id, teacher_email INTO NEW.course_id, NEW.teacher_email FROM discussions WHERE id = (v_new_json->>'parent_id')::UUID;
       END IF;
     ELSIF TG_TABLE_NAME = 'violations' THEN
       v_assessment_id := (v_new_json->>'assessment_id')::UUID;
@@ -1524,16 +1514,16 @@ BEGIN
 
       IF v_assessment_id IS NOT NULL THEN
           IF v_assessment_type = 'quiz' THEN
-              SELECT course_id INTO v_course_id FROM quizzes WHERE id = v_assessment_id;
+              SELECT course_id INTO NEW.course_id FROM quizzes WHERE id = v_assessment_id;
           ELSIF v_assessment_type = 'assignment' THEN
-              SELECT course_id INTO v_course_id FROM assignments WHERE id = v_assessment_id;
+              SELECT course_id INTO NEW.course_id FROM assignments WHERE id = v_assessment_id;
           ELSE
               -- Auto-detect if type is missing but ID is present
-              SELECT course_id, 'quiz'::VARCHAR INTO v_course_id, v_assessment_type FROM quizzes WHERE id = v_assessment_id;
-              IF v_course_id IS NULL THEN
-                  SELECT course_id, 'assignment'::VARCHAR INTO v_course_id, v_assessment_type FROM assignments WHERE id = v_assessment_id;
+              SELECT course_id, 'quiz'::VARCHAR INTO NEW.course_id, v_assessment_type FROM quizzes WHERE id = v_assessment_id;
+              IF NEW.course_id IS NULL THEN
+                  SELECT course_id, 'assignment'::VARCHAR INTO NEW.course_id, v_assessment_type FROM assignments WHERE id = v_assessment_id;
               END IF;
-              v_new_json := v_new_json || jsonb_build_object('assessment_type', v_assessment_type);
+              NEW.assessment_type := v_assessment_type;
           END IF;
       END IF;
     END IF;
@@ -3548,7 +3538,7 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
             COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''
+        WHERE v.timestamp > NOW() - INTERVAL '4 hours'
         GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT

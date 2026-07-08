@@ -62,7 +62,7 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
             COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''
+        WHERE v.timestamp > NOW() - INTERVAL '4 hours'
         GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
@@ -104,20 +104,20 @@ BEGIN
   v_new_json := to_jsonb(NEW);
 
   -- 1. Populate assessment metadata if attempt_id is provided but assessment info is missing
-  -- Safety: Use dynamic SQL to avoid "column does not exist" errors during function compilation
+  -- Safety: Use JSONB to avoid "record has no field" errors on shared trigger function
   IF TG_TABLE_NAME = 'violations' THEN
       DECLARE
           v_attempt_id UUID := (v_new_json->>'attempt_id')::UUID;
       BEGIN
           IF v_attempt_id IS NOT NULL AND ( (v_new_json->>'assessment_id') IS NULL OR (v_new_json->>'assessment_type') IS NULL ) THEN
-              EXECUTE format('SELECT assessment_id, assessment_type, course_id, teacher_email
-                              FROM violations
-                              WHERE attempt_id = %L
-                              AND assessment_id IS NOT NULL
-                              AND assessment_type IS NOT NULL
-                              ORDER BY created_at ASC
-                              LIMIT 1', v_attempt_id)
-              INTO v_assessment_id, v_assessment_type, NEW.course_id, NEW.teacher_email;
+              SELECT assessment_id, assessment_type, course_id, teacher_email
+              INTO v_assessment_id, v_assessment_type, NEW.course_id, NEW.teacher_email
+              FROM violations
+              WHERE attempt_id = v_attempt_id
+              AND assessment_id IS NOT NULL
+              AND assessment_type IS NOT NULL
+              ORDER BY created_at ASC
+              LIMIT 1;
 
               IF v_assessment_id IS NOT NULL THEN
                   NEW.assessment_id := v_assessment_id;
