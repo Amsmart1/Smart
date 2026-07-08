@@ -23,8 +23,9 @@ const StudyTracker = {
     lastDuration: 0,
 
     async start(courseId) {
-        if (this.courseId === courseId) return;
-        if (this.heartbeatInterval) await this.stop();
+        if (!courseId) return;
+        if (this.courseId === courseId && this.heartbeatInterval) return;
+        if (this.heartbeatInterval || this.uiInterval) await this.stop();
 
         this.courseId = courseId;
         this.startTime = new Date();
@@ -742,6 +743,10 @@ async function showAssignmentForm(assignmentId) {
             }
         }
     });
+    // Signal AntiCheat that assignment session has started
+    if (window.AntiCheat && AntiCheat.state.isActive) {
+        await AntiCheat.start();
+    }
   }
   const dueDate = new Date(a.due_date);
   const isLate = now > dueDate;
@@ -2680,6 +2685,11 @@ async function startQuiz(quizId) {
             await submitQuiz(true);
             return;
         }
+    }
+
+    // Finalize synchronization: Signal AntiCheat that assessment is truly active
+    if (window.AntiCheat && AntiCheat.state.isActive) {
+        await AntiCheat.start();
     }
 
     renderQuizQuestion(0);
