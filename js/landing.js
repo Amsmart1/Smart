@@ -246,6 +246,7 @@ const LandingUI = {
                         return await AIManager.askKofi(msg);
                     },
                     onClear: () => {
+                        // Clear the platform assistant history for Kofi AI
                         AIManager.clearHistory('kofi');
                     }
                 });

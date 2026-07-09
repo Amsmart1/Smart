@@ -146,9 +146,9 @@ class AIManager {
     /**
      * Clears conversational history for a specific key or all history if no key is provided.
      */
-    static clearHistory(key = null) {
-        if (key) {
-            this._history.delete(key);
+    static clearHistory(historyKey = null) {
+        if (historyKey) {
+            this._history.delete(historyKey);
         } else {
             this._history.clear();
         }
@@ -205,9 +205,25 @@ class AIManager {
                 formatted = content;
             } else {
                 // Escape HTML and format content (simple markdown-like replacement)
-                formatted = window.escapeHtml(content)
-                    .replace(/\n/g, '<br>')
-                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                let escaped = window.escapeHtml(content);
+
+                // Format bullet points: lines starting with '*' or '-'
+                escaped = escaped.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+                // Format links: [text](url) -> <a href="url" target="_blank" class="text-link">text</a>
+                escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                    const decodedUrl = url.replace(/&amp;/g, '&');
+                    if (window.isValidUrl(decodedUrl)) {
+                        return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link">${text}</a>`;
+                    }
+                    return match;
+                });
+
+                // Format bold: **text** -> <strong>text</strong>
+                escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+                // Format line breaks
+                formatted = escaped.replace(/\n/g, '<br>');
             }
 
             msgDiv.innerHTML = `
@@ -229,7 +245,9 @@ class AIManager {
 
         clearBtn.onclick = () => {
             resetUI();
-            onClear();
+            if (typeof onClear === 'function') {
+                onClear();
+            }
         };
 
         const handleSend = async () => {
