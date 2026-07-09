@@ -890,6 +890,12 @@ window.addEventListener('beforeinstallprompt', (e) => {
     const isLandingPage = window.location.pathname === '/' || window.location.pathname.endsWith('index.html') || window.location.pathname.endsWith('/');
     if (!isLandingPage) return;
 
+    // Mitigate Chrome's "beforeinstallpromptevent.preventDefault() called" warning during student/admin logins
+    // by only intercepting the event if we haven't shown our custom installation toast yet and the user is not logged in.
+    if (sessionStorage.getItem('installPromptShown') || sessionStorage.getItem('currentUser')) {
+        return;
+    }
+
     e.preventDefault();
     deferredPrompt = e;
 
