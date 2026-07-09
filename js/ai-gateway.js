@@ -234,8 +234,8 @@ class AIManager {
                 appendMessage('assistant', response);
             } catch (e) {
                 typingDiv.remove();
-                const errorMessage = e.message || 'Sorry, I encountered an error. Please try again.';
-                appendMessage('assistant', `<span style="color: #ef4444">⚠️ Error: ${errorMessage}</span>`);
+                const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
+                appendMessage('assistant', `<span style="color: #ef4444">⚠️ Error: ${errorMessage}</span>`, true);
                 console.error(e);
             } finally {
                 input.disabled = false;
