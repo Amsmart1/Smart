@@ -15,13 +15,13 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error('Missing environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+    if (!supabaseUrl || !supabaseAnonKey) {
+      throw new Error('Missing environment variables: SUPABASE_URL or SUPABASE_ANON_KEY');
     }
 
-    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         headers: { 'x-session-id': req.headers.get('x-session-id') || '' }
       }
@@ -72,13 +72,13 @@ serve(async (req) => {
         return await handleIndexCourse(userEmail, userRole, payload, supabaseClient);
 
       case 'generate_assessment':
-        return await handleAssessmentGenerator(payload);
+        return await handleAssessmentGenerator(userEmail, userRole, payload, supabaseClient);
 
       case 'grading':
-        return await handleGradingAssistant(payload);
+        return await handleGradingAssistant(userEmail, userRole, payload, supabaseClient);
 
       case 'analytics':
-        return await handleAnalyticsAI(userEmail, userRole, payload);
+        return await handleAnalyticsAI(userEmail, userRole, payload, supabaseClient);
 
       default:
         return new Response(JSON.stringify({ error: `Unsupported AI operation: ${type}` }), {
@@ -248,7 +248,7 @@ async function generateBatchEmbeddings(apiKey, texts) {
 /**
  * Feature 2: Assessment Generator
  */
-async function handleAssessmentGenerator(payload) {
+async function handleAssessmentGenerator(email, role, payload, supabase) {
     const { topic, type, count, difficulty, rubrics } = payload;
     const apiKey = Deno.env.get('GEMINI_ASSESSMENT_API_KEY');
 
@@ -258,14 +258,17 @@ async function handleAssessmentGenerator(payload) {
     Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
     Wrap your JSON response in \`\`\`json [CODE] \`\`\` markers.`;
 
-    const systemPrompt = "You are an expert curriculum designer and assessment generator. You output only valid JSON.";
+    const systemPrompt = `You are an expert curriculum designer and assessment generator.
+    Generating for Teacher: ${email}
+    Role: ${role}
+    You output only valid JSON.`;
     return callGemini(apiKey, prompt, systemPrompt);
 }
 
 /**
  * Feature 3: Grading Assistant
  */
-async function handleGradingAssistant(payload) {
+async function handleGradingAssistant(email, role, payload, supabase) {
     const { assignment_title, student_submission, rubric, questions } = payload;
     const apiKey = Deno.env.get('GEMINI_GRADING_API_KEY');
 
@@ -276,14 +279,17 @@ async function handleGradingAssistant(payload) {
 
     Provide a detailed critique, suggested scores per question, and overall feedback for the student.`;
 
-    const systemPrompt = "You are a fair and insightful teaching assistant. Help the teacher grade by providing insights based on the rubric.";
+    const systemPrompt = `You are a fair and insightful teaching assistant.
+    Assisting Teacher: ${email}
+    Role: ${role}
+    Help the teacher grade by providing insights based on the rubric.`;
     return callGemini(apiKey, prompt, systemPrompt);
 }
 
 /**
  * Feature 4: Role-based Analytics
  */
-async function handleAnalyticsAI(email, role, payload) {
+async function handleAnalyticsAI(email, role, payload, supabase) {
     const { analytics_data, question } = payload;
     const apiKey = Deno.env.get('GEMINI_ANALYTICS_API_KEY');
 

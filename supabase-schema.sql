@@ -2737,19 +2737,57 @@ BEGIN
       END IF;
 
     WHEN 'index_course', 'generate_assessment', 'grading' THEN
-      -- Staff only
-      IF v_role IN ('admin', 'teacher') THEN
+      -- Staff only with Ownership verification
+      IF v_role = 'admin' THEN
           v_is_authorized := true;
+      ELSIF v_role = 'teacher' THEN
+          v_course_id := (p_payload->>'course_id')::UUID;
+          DECLARE
+              v_assign_id UUID := (p_payload->>'assignment_id')::UUID;
+          BEGIN
+              IF v_course_id IS NOT NULL THEN
+                  SELECT EXISTS(SELECT 1 FROM courses WHERE id = v_course_id AND teacher_email = v_email) INTO v_is_authorized;
+              ELSIF v_assign_id IS NOT NULL THEN
+                  SELECT EXISTS(SELECT 1 FROM assignments WHERE id = v_assign_id AND teacher_email = v_email) INTO v_is_authorized;
+              ELSE
+                  v_is_authorized := false; -- Block staff operations if no specific context provided
+              END IF;
+          END;
       ELSE
           RETURN jsonb_build_object('authorized', false, 'error', 'Unauthorized: Staff privileges required for ' || p_operation_type);
       END IF;
 
+      IF NOT v_is_authorized THEN
+          RETURN jsonb_build_object('authorized', false, 'error', 'Access Denied: You do not own the requested course or assignment');
+      END IF;
+
     WHEN 'analytics' THEN
-      -- Self-analytics or Admin
+      -- RBAC + ABAC for Analytics
       IF v_role = 'admin' OR (COALESCE(p_payload->>'user_email', v_email) = v_email) THEN
           v_is_authorized := true;
-      ELSE
-          RETURN jsonb_build_object('authorized', false, 'error', 'Unauthorized: You can only query your own analytics');
+      ELSIF v_role = 'teacher' THEN
+          v_course_id := (p_payload->>'course_id')::UUID;
+          DECLARE
+              v_target_email VARCHAR := (p_payload->>'user_email')::VARCHAR;
+          BEGIN
+              IF v_course_id IS NOT NULL THEN
+                  -- Teacher viewing specific course analytics
+                  SELECT EXISTS(SELECT 1 FROM courses WHERE id = v_course_id AND teacher_email = v_email) INTO v_is_authorized;
+              ELSIF v_target_email IS NOT NULL THEN
+                  -- Teacher viewing specific student analytics (must be enrolled in their course)
+                  SELECT EXISTS(
+                      SELECT 1 FROM enrollments e
+                      JOIN courses c ON e.course_id = c.id
+                      WHERE e.student_email = v_target_email AND c.teacher_email = v_email
+                  ) INTO v_is_authorized;
+              ELSE
+                  v_is_authorized := true; -- General teacher dashboard
+              END IF;
+          END;
+      END IF;
+
+      IF NOT v_is_authorized THEN
+          RETURN jsonb_build_object('authorized', false, 'error', 'Unauthorized: You can only query analytics for yourself or your own students/courses');
       END IF;
 
     ELSE
@@ -3134,7 +3172,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_embeddings')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -3452,6 +3490,20 @@ DROP POLICY IF EXISTS "Maintenance: Manage for Admins" ON maintenance;
 CREATE POLICY "Maintenance: Manage for Admins" ON maintenance FOR ALL USING (is_admin());
 
 -- 16. System Logs Table
+
+-- 16.5 Material Embeddings Table
+DROP POLICY IF EXISTS "Embeddings: Select" ON material_embeddings;
+CREATE POLICY "Embeddings: Select" ON material_embeddings FOR SELECT USING (
+  is_admin() OR
+  EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND teacher_email = get_auth_email()) OR
+  (EXISTS (SELECT 1 FROM enrollments WHERE course_id = material_embeddings.course_id AND student_email = get_auth_email()) AND
+   EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND status = 'published'))
+);
+
+DROP POLICY IF EXISTS "Embeddings: Teachers Manage" ON material_embeddings;
+CREATE POLICY "Embeddings: Teachers Manage" ON material_embeddings FOR ALL USING (
+  is_admin() OR EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND teacher_email = get_auth_email())
+);
 
 -- 17. Violations Table
 DROP POLICY IF EXISTS "Violations: User Access" ON violations;

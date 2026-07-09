@@ -1159,7 +1159,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         <div class="mt-20">
           <div class="flex-between">
             <h3 class="m-0">Questions</h3>
-            <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIAssignmentGenerator()">✨ Generate with AI</button>
+            <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIAssignmentGenerator(document.getElementById('assignmentCourseId')?.value)">✨ Generate with AI</button>
           </div>
           <div id="questionsContainer" class="mt-15"></div>
           <button type="button" class="button w-auto secondary small" onclick="addQuestionField()">+ Add Question</button>
@@ -2718,7 +2718,7 @@ async function showQuizForm(quiz = null) {
           <div class="flex-between">
             <h3 class="m-0">Questions</h3>
             <div class="flex gap-5">
-                <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIQuizGenerator()">✨ Generate with AI</button>
+                <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIQuizGenerator(document.getElementById('quizCourseId')?.value)">✨ Generate with AI</button>
                 <button type="button" class="button secondary w-auto small" onclick="shuffleQuizQuestions()">Shuffle Order</button>
             </div>
           </div>
@@ -3886,7 +3886,7 @@ async function indexCourseForAI(courseId) {
     }
 }
 
-async function openAIQuizGenerator() {
+async function openAIQuizGenerator(courseId = null) {
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
@@ -3932,7 +3932,7 @@ async function openAIQuizGenerator() {
         btn.disabled = true; btn.textContent = 'Generating...';
 
         try {
-            const questions = await AIManager.generateAssessment({ topic, count, difficulty, type: 'quiz' });
+            const questions = await AIManager.generateAssessment({ topic, count, difficulty, type: 'quiz', course_id: courseId });
             questions.forEach(q => addQuizQuestionField(q));
             UI.showNotification(`Successfully generated ${questions.length} questions!`, 'success');
             backdrop.remove();
@@ -3963,6 +3963,8 @@ async function openAIGradingAssistant(assignmentId, studentEmail) {
         }).join('\n');
 
         const insight = await AIManager.getGradingInsights({
+            assignment_id: assignmentId,
+            course_id: assignment.course_id,
             assignment_title: assignment.title,
             student_submission: studentSubmission,
             rubric: assignment.description, // Use description as rubric if specific rubric not available
@@ -3989,7 +3991,7 @@ async function openAIGradingAssistant(assignmentId, studentEmail) {
     }
 }
 
-async function openAIAssignmentGenerator() {
+async function openAIAssignmentGenerator(courseId = null) {
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
@@ -4040,7 +4042,7 @@ async function openAIAssignmentGenerator() {
         btn.disabled = true; btn.textContent = 'Generating...';
 
         try {
-            const questions = await AIManager.generateAssessment({ topic, rubrics, count, difficulty, type: 'assignment' });
+            const questions = await AIManager.generateAssessment({ topic, rubrics, count, difficulty, type: 'assignment', course_id: courseId });
             questions.forEach(q => addQuestionField(q));
             UI.showNotification(`Generated ${questions.length} assignment questions!`, 'success');
             backdrop.remove();
@@ -4319,7 +4321,7 @@ function renderAnalyticsUI(data) {
               assessment_performance: assessments.map(a => ({ title: a.title, avg: a.avg_score })),
               top_risk_students: (gaps?.low_performing_students || []).slice(0, 5)
           };
-          return await AIManager.analyzeAnalytics(msg, dataContext);
+          return await AIManager.analyzeAnalytics(msg, dataContext, { courseId });
       }
   });
 
