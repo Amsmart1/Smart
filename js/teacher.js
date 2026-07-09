@@ -3817,7 +3817,6 @@ window.renderQuizzes = renderQuizzes;
 window.renderLiveClasses = renderLiveClasses;
 window.renderGradeBook = renderGradeBook;
 window.renderAnalytics = renderAnalytics;
-window.renderCalendar = renderCalendar;
 window.renderHelp = renderHelp;
 window.renderAntiCheat = renderAntiCheat;
 window.renderSettings = renderSettings;
@@ -3851,6 +3850,28 @@ window.toggleQuizOptions = toggleQuizOptions;
 window.shuffleQuizQuestions = shuffleQuizQuestions;
 window.addQuestionField = addQuestionField;
 window.updateAssignmentTotalPoints = updateAssignmentTotalPoints;
+
+// Enterprise-grade safety: Ensure escape helpers are available even if core.js load is deferred
+const _safeEscapeAttr = (s) => {
+    if (typeof window.escapeAttr === 'function') return window.escapeAttr(s);
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+
+const _safeEscapeHtml = (s) => {
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(s);
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+
+// Export analytics sub-functions to window for HTML event handlers
+window.renderAnalyticsDashboard = renderAnalyticsDashboard;
+window.renderAnalyticsUI = renderAnalyticsUI;
+window.renderAssessmentRows = renderAssessmentRows;
+window.renderInterventionRows = renderInterventionRows;
+window.initTableInteractivity = initTableInteractivity;
+window.renderAnalyticsCharts = renderAnalyticsCharts;
+window.renderAttendanceHeatmap = renderAttendanceHeatmap;
 
 async function renderAnalytics() {
   const renderId = ++window.currentRenderId;
@@ -4152,6 +4173,10 @@ function initTableInteractivity(data) {
 }
 
 function renderAnalyticsCharts(students, assessments) {
+  if (typeof Chart === 'undefined') {
+      console.warn('Chart.js library not loaded. Analytics visualizations disabled.');
+      return;
+  }
   const perfCtx = document.getElementById('performanceChart')?.getContext('2d');
   const distCtx = document.getElementById('distributionChart')?.getContext('2d');
   const studCtx = document.getElementById('studentChart')?.getContext('2d');
