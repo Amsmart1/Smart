@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="CSS/base.css">
+    <link rel="stylesheet" href="CSS/components.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/supabase-config.js"></script>
+    <script src="js/core.js"></script>
+    <script src="js/ai-gateway.js"></script>
+</head>
+<body>
+    <div id="testChatContainer" style="padding: 20px; max-width: 600px; margin: 0 auto;"></div>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            AIManager.renderChatbot('testChatContainer', {
+                title: 'AI Tutor Verification',
+                welcomeMessage: 'Testing the AI Tutor component UI.',
+                onSend: async (msg) => {
+                    return "Simulated response for: " + msg;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -15,6 +15,7 @@
   <script src="js/countdown.js"></script>
   <script src="js/core.js"></script>
   <script src="js/auth.js"></script>
+  <script src="js/ai-gateway.js"></script>
   <script src="js/landing.js"></script>
   <link rel="manifest" href="manifest.json">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -180,6 +181,17 @@
       &copy; 2024 SmartLMS Platform. All rights reserved.
     </div>
   </footer>
+
+  <!-- Kofi AI Floating Chatbot -->
+  <div id="kofiAIContainer" class="kofi-ai-wrapper">
+    <div id="kofiTrigger" class="kofi-trigger" onclick="LandingUI.toggleKofi()">
+      <span class="icon">🤖</span>
+      <span class="label">Kofi AI</span>
+    </div>
+    <div id="kofiChatWindow" class="kofi-chat-window hidden">
+      <div id="kofiChatBody"></div>
+    </div>
+  </div>
 
   <!-- Auth Overlays -->
   <div id="authOverlay" class="overlay" onclick="if(event.target===this)closeAuth()">

@@ -1627,8 +1627,25 @@ async function renderAnalytics() {
           <canvas id="analyticsChart"></canvas>
         </div>
       </div>
+      <div id="analyticsAIChat" class="mt-20"></div>
     </section>
     `;
+
+    AIManager.renderChatbot('analyticsAIChat', {
+        title: 'System Intelligence Assistant',
+        welcomeMessage: 'Hi! I can provide system-wide insights, performance trends, and security audits across the entire LMS.',
+        onSend: async (msg) => {
+            const dataContext = {
+                total_submissions: totalSubs,
+                active_users: activeUsers,
+                total_courses: totalCourses,
+                total_enrollments: totalEnrollments,
+                total_violations: totalViolations,
+                recent_activity: dates.map((d, i) => ({ date: d, count: counts[i] }))
+            };
+            return await AIManager.analyzeAnalytics(msg, dataContext);
+        }
+    });
 
     if (dates.length > 0) {
       const ctx = document.getElementById('analyticsChart').getContext('2d');

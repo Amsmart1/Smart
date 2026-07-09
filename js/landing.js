@@ -223,6 +223,34 @@ const LandingUI = {
                 </div>
             `;
         }
+    },
+
+    toggleKofi() {
+        const chatWindow = document.getElementById('kofiChatWindow');
+        const trigger = document.getElementById('kofiTrigger');
+        if (!chatWindow) return;
+
+        const isHidden = chatWindow.classList.contains('hidden');
+        if (isHidden) {
+            chatWindow.classList.remove('hidden');
+            trigger.innerHTML = '<span class="icon">✕</span><span class="label">Close</span>';
+
+            // Initialize if first time
+            if (!chatWindow.dataset.initialized) {
+                chatWindow.dataset.initialized = 'true';
+                AIManager.renderChatbot('kofiChatBody', {
+                    title: 'Kofi AI Assistant',
+                    welcomeMessage: 'Hi! I\'m Kofi AI, your guide to the SmartLMS platform. How can I help you today?',
+                    placeholder: 'Ask about platform features...',
+                    onSend: async (msg) => {
+                        return await AIManager.askKofi(msg);
+                    }
+                });
+            }
+        } else {
+            chatWindow.classList.add('hidden');
+            trigger.innerHTML = '<span class="icon">🤖</span><span class="label">Kofi AI</span>';
+        }
     }
 };
 

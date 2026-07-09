@@ -7,6 +7,7 @@ SET client_min_messages TO NOTICE;
 
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Enterprise Grade Custom Domains
 DO $$ BEGIN
@@ -533,6 +534,51 @@ CREATE TABLE IF NOT EXISTS violations (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '90 days')
 );
+
+-- Feature 6: Knowledge Base / Semantic Search
+CREATE TABLE IF NOT EXISTS material_embeddings (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  material_id UUID REFERENCES materials(id) ON DELETE CASCADE,
+  lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  embedding vector(768), -- Optimized for Gemini embedding-004
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Index for semantic search
+CREATE INDEX IF NOT EXISTS idx_material_embeddings_vector ON material_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- RPC for Semantic Search
+CREATE OR REPLACE FUNCTION match_materials (
+  query_embedding vector(768),
+  match_threshold float,
+  match_count int,
+  p_course_id uuid
+)
+RETURNS TABLE (
+  id uuid,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    me.id,
+    me.content,
+    me.metadata,
+    1 - (me.embedding <=> query_embedding) AS similarity
+  FROM material_embeddings me
+  WHERE me.course_id = p_course_id
+    AND 1 - (me.embedding <=> query_embedding) > match_threshold
+  ORDER BY me.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS support_tickets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
