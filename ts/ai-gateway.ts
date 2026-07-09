@@ -4,13 +4,14 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-session-id',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-session-id, x-supabase-signature',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, PUT, DELETE',
 }
 
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { status: 200, headers: corsHeaders })
   }
 
   try {
@@ -19,6 +20,10 @@ serve(async (req) => {
 
     if (!supabaseUrl) throw new Error('Missing environment variable: SUPABASE_URL');
     if (!supabaseAnonKey) throw new Error('Missing environment variable: SUPABASE_ANON_KEY');
+
+    // Secure private gateway secret key for backend-to-backend communication
+    // Falls back to SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY if not explicitly defined
+    const gatewaySecret = Deno.env.get('AI_GATEWAY_SECRET') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || supabaseAnonKey;
 
     const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: {
@@ -64,32 +69,180 @@ serve(async (req) => {
 
     const { email: userEmail, role: userRole } = authContext;
 
-    // Feature Routing (RBAC/ABAC already verified by RPC)
-    switch (type) {
-      case 'platform_assistant':
-        return await handlePlatformAssistant(payload);
-
-      case 'tutor':
-        return await handleCourseTutor(userEmail, userRole, payload, supabaseClient);
-
-      case 'index_course':
-        return await handleIndexCourse(userEmail, userRole, payload, supabaseClient);
-
-      case 'generate_assessment':
-        return await handleAssessmentGenerator(userEmail, userRole, payload, supabaseClient);
-
-      case 'grading':
-        return await handleGradingAssistant(userEmail, userRole, payload, supabaseClient);
-
-      case 'analytics':
-        return await handleAnalyticsAI(userEmail, userRole, payload, supabaseClient);
-
-      default:
-        return new Response(JSON.stringify({ error: `Unsupported AI operation: ${type}` }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 400,
-        });
+    // Secure, non-SSRF target Vercel URL configuration
+    // Load exclusively from backend environment variables to prevent token/signature theft
+    const vercelProjectUrl = Deno.env.get('VERCEL_PROJECT_URL');
+    if (!vercelProjectUrl) {
+      throw new Error('Missing environment variable: VERCEL_PROJECT_URL');
     }
+
+    const cleanBaseUrl = vercelProjectUrl.replace(/\/$/, '');
+    const vercelTarget = `${cleanBaseUrl}/api/ai-gateway`;
+
+    // Process materials / semantic search directly in Supabase RAG before Vercel call
+    let vercelPayload = { ...payload };
+
+    if (type === 'tutor') {
+      const { course_id, message } = payload;
+      const embeddingResponse = await fetch(vercelTarget, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-supabase-signature': gatewaySecret
+        },
+        body: JSON.stringify({
+          type: 'generate_embedding',
+          payload: { text: message }
+        })
+      });
+
+      if (!embeddingResponse.ok) {
+        throw new Error(`Embedding Proxy failed: ${await embeddingResponse.text()}`);
+      }
+
+      const embeddingResult = await embeddingResponse.json();
+      const userMessageEmbedding = embeddingResult.embedding;
+
+      // Perform Semantic Search using match_materials RPC
+      const { data: matches, error: matchError } = await supabaseClient.rpc('match_materials', {
+          query_embedding: userMessageEmbedding,
+          match_threshold: 0.3, // Tunable
+          match_count: 5,
+          p_course_id: course_id
+      });
+
+      if (matchError) {
+          console.warn('Semantic search failed, falling back to basic retrieval:', matchError.message);
+      }
+
+      let context = '';
+      if (matches && matches.length > 0) {
+          context = matches.map((m: any) => m.content).join('\n---\n');
+      } else {
+          // Fallback to basic retrieval if no semantic matches (e.g., Knowledge Base not indexed)
+          const [{ data: materials }, { data: lessons }] = await Promise.all([
+              supabaseClient.from('materials').select('title, description').eq('course_id', course_id).limit(5),
+              supabaseClient.from('lessons').select('title, content').eq('course_id', course_id).limit(5)
+          ]);
+
+          // Safe fallbacks for materials and lessons to prevent mapping errors if null
+          context = [
+              ...(materials || []).map((m: any) => `Material: ${m.title} - ${m.description}`),
+              ...(lessons || []).map((l: any) => `Lesson: ${l.title}\nContent: ${l.content}`)
+          ].join('\n\n');
+      }
+
+      vercelPayload.context = context;
+    } else if (type === 'index_course') {
+      const { course_id } = payload;
+      if (!course_id) throw new Error('course_id is required');
+
+      // Idempotency: Delete existing embeddings for this course before re-indexing
+      const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('course_id', course_id);
+      if (deleteError) throw new Error(`Failed to clear existing index: ${deleteError.message}`);
+
+      // Fetch all materials and lessons for the course
+      const [{ data: materials }, { data: lessons }] = await Promise.all([
+          supabaseClient.from('materials').select('id, title, description').eq('course_id', course_id),
+          supabaseClient.from('lessons').select('id, title, content').eq('course_id', course_id)
+      ]);
+
+      const chunks: any[] = [];
+
+      materials?.forEach((m: any) => {
+          chunks.push({
+              material_id: m.id,
+              course_id: course_id,
+              content: `Material Title: ${m.title}\nDescription: ${m.description}`,
+              metadata: { type: 'material', title: m.title }
+          });
+      });
+
+      lessons?.forEach((l: any) => {
+          const content = l.content || '';
+          const chunkSize = 2000;
+          for (let i = 0; i < content.length; i += chunkSize) {
+              chunks.push({
+                  lesson_id: l.id,
+                  course_id: course_id,
+                  content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+                  metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
+              });
+          }
+      });
+
+      if (chunks.length === 0) {
+          return new Response(JSON.stringify({ message: 'No content to index for this course.' }), {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              status: 200,
+          });
+      }
+
+      // Process in batches of 10
+      const batchSize = 10;
+      for (let i = 0; i < chunks.length; i += batchSize) {
+          const batch = chunks.slice(i, i + batchSize);
+          const embeddingResponse = await fetch(vercelTarget, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-supabase-signature': gatewaySecret
+            },
+            body: JSON.stringify({
+              type: 'generate_batch_embeddings',
+              payload: { texts: batch.map(c => c.content) }
+            })
+          });
+
+          if (!embeddingResponse.ok) {
+            throw new Error(`Batch Embedding Proxy failed: ${await embeddingResponse.text()}`);
+          }
+
+          const embeddingResult = await embeddingResponse.json();
+          const embeddings = embeddingResult.embeddings;
+
+          const records = batch.map((chunk, idx) => ({
+              ...chunk,
+              embedding: embeddings[idx]
+          }));
+
+          const { error } = await supabaseClient.from('material_embeddings').insert(records);
+          if (error) throw error;
+      }
+
+      return new Response(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200,
+      });
+    }
+
+    // Attach verified user identity from DB to payload for context tracking
+    vercelPayload.email = userEmail;
+    vercelPayload.role = userRole;
+
+    // Forward the fully validated & authorized request to Vercel to do the Gemini API calls
+    const vercelResponse = await fetch(vercelTarget, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-supabase-signature': gatewaySecret
+      },
+      body: JSON.stringify({
+        type,
+        payload: vercelPayload
+      })
+    });
+
+    if (!vercelResponse.ok) {
+      throw new Error(`Vercel downstream service returned ${vercelResponse.status}: ${await vercelResponse.text()}`);
+    }
+
+    const vercelData = await vercelResponse.json();
+
+    return new Response(JSON.stringify(vercelData), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    });
 
   } catch (error) {
     console.error('AI Gateway Error:', error.message);
@@ -106,304 +259,3 @@ serve(async (req) => {
     });
   }
 })
-
-/**
- * Feature 1 & 6: Course-aware Tutor with Semantic Search (RAG)
- */
-async function handleCourseTutor(email, role, payload, supabase) {
-    const { course_id, message, history = [] } = payload;
-    // Note: Verification of enrollment already performed by DB RPC
-
-    // 1. Generate embedding for the user's message
-    const embeddingApiKey = Deno.env.get('GEMINI_EMBEDDING_API_KEY');
-    const userMessageEmbedding = await generateEmbedding(embeddingApiKey, message);
-
-    // 2. Perform Semantic Search using match_materials RPC
-    const { data: matches, error: matchError } = await supabase.rpc('match_materials', {
-        query_embedding: userMessageEmbedding,
-        match_threshold: 0.3, // Tunable
-        match_count: 5,
-        p_course_id: course_id
-    });
-
-    if (matchError) {
-        console.warn('Semantic search failed, falling back to basic retrieval:', matchError.message);
-    }
-
-    let context = '';
-    if (matches && matches.length > 0) {
-        context = matches.map(m => m.content).join('\n---\n');
-    } else {
-        // Fallback to basic retrieval if no semantic matches (e.g., Knowledge Base not indexed)
-        const [{ data: materials }, { data: lessons }] = await Promise.all([
-            supabase.from('materials').select('title, description').eq('course_id', course_id).limit(5),
-            supabase.from('lessons').select('title, content').eq('course_id', course_id).limit(5)
-        ]);
-
-        // Safe fallbacks for materials and lessons to prevent mapping errors if null
-        context = [
-            ...(materials || []).map(m => `Material: ${m.title} - ${m.description}`),
-            ...(lessons || []).map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
-        ].join('\n\n');
-    }
-
-    const apiKey = Deno.env.get('GEMINI_COURSE_TUTOR_API_KEY');
-    const systemPrompt = `You are a professional academic tutor for this course.
-    Your goal is to provide high-quality, conversational tutoring.
-    Use the provided course context to answer student questions.
-
-    Key Tutoring Principles:
-    1. Conversational Style: Be encouraging, clear, and professional.
-    2. Explanations over answers: Don't just provide direct answers; explain the underlying concepts.
-    3. Scaffolding: Provide hints and guide the student towards finding the answer themselves.
-    4. Follow-up: Always ask a relevant follow-up question to deepen the student's understanding.
-
-    If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
-
-    Course Context:
-    ${context.substring(0, 15000)}`;
-
-    return callGemini(apiKey, message, systemPrompt, history);
-}
-
-/**
- * Feature 6: Knowledge Base Indexing (Chunking & Embedding)
- */
-async function handleIndexCourse(email, role, payload, supabase) {
-    const { course_id } = payload;
-    if (!course_id) throw new Error('course_id is required');
-
-    // 1. Idempotency: Delete existing embeddings for this course before re-indexing
-    const { error: deleteError } = await supabase.from('material_embeddings').delete().eq('course_id', course_id);
-    if (deleteError) throw new Error(`Failed to clear existing index: ${deleteError.message}`);
-
-    // 2. Fetch all materials and lessons for the course
-    const [{ data: materials }, { data: lessons }] = await Promise.all([
-        supabase.from('materials').select('id, title, description').eq('course_id', course_id),
-        supabase.from('lessons').select('id, title, content').eq('course_id', course_id)
-    ]);
-
-    const chunks = [];
-
-    materials?.forEach(m => {
-        chunks.push({
-            material_id: m.id,
-            course_id: course_id,
-            content: `Material Title: ${m.title}\nDescription: ${m.description}`,
-            metadata: { type: 'material', title: m.title }
-        });
-    });
-
-    lessons?.forEach(l => {
-        // Simple chunking: if content is large, split it. For now, we take whole lesson or chunks of 2000 chars
-        const content = l.content || '';
-        const chunkSize = 2000;
-        for (let i = 0; i < content.length; i += chunkSize) {
-            chunks.push({
-                lesson_id: l.id,
-                course_id: course_id,
-                content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-                metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
-            });
-        }
-    });
-
-    if (chunks.length === 0) {
-        return new Response(JSON.stringify({ message: 'No content to index for this course.' }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 200,
-        });
-    }
-
-    const embeddingApiKey = Deno.env.get('GEMINI_EMBEDDING_API_KEY');
-
-    // Process in batches of 10 to avoid Gemini/Supabase limits
-    const batchSize = 10;
-    for (let i = 0; i < chunks.length; i += batchSize) {
-        const batch = chunks.slice(i, i + batchSize);
-        const embeddings = await generateBatchEmbeddings(embeddingApiKey, batch.map(c => c.content));
-
-        const records = batch.map((chunk, idx) => ({
-            ...chunk,
-            embedding: embeddings[idx]
-        }));
-
-        const { error } = await supabase.from('material_embeddings').insert(records);
-        if (error) throw error;
-    }
-
-    return new Response(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200,
-    });
-}
-
-/**
- * Gemini Embedding Generator
- */
-async function generateEmbedding(apiKey, text) {
-    if (!apiKey) throw new Error('GEMINI_EMBEDDING_API_KEY not configured');
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: "models/text-embedding-004",
-            content: { parts: [{ text }] }
-        })
-    });
-    if (!response.ok) throw new Error(`Embedding API Error: ${await response.text()}`);
-    const data = await response.json();
-    return data.embedding.values;
-}
-
-async function generateBatchEmbeddings(apiKey, texts) {
-    if (!apiKey) throw new Error('GEMINI_EMBEDDING_API_KEY not configured');
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            requests: texts.map(text => ({
-                model: "models/text-embedding-004",
-                content: { parts: [{ text }] }
-            }))
-        })
-    });
-    if (!response.ok) throw new Error(`Batch Embedding API Error: ${await response.text()}`);
-    const data = await response.json();
-    return data.embeddings.map(e => e.values);
-}
-
-/**
- * Feature 2: Assessment Generator
- */
-async function handleAssessmentGenerator(email, role, payload, supabase) {
-    const { topic, type, count, difficulty, rubrics } = payload;
-    const apiKey = Deno.env.get('GEMINI_ASSESSMENT_API_KEY');
-
-    const prompt = `Generate a ${type} with ${count} questions about "${topic}".
-    Difficulty level: ${difficulty}.
-    ${rubrics ? `Follow these rubrics: ${rubrics}` : ''}
-    Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
-    Wrap your JSON response in \`\`\`json [CODE] \`\`\` markers.`;
-
-    const systemPrompt = `You are an expert curriculum designer and assessment generator.
-    Generating for Teacher: ${email}
-    Role: ${role}
-    You output only valid JSON.`;
-    return callGemini(apiKey, prompt, systemPrompt);
-}
-
-/**
- * Feature 3: Grading Assistant
- */
-async function handleGradingAssistant(email, role, payload, supabase) {
-    const { assignment_title, student_submission, rubric, questions } = payload;
-    const apiKey = Deno.env.get('GEMINI_GRADING_API_KEY');
-
-    const prompt = `Assignment: ${assignment_title}
-    Rubric: ${rubric}
-    Questions: ${JSON.stringify(questions)}
-    Student Work: ${student_submission}
-
-    Provide a detailed critique, suggested scores per question, and overall feedback for the student.`;
-
-    const systemPrompt = `You are a fair and insightful teaching assistant.
-    Assisting Teacher: ${email}
-    Role: ${role}
-    Help the teacher grade by providing insights based on the rubric.`;
-    return callGemini(apiKey, prompt, systemPrompt);
-}
-
-/**
- * Feature 4: Role-based Analytics
- */
-async function handleAnalyticsAI(email, role, payload, supabase) {
-    const { analytics_data, question } = payload;
-    const apiKey = Deno.env.get('GEMINI_ANALYTICS_API_KEY');
-
-    const prompt = `My Role: ${role}
-    My Identity: ${email}
-    Analytics Data: ${JSON.stringify(analytics_data)}
-    Question: ${question}
-
-    Analyze the data and provide actionable insights, trends, and risk predictions.`;
-
-    const systemPrompt = "You are a senior educational data analyst. You provide deep insights from LMS performance data.";
-    return callGemini(apiKey, prompt, systemPrompt);
-}
-
-/**
- * Feature 5: LMS UI Feature Assistant (Kofi AI)
- */
-async function handlePlatformAssistant(payload) {
-    const { message, history = [] } = payload;
-    const apiKey = Deno.env.get('GEMINI_PLATFORM_API_KEY');
-
-    const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
-    Your mission is to help visitors and users understand and navigate the platform's features.
-
-    Key Platform Features you should highlight when relevant, with the following details:
-    1. Proctored Assessments: Maintain absolute academic integrity with our event-driven anti-cheat monitoring system. It features real-time integrity alert streams, webcam snapshot captures with face-detection, tab-switch tracking, copy-paste blockages, and browser focus tracking. It uploads recordings and events chunk-by-chunk for extensive proctoring logs and comprehensive violation reports.
-    2. Live Virtual Classes: Engage in real-time learning with seamlessly integrated virtual meeting tools, automated localized timezone-aligned attendance tracking (visualized as attendance heatmaps), and secure, on-demand meeting recording playbacks.
-    3. Verified Certification: Earn secure, verifiable, and high-fidelity PDF certificates of completion featuring elegant golden borders, watermark designs, registrar digital signatures, a unique Verification ID, and an embedded QR code for real-time validation against our secure database.
-    4. Advanced Analytics: Access highly detailed visual reports using Chart.js radar charts for multi-dimensional student profiling, GitHub-style 7-row student attendance heatmaps, AI-driven automated grading and feedback insights, and predictive models to identify student academic risks early.
-    5. Interactive Discussions: Collaborate deeply with course-specific real-time discussion boards supporting nested reply threads, post view-count tracking (recording views of posts currently in the viewport), direct file attachment uploads, and official Staff badges to recognize teachers and admins.
-
-    Important Constraints:
-    - You have NO access to personal student data, grades, or private course content.
-    - You cannot perform administrative actions like enrollment, account deletion, or password resets.
-    - For support issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
-    - Keep responses professional, friendly, and concise.
-    - Use markdown for formatting (bullet points for features, bold for emphasis).`;
-
-    return callGemini(apiKey, message, systemPrompt, history);
-}
-
-/**
- * Generic Gemini API Caller
- */
-async function callGemini(apiKey, prompt, systemInstruction, history = []) {
-    if (!apiKey) throw new Error('Gemini API Key not configured in environment');
-
-    const contents = [
-        ...history.map(h => ({
-            role: h.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: h.content }]
-        })),
-        { role: 'user', parts: [{ text: prompt }] }
-    ];
-
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents,
-            system_instruction: { parts: [{ text: systemInstruction }] },
-            generationConfig: {
-                temperature: 0.7,
-                topP: 0.8,
-                topK: 40,
-                maxOutputTokens: 2048,
-            }
-        })
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Gemini API Error:', errorText);
-        throw new Error(`Gemini API returned ${response.status}: ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    // Standardize response format for LMS client
-    const aiResponse = {
-        content: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.',
-        raw: data
-    };
-
-    return new Response(JSON.stringify(aiResponse), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200,
-    });
-}
