@@ -744,7 +744,7 @@ async function showAssignmentForm(assignmentId) {
         }
     });
     // Signal AntiCheat that assignment session has started
-    if (window.AntiCheat && AntiCheat.state.isActive) {
+    if (window.AntiCheat && AntiCheat.state.attemptId) {
         await AntiCheat.start();
     }
   }
@@ -2688,7 +2688,7 @@ async function startQuiz(quizId) {
     }
 
     // Finalize synchronization: Signal AntiCheat that assessment is truly active
-    if (window.AntiCheat && AntiCheat.state.isActive) {
+    if (window.AntiCheat && AntiCheat.state.attemptId) {
         await AntiCheat.start();
     }
 

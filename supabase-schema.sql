@@ -3569,9 +3569,10 @@ BEGIN
         (lv.last_act > NOW() - INTERVAL ''2 minutes'')::BOOLEAN as is_online
     FROM latest_violations lv
     JOIN users u ON lv.user_email = u.email
-    LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = 'quiz'
-    LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = 'assignment'
-    ORDER BY lv.last_act DESC;
+    LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = ''quiz''
+    LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = ''assignment''
+    ORDER BY lv.last_act DESC'
+    USING NOW();
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
