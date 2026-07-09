@@ -55,7 +55,7 @@ class AIManager {
      * 2. Assessment Generator
      */
     static async generateAssessment(params) {
-        // params: { topic, type, count, difficulty, rubrics }
+        // params: { topic, type, count, difficulty, rubrics, course_id }
         const response = await this._invoke('generate_assessment', params);
         return this._extractJSON(response.content);
     }
@@ -92,7 +92,7 @@ class AIManager {
      * 3. Grading Assistant
      */
     static async getGradingInsights(params) {
-        // params: { assignment_title, student_submission, rubric, questions }
+        // params: { assignment_id, course_id, assignment_title, student_submission, rubric, questions }
         const response = await this._invoke('grading', params);
         return response.content;
     }
@@ -100,10 +100,11 @@ class AIManager {
     /**
      * 4. Role-based Analytics
      */
-    static async analyzeAnalytics(question, analyticsData) {
+    static async analyzeAnalytics(question, analyticsData, options = {}) {
         const user = await window.SessionManager.getCurrentUser();
         const response = await this._invoke('analytics', {
             user_email: user?.email,
+            course_id: options.courseId || null,
             question,
             analytics_data: analyticsData
         });
