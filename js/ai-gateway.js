@@ -71,19 +71,32 @@ class AIManager {
      * Robust JSON extraction from LLM response
      */
     static _extractJSON(text) {
+        if (!text) throw new Error("AI response is empty");
+
         try {
-            // Attempt 1: Direct parse
-            return JSON.parse(text);
+            // Attempt 1: Direct parse (stripping potential whitespace)
+            return JSON.parse(text.trim());
         } catch (e) {
-            // Attempt 2: Find json block in markdown
-            const match = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-            if (match) {
-                try {
-                    return JSON.parse(match[1] || match[0]);
-                } catch (e2) {
-                    console.error("Partial JSON extraction failed", e2);
+            // Attempt 2: Find json block in markdown or raw array/object structure
+            const patterns = [
+                /```json\s*([\s\S]*?)\s*```/, // Markdown JSON block
+                /```\s*([\s\S]*?)\s*```/,     // Generic code block
+                /(\[\s*\{[\s\S]*\}\s*\])/,    // Raw array of objects
+                /(\{\s*".*"\s*:[\s\S]*\})/    // Raw single object
+            ];
+
+            for (const pattern of patterns) {
+                const match = text.match(pattern);
+                if (match) {
+                    try {
+                        const jsonStr = (match[1] || match[0]).trim();
+                        return JSON.parse(jsonStr);
+                    } catch (e2) {
+                        continue; // Try next pattern
+                    }
                 }
             }
+            console.error("JSON Extraction failed for text:", text);
             throw new Error("Could not parse AI response as valid JSON");
         }
     }
@@ -175,14 +188,19 @@ class AIManager {
         const sendBtn = container.querySelector('.ai-send-btn');
         const messagesArea = container.querySelector('.ai-chat-messages');
 
-        const appendMessage = (role, content) => {
+        const appendMessage = (role, content, isTrustedHtml = false) => {
             const msgDiv = document.createElement('div');
             msgDiv.className = `ai-msg ${role} mb-15 ${role === 'user' ? 'text-right' : ''}`;
 
-            // Format content (simple markdown-like replacement)
-            const formatted = content
-                .replace(/\n/g, '<br>')
-                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            let formatted;
+            if (isTrustedHtml) {
+                formatted = content;
+            } else {
+                // Escape HTML and format content (simple markdown-like replacement)
+                formatted = window.escapeHtml(content)
+                    .replace(/\n/g, '<br>')
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            }
 
             msgDiv.innerHTML = `
                 <div class="p-10 border-radius-md small text-left" style="background: ${role === 'user' ? 'var(--p)' : '#fff'}; color: ${role === 'user' ? '#fff' : 'var(--text)'}; border: 1px solid #e2e8f0; display: inline-block; max-width: 85%">
@@ -216,7 +234,8 @@ class AIManager {
                 appendMessage('assistant', response);
             } catch (e) {
                 typingDiv.remove();
-                appendMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+                const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
+                appendMessage('assistant', `<span style="color: #ef4444">⚠️ Error: ${errorMessage}</span>`, true);
                 console.error(e);
             } finally {
                 input.disabled = false;
