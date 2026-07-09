@@ -1,6 +1,14 @@
 -- Enterprise Grade Course Analytics Insights
 -- Comprehensive audit and implementation of centralized course analytics with hardened security and correct logic
 
+-- Ensure semester column exists in courses table
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'courses' AND column_name = 'semester') THEN
+        ALTER TABLE courses ADD COLUMN semester VARCHAR(100);
+    END IF;
+END $$;
+
 -- Internal helper to verify teacher ownership (not exposed as RPC)
 -- This ensures all SECURITY DEFINER functions below are safe.
 CREATE OR REPLACE FUNCTION _check_course_teacher(p_course_id UUID)

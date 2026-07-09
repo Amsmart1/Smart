@@ -555,6 +555,7 @@ BEGIN
     ALTER TABLE users ADD CONSTRAINT users_email_check CHECK (validate_email_format(email));
 
     ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS resolution_notes TEXT;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS semester VARCHAR(100);
 
     -- Maintenance ID constraint cleanup for production-readiness
     ALTER TABLE maintenance DROP CONSTRAINT IF EXISTS maintenance_id_check;
