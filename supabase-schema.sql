@@ -551,6 +551,7 @@ CREATE TABLE IF NOT EXISTS material_embeddings (
 CREATE INDEX IF NOT EXISTS idx_material_embeddings_vector ON material_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- RPC for Semantic Search
+-- RPC for Semantic Search (Internal RAG Use)
 CREATE OR REPLACE FUNCTION match_materials (
   query_embedding vector(768),
   match_threshold float,
@@ -564,8 +565,29 @@ RETURNS TABLE (
   similarity float
 )
 LANGUAGE plpgsql
+SECURITY DEFINER
 AS $$
+DECLARE
+    v_is_authorized BOOLEAN;
+    v_email VARCHAR;
 BEGIN
+  -- Enterprise Grade Security: Ensure the caller has access to the course
+  -- This RPC is intended for the AI Gateway (internal) but secured against direct misuse.
+  v_email := get_auth_email();
+
+  -- Use the same logic as the AI Tutor authorization
+  IF is_admin() THEN
+      v_is_authorized := true;
+  ELSIF is_teacher() THEN
+      SELECT EXISTS(SELECT 1 FROM courses WHERE id = p_course_id AND teacher_email = v_email) INTO v_is_authorized;
+  ELSE
+      SELECT EXISTS(SELECT 1 FROM enrollments WHERE course_id = p_course_id AND student_email = v_email) INTO v_is_authorized;
+  END IF;
+
+  IF NOT v_is_authorized THEN
+      RAISE EXCEPTION 'Access Denied: match_materials authorization failed';
+  END IF;
+
   RETURN QUERY
   SELECT
     me.id,
