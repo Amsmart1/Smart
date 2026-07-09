@@ -16,7 +16,13 @@
                 title: 'AI Tutor Verification',
                 welcomeMessage: 'Testing the AI Tutor component UI.',
                 onSend: async (msg) => {
+                    if (msg.toLowerCase().includes('markdown')) {
+                        return "Here is some markdown:\n\n* Item 1\n* Item 2\n\nCheck out [SmartLMS](https://example.com) for more info. **Bold text** here.";
+                    }
                     return "Simulated response for: " + msg;
+                },
+                onClear: () => {
+                    console.log('Chat history cleared');
                 }
             });
         });
