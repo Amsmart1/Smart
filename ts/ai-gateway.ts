@@ -93,9 +93,16 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('AI Gateway Error:', error.message);
-    return new Response(JSON.stringify({ error: error.message }), {
+    const status = error.message.includes('Authentication') ? 401 :
+                   error.message.includes('Unauthorized') || error.message.includes('Access Denied') ? 403 : 500;
+
+    return new Response(JSON.stringify({
+        error: error.message,
+        timestamp: new Date().toISOString(),
+        type: 'ai_gateway_error'
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500,
+      status: status,
     });
   }
 })
@@ -119,6 +126,10 @@ async function handleCourseTutor(email, role, payload, supabase) {
         p_course_id: course_id
     });
 
+    if (matchError) {
+        console.warn('Semantic search failed, falling back to basic retrieval:', matchError.message);
+    }
+
     let context = '';
     if (matches && matches.length > 0) {
         context = matches.map(m => m.content).join('\n---\n');
@@ -138,9 +149,16 @@ async function handleCourseTutor(email, role, payload, supabase) {
 
     const apiKey = Deno.env.get('GEMINI_COURSE_TUTOR_API_KEY');
     const systemPrompt = `You are a professional academic tutor for this course.
-    Use the following course materials to answer the student's questions.
+    Your goal is to provide high-quality, conversational tutoring.
+    Use the provided course context to answer student questions.
+
+    Key Tutoring Principles:
+    1. Conversational Style: Be encouraging, clear, and professional.
+    2. Explanations over answers: Don't just provide direct answers; explain the underlying concepts.
+    3. Scaffolding: Provide hints and guide the student towards finding the answer themselves.
+    4. Follow-up: Always ask a relevant follow-up question to deepen the student's understanding.
+
     If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
-    Encourage critical thinking with follow-up questions.
 
     Course Context:
     ${context.substring(0, 15000)}`;
@@ -155,7 +173,11 @@ async function handleIndexCourse(email, role, payload, supabase) {
     const { course_id } = payload;
     if (!course_id) throw new Error('course_id is required');
 
-    // Fetch all materials and lessons for the course
+    // 1. Idempotency: Delete existing embeddings for this course before re-indexing
+    const { error: deleteError } = await supabase.from('material_embeddings').delete().eq('course_id', course_id);
+    if (deleteError) throw new Error(`Failed to clear existing index: ${deleteError.message}`);
+
+    // 2. Fetch all materials and lessons for the course
     const [{ data: materials }, { data: lessons }] = await Promise.all([
         supabase.from('materials').select('id, title, description').eq('course_id', course_id),
         supabase.from('lessons').select('id, title, content').eq('course_id', course_id)
