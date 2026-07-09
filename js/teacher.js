@@ -3817,7 +3817,6 @@ window.renderQuizzes = renderQuizzes;
 window.renderLiveClasses = renderLiveClasses;
 window.renderGradeBook = renderGradeBook;
 window.renderAnalytics = renderAnalytics;
-window.renderCalendar = renderCalendar;
 window.renderHelp = renderHelp;
 window.renderAntiCheat = renderAntiCheat;
 window.renderSettings = renderSettings;
@@ -3852,6 +3851,28 @@ window.shuffleQuizQuestions = shuffleQuizQuestions;
 window.addQuestionField = addQuestionField;
 window.updateAssignmentTotalPoints = updateAssignmentTotalPoints;
 
+// Enterprise-grade safety: Ensure escape helpers are available even if core.js load is deferred
+const _safeEscapeAttr = (s) => {
+    if (typeof window.escapeAttr === 'function') return window.escapeAttr(s);
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+
+const _safeEscapeHtml = (s) => {
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(s);
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+};
+
+// Export analytics sub-functions to window for HTML event handlers
+window.renderAnalyticsDashboard = renderAnalyticsDashboard;
+window.renderAnalyticsUI = renderAnalyticsUI;
+window.renderAssessmentRows = renderAssessmentRows;
+window.renderInterventionRows = renderInterventionRows;
+window.initTableInteractivity = initTableInteractivity;
+window.renderAnalyticsCharts = renderAnalyticsCharts;
+window.renderAttendanceHeatmap = renderAttendanceHeatmap;
+
 async function renderAnalytics() {
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
@@ -3874,11 +3895,11 @@ async function renderAnalytics() {
         <div class="flex gap-10 flex-wrap">
           <select id="analyticsSemesterSelect" class="m-0" style="width:150px">
             <option value="">All Semesters</option>
-            ${semesters.map(s => `<option value="${escapeAttr(s.semester)}">${escapeHtml(s.semester)}</option>`).join('')}
+            ${(semesters || []).map(s => `<option value="${_safeEscapeAttr(s.semester)}">${_safeEscapeHtml(s.semester)}</option>`).join('')}
           </select>
           <select id="analyticsCourseSelect" class="m-0" style="width:200px">
             <option value="">All My Courses</option>
-            ${courses.map(c => `<option value="${c.id}" data-semester="${escapeAttr(c.semester || '')}">${escapeHtml(c.title)}</option>`).join('')}
+            ${(courses || []).map(c => `<option value="${c.id}" data-semester="${_safeEscapeAttr(c.semester || '')}">${_safeEscapeHtml(c.title)}</option>`).join('')}
           </select>
           <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
         </div>
@@ -3888,6 +3909,7 @@ async function renderAnalytics() {
 
     const courseSelect = document.getElementById('analyticsCourseSelect');
     const semSelect = document.getElementById('analyticsSemesterSelect');
+    if (!courseSelect || !semSelect) return;
 
     const updateFilter = () => renderAnalyticsDashboard(courseSelect.value, semSelect.value);
 
@@ -3901,7 +3923,7 @@ async function renderAnalytics() {
             opt.style.display = (!selectedSem || courseSem === selectedSem) ? '' : 'none';
         });
         // If current selected course is hidden, reset to All
-        if (courseSelect.selectedOptions[0]?.style.display === 'none') {
+        if (courseSelect.selectedOptions && courseSelect.selectedOptions[0]?.style.display === 'none') {
             courseSelect.value = '';
         }
         updateFilter();
@@ -4157,6 +4179,10 @@ function initTableInteractivity(data) {
 }
 
 function renderAnalyticsCharts(students, assessments) {
+  if (typeof Chart === 'undefined') {
+      console.warn('Chart.js library not loaded. Analytics visualizations disabled.');
+      return;
+  }
   const perfCtx = document.getElementById('performanceChart')?.getContext('2d');
   const distCtx = document.getElementById('distributionChart')?.getContext('2d');
   const studCtx = document.getElementById('studentChart')?.getContext('2d');
