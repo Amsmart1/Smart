@@ -244,6 +244,9 @@ const LandingUI = {
                     placeholder: 'Ask about platform features...',
                     onSend: async (msg) => {
                         return await AIManager.askKofi(msg);
+                    },
+                    onClear: () => {
+                        AIManager.clearHistory('kofi');
                     }
                 });
             }
