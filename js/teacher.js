@@ -24,6 +24,8 @@ async function renderDashboard() {
   if (!content) return;
   clearActiveCountdowns();
 
+  UI.showLoading('pageContent', 'Initializing analytics engine...');
+
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
@@ -4111,7 +4113,10 @@ async function renderAnalytics() {
 
     content.innerHTML = `
       <div class="card mb-20 flex-between flex-wrap gap-15">
-        <h2 class="m-0">Course Analytics & Insights</h2>
+        <div>
+            <h2 class="m-0">Course Analytics & Insights</h2>
+            <p class="tiny text-muted mt-5">Enterprise-grade performance monitoring and interventions.</p>
+        </div>
         <div class="flex gap-10 flex-wrap">
           <select id="analyticsSemesterSelect" class="m-0" style="width:150px">
             <option value="">All Semesters</option>
@@ -4121,8 +4126,12 @@ async function renderAnalytics() {
             <option value="">All My Courses</option>
             ${(courses || []).map(c => `<option value="${_safeEscapeAttr(c.id)}" data-semester="${_safeEscapeAttr(c.semester || '')}">${_safeEscapeHtml(c.title)}</option>`).join('')}
           </select>
-          <button class="button secondary w-auto small" onclick="window.clearAnalyticsFilters()">🧹 Clear</button>
-          <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
+          <button class="button secondary w-auto small" onclick="window.clearAnalyticsFilters()" title="Reset Filters">🧹 Clear</button>
+          <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)" title="Refresh Data">🔄 Refresh</button>
+          <div class="flex gap-5 border-left pl-10 ml-5">
+              <button class="button secondary w-auto small" onclick="window.exportAnalyticsData('csv')" style="background:#f0fdf4; color:#166534; border-color:#bbf7d0">CSV</button>
+              <button class="button secondary w-auto small" onclick="window.exportAnalyticsData('pdf')" style="background:#fef2f2; color:#991b1b; border-color:#fecaca">PDF</button>
+          </div>
         </div>
       </div>
       <div id="analyticsDashboard"></div>
@@ -4171,11 +4180,15 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
     }
   }
 
-  dashboard.innerHTML = '<div class="flex-center p-40"><div class="loading-spinner"></div></div>';
+  UI.showLoading('analyticsDashboard', 'Aggregating class insights...');
 
   try {
     const user = await SessionManager.getCurrentUser();
     if (!user) return;
+
+    if (bypassCache) {
+        TeacherState.analyticsCache.delete(cacheKey);
+    }
 
     const [summary, students, assessments, gaps, heatmapData] = await Promise.all([
       SupabaseDB.getCourseAnalyticsSummary(user.email, courseId || null, semester || null),
@@ -4187,13 +4200,35 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
 
     if (renderId !== window.currentRenderId) return;
 
-    let processedData = { summary, students, assessments, gaps, heatmapData, semester };
+    // Standardize empty data
+    const safeSummary = Array.isArray(summary) ? summary : [];
+    const safeStudents = Array.isArray(students) ? students : [];
+    const safeAssessments = Array.isArray(assessments) ? assessments : [];
+    const safeGaps = gaps || { low_performing_students: [], course_average: 0 };
+    const safeHeatmap = heatmapData || {};
+
+    let processedData = {
+        summary: safeSummary,
+        students: safeStudents,
+        assessments: safeAssessments,
+        gaps: safeGaps,
+        heatmapData: safeHeatmap,
+        semester,
+        courseId
+    };
 
     TeacherState.analyticsCache.set(cacheKey, { data: processedData, timestamp: now });
+    TeacherState.lastAnalyticsData = processedData; // Keep reference for exports
     renderAnalyticsUI(processedData);
   } catch (error) {
-    console.error('Dashboard Error:', error);
-    dashboard.innerHTML = `<div class="card danger-border"><h3>Error Loading Analytics</h3><p>${escapeHtml(error.message)}</p></div>`;
+    console.error('Analytics Dashboard Error:', error);
+    dashboard.innerHTML = `
+      <div class="card danger-border animate-fade-in">
+        <h3 class="danger-text">Error Synchronizing Insights</h3>
+        <p class="small text-muted">${escapeHtml(error.message)}</p>
+        <button class="button w-auto mt-10" onclick="renderAnalyticsDashboard('${courseId || ''}', '${semester || ''}', true)">Retry Sync</button>
+      </div>
+    `;
   }
 }
 
@@ -4379,43 +4414,197 @@ function initTableInteractivity(data) {
         if (body) body.innerHTML = renderInterventionRows(filtered);
     };
 
-    if (assessSearch) assessSearch.addEventListener('input', debounce(updateAssessTable, 300));
-    if (interSearch) interSearch.addEventListener('input', debounce(updateInterTable, 300));
+    // Remove existing listeners to prevent duplication
+    const newAssessSearch = assessSearch.cloneNode(true);
+    assessSearch.parentNode.replaceChild(newAssessSearch, assessSearch);
+    newAssessSearch.addEventListener('input', debounce(updateAssessTable, 300));
 
-    // Sort logic
+    const newInterSearch = interSearch.cloneNode(true);
+    interSearch.parentNode.replaceChild(newInterSearch, interSearch);
+    newInterSearch.addEventListener('input', debounce(updateInterTable, 300));
+
+    // Sort logic with hardening
     document.querySelectorAll('.sortable').forEach(th => {
-        th.addEventListener('click', () => {
-            const table = th.closest('table');
+        const newTh = th.cloneNode(true);
+        th.parentNode.replaceChild(newTh, th);
+
+        newTh.addEventListener('click', () => {
+            const table = newTh.closest('table');
             const tbody = table.querySelector('tbody');
             const tableId = tbody.id;
             const isAssess = tableId === 'assessmentTableBody';
-            const prop = th.dataset.sort;
-            const list = isAssess ? data.assessments : (data.gaps?.low_performing_students || []);
+            const prop = newTh.dataset.sort;
 
-            const ascending = th.classList.contains('asc');
+            // Get local list reference
+            const list = isAssess ? [...data.assessments] : [...(data.gaps?.low_performing_students || [])];
+
+            const ascending = newTh.classList.contains('asc');
             table.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
-            // Sort in-place on the list (which is a reference to the array in data object)
-            // Note: Since we want charts to remain chronological, we should be careful.
-            // However, charts are rendered BEFORE interactivity, and table updates only re-render table rows.
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
-                if (v1 === null || v1 === undefined) return 1;
-                if (v2 === null || v2 === undefined) return -1;
+                if (v1 === null || v1 === undefined) return ascending ? 1 : -1;
+                if (v2 === null || v2 === undefined) return ascending ? -1 : 1;
+
+                // Handle mixed numeric strings and numbers
+                const n1 = parseFloat(v1), n2 = parseFloat(v2);
+                if (!isNaN(n1) && !isNaN(n2)) {
+                    return ascending ? (n1 - n2) : (n2 - n1);
+                }
 
                 if (typeof v1 === 'string' && typeof v2 === 'string') {
-                    return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
+                    return ascending ? v1.localeCompare(v2) : v2.localeCompare(v1);
                 }
-                return ascending ? (v2 - v1) : (v1 - v2);
+                return 0;
             });
 
-            th.classList.toggle('asc', !ascending);
-            th.classList.toggle('desc', ascending);
+            newTh.classList.toggle('asc', !ascending);
+            newTh.classList.toggle('desc', ascending);
 
-            if (isAssess) updateAssessTable(); else updateInterTable();
+            if (isAssess) {
+                const term = newAssessSearch.value.toLowerCase();
+                const filtered = list.filter(a =>
+                    a.title.toLowerCase().includes(term) || (a.course_title || '').toLowerCase().includes(term)
+                );
+                tbody.innerHTML = renderAssessmentRows(filtered);
+            } else {
+                const term = newInterSearch.value.toLowerCase();
+                const filtered = list.filter(s =>
+                    s.full_name.toLowerCase().includes(term) || s.email.toLowerCase().includes(term)
+                );
+                tbody.innerHTML = renderInterventionRows(filtered);
+            }
         });
     });
 }
+
+window.exportAnalyticsData = async (type) => {
+    const data = TeacherState.lastAnalyticsData;
+    if (!data) return UI.showNotification('No data available to export', 'warn');
+
+    UI.showNotification('Preparing export...', 'info');
+    const headers = ['Title', 'Course', 'Type', 'Avg Score %', 'Submission Count'];
+    const rows = data.assessments.map(a => [
+        a.title,
+        a.course_title || 'N/A',
+        a.type ? a.type.toUpperCase() : 'N/A',
+        a.avg_score ? parseFloat(a.avg_score).toFixed(1) : '0.0',
+        a.submission_count || 0
+    ]);
+
+    if (type === 'csv') {
+        Exporter.csv('teacher_analytics_report.csv', headers, rows);
+    } else {
+        await Exporter.pdf('teacher_analytics_report.pdf', 'Course Assessment Performance Report', headers, rows);
+    }
+};
+
+window.viewStudentDetails = async (email) => {
+    const renderId = window.currentRenderId;
+    const user = await SessionManager.getCurrentUser();
+
+    // Use a lightweight loading indicator for the modal instead of full page reload
+    UI.showNotification('Loading student profile...', 'info');
+
+    try {
+        const [student, comparison] = await Promise.all([
+            SupabaseDB.getUser(email),
+            SupabaseDB.getStudentPerformanceComparison()
+        ]);
+
+        if (renderId !== window.currentRenderId) return;
+
+        const studentStatsList = (comparison || []).filter(s => s.email === email);
+        const studentStats = studentStatsList[0]; // Reference for metadata
+
+        // Aggregate if student is in multiple courses
+        const overallAvg = studentStatsList.length > 0
+            ? studentStatsList.reduce((sum, s) => sum + (parseFloat(s.overall_average) || 0), 0) / studentStatsList.length
+            : 0;
+
+        const { data: violations } = await SupabaseDB.getViolations(null, email, user.email, { all: true });
+        const { data: attendance } = await SupabaseDB.getAttendance(null, email, { all: true });
+
+        const modalHtml = `
+            <div class="student-details-modal">
+                <div class="stats-grid mb-20" style="grid-template-columns: repeat(3, 1fr)">
+                    <div class="stat-card">
+                        <h4>Overall Average</h4>
+                        <div class="value">${overallAvg.toFixed(1)}%</div>
+                        <div class="tiny text-muted">Across ${studentStatsList.length} course(s)</div>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Attendance</h4>
+                        <div class="value">${attendance.length}</div>
+                        <div class="tiny text-muted">Sessions attended</div>
+                    </div>
+                    <div class="stat-card danger">
+                        <h4>Security Alerts</h4>
+                        <div class="value">${violations.filter(v => v.severity !== 'INFO').length}</div>
+                    </div>
+                </div>
+
+                <div class="card mb-20">
+                    <h3 class="m-0 mb-15">Category Performance</h3>
+                    <div style="height: 250px">
+                        <canvas id="studentTrendChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 class="m-0 mb-15">Recent Activity Log</h3>
+                    <div class="p-0" style="max-height: 250px; overflow-y: auto;">
+                        <table class="m-0">
+                            <thead><tr><th>Activity</th><th>Time</th><th>Details</th></tr></thead>
+                            <tbody>
+                                ${attendance.slice(0, 10).map(a => `
+                                    <tr>
+                                        <td><span class="badge badge-active tiny">CLASS</span></td>
+                                        <td class="tiny">${new Date(a.join_time).toLocaleString()}</td>
+                                        <td class="small">${escapeHtml(a.live_classes?.title || 'Live Session')}</td>
+                                    </tr>
+                                `).join('') || '<tr><td colspan="3" class="empty">No recent activity found.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        UI.showModal(`Student Profile: ${student?.full_name || email}`, modalHtml, { maxWidth: '900px' });
+
+        // Render Chart in Modal
+        const ctx = document.getElementById('studentTrendChart')?.getContext('2d');
+        if (ctx && studentStatsList.length > 0) {
+            const labels = studentStatsList.map(s => s.course_title.substring(0, 15) + (s.course_title.length > 15 ? '...' : ''));
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Assignments Avg %',
+                        data: studentStatsList.map(s => s.avg_assignment_grade || 0),
+                        backgroundColor: '#667eea',
+                        borderRadius: 4
+                    }, {
+                        label: 'Quizzes Avg %',
+                        data: studentStatsList.map(s => s.avg_quiz_grade || 0),
+                        backgroundColor: '#9f7aea',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true, max: 100 } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+    } catch (e) {
+        console.error('View Student Error:', e);
+        UI.showNotification('Error loading student details: ' + e.message, 'error');
+    }
+};
 
 function renderAnalyticsCharts(students, assessments) {
   if (typeof Chart === 'undefined') {
