@@ -3959,7 +3959,21 @@ function renderAnalyticsUI(data) {
 
   const { summary, students, assessments, gaps, heatmapData } = data;
   const totalStudents = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
-  const avgScore = summary.length > 0 ? (summary.reduce((sum, c) => sum + (parseFloat(c.avg_assignment_score) || 0) + (parseFloat(c.avg_quiz_score) || 0), 0) / (summary.length * 2)).toFixed(1) : 0;
+
+  // Calculate average performance across all categories that actually have scores
+  let totalPoints = 0;
+  let categoriesCount = 0;
+  summary.forEach(c => {
+      if (c.avg_assignment_score !== null) {
+          totalPoints += parseFloat(c.avg_assignment_score);
+          categoriesCount++;
+      }
+      if (c.avg_quiz_score !== null) {
+          totalPoints += parseFloat(c.avg_quiz_score);
+          categoriesCount++;
+      }
+  });
+  const avgScore = categoriesCount > 0 ? (totalPoints / categoriesCount).toFixed(1) : 0;
 
   dashboard.innerHTML = `
     <div class="stats-grid mb-20 animate-fade-in">
@@ -4244,7 +4258,8 @@ function renderAttendanceHeatmap(containerId, heatmapData) {
     // Render 53 weeks to ensure full year coverage
     const totalDays = 53 * 7;
     for (let i = 0; i < totalDays; i++) {
-        const dateStr = day.toISOString().split('T')[0];
+        // Use local date parts to avoid timezone shifts common with toISOString()
+        const dateStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
         const count = heatmapData[dateStr] || 0;
         const isCurrentYear = day.getFullYear() === year;
 
