@@ -3873,6 +3873,17 @@ window.initTableInteractivity = initTableInteractivity;
 window.renderAnalyticsCharts = renderAnalyticsCharts;
 window.renderAttendanceHeatmap = renderAttendanceHeatmap;
 
+window.clearAnalyticsFilters = () => {
+    const cs = document.getElementById('analyticsCourseSelect');
+    const ss = document.getElementById('analyticsSemesterSelect');
+    if (cs) cs.value = '';
+    if (ss) ss.value = '';
+    if (cs) {
+        Array.from(cs.options).forEach(opt => opt.style.display = '');
+    }
+    renderAnalyticsDashboard('', '');
+};
+
 async function renderAnalytics() {
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
@@ -3882,12 +3893,20 @@ async function renderAnalytics() {
   try {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
+    if (!user) {
+        console.warn('Analytics: No active session found.');
+        return;
+    }
 
     const [{ data: courses }, semesters] = await Promise.all([
       SupabaseDB.getCourses(user.email, null, { all: true }),
       SupabaseDB.getTeacherSemesters(user.email)
     ]);
     if (renderId !== window.currentRenderId) return;
+
+    // Proactive caching for cross-page performance optimization
+    TeacherState.myCourses = courses || [];
+    TeacherState.myCourseIds = TeacherState.myCourses.map(c => c.id);
 
     content.innerHTML = `
       <div class="card mb-20 flex-between flex-wrap gap-15">
@@ -3901,6 +3920,7 @@ async function renderAnalytics() {
             <option value="">All My Courses</option>
             ${courses.map(c => `<option value="${c.id}" data-semester="${escapeAttr(c.semester || '')}">${escapeHtml(c.title)}</option>`).join('')}
           </select>
+          <button class="button secondary w-auto small" onclick="window.clearAnalyticsFilters()">🧹 Clear</button>
           <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
         </div>
       </div>
@@ -3954,6 +3974,8 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
 
   try {
     const user = await SessionManager.getCurrentUser();
+    if (!user) return;
+
     const [summary, students, assessments, gaps, heatmapData] = await Promise.all([
       SupabaseDB.getCourseAnalyticsSummary(user.email, courseId || null, semester || null),
       SupabaseDB.getStudentPerformanceComparison(courseId || null, semester || null),
@@ -3979,34 +4001,21 @@ function renderAnalyticsUI(data) {
   if (!dashboard) return;
 
   const { summary, students, assessments, gaps, heatmapData } = data;
-  const totalStudents = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
-
-  // Calculate average performance across all categories that actually have scores
-  let totalPoints = 0;
-  let categoriesCount = 0;
-  summary.forEach(c => {
-      if (c.avg_assignment_score !== null) {
-          totalPoints += parseFloat(c.avg_assignment_score);
-          categoriesCount++;
-      }
-      if (c.avg_quiz_score !== null) {
-          totalPoints += parseFloat(c.avg_quiz_score);
-          categoriesCount++;
-      }
-  });
-  const avgScore = categoriesCount > 0 ? (totalPoints / categoriesCount).toFixed(1) : 0;
+  const totalSeats = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
+  const uniqueStudentsCount = new Set(students.map(s => s.email)).size;
+  const avgScore = gaps?.course_average || 0;
 
   dashboard.innerHTML = `
     <div class="stats-grid mb-20 animate-fade-in">
       <div class="stat-card">
         <h4>Active Students</h4>
-        <div class="value">${totalStudents}</div>
-        <div class="tiny text-muted mt-5">Across ${summary.length} courses</div>
+        <div class="value">${uniqueStudentsCount}</div>
+        <div class="tiny text-muted mt-5">${totalSeats} seats across ${summary.length} courses</div>
       </div>
       <div class="stat-card">
         <h4>Avg Performance</h4>
-        <div class="value">${avgScore}%</div>
-        <div class="tiny text-muted mt-5">All assessments</div>
+        <div class="value">${parseFloat(avgScore).toFixed(1)}%</div>
+        <div class="tiny text-muted mt-5">Global student average</div>
       </div>
       <div class="stat-card warn">
         <h4>At Risk</h4>
@@ -4129,39 +4138,50 @@ function initTableInteractivity(data) {
     const interSearch = document.getElementById('interventionSearch');
 
     const updateAssessTable = () => {
+        if (!assessSearch) return;
         const term = assessSearch.value.toLowerCase();
         const filtered = data.assessments.filter(a =>
             a.title.toLowerCase().includes(term) || (a.course_title || '').toLowerCase().includes(term)
         );
-        document.getElementById('assessmentTableBody').innerHTML = renderAssessmentRows(filtered);
+        const body = document.getElementById('assessmentTableBody');
+        if (body) body.innerHTML = renderAssessmentRows(filtered);
     };
 
     const updateInterTable = () => {
+        if (!interSearch) return;
         const term = interSearch.value.toLowerCase();
         const filtered = (data.gaps?.low_performing_students || []).filter(s =>
             s.full_name.toLowerCase().includes(term) || s.email.toLowerCase().includes(term)
         );
-        document.getElementById('interventionTableBody').innerHTML = renderInterventionRows(filtered);
+        const body = document.getElementById('interventionTableBody');
+        if (body) body.innerHTML = renderInterventionRows(filtered);
     };
 
-    assessSearch.addEventListener('input', updateAssessTable);
-    interSearch.addEventListener('input', updateInterTable);
+    if (assessSearch) assessSearch.addEventListener('input', debounce(updateAssessTable, 300));
+    if (interSearch) interSearch.addEventListener('input', debounce(updateInterTable, 300));
 
     // Sort logic
     document.querySelectorAll('.sortable').forEach(th => {
         th.addEventListener('click', () => {
-            const tableId = th.closest('table').parentElement.nextElementSibling?.id || th.closest('table').querySelector('tbody').id;
+            const table = th.closest('table');
+            const tbody = table.querySelector('tbody');
+            const tableId = tbody.id;
             const isAssess = tableId === 'assessmentTableBody';
             const prop = th.dataset.sort;
             const list = isAssess ? data.assessments : (data.gaps?.low_performing_students || []);
 
             const ascending = th.classList.contains('asc');
-            document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
+            table.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
-                if (typeof v1 === 'string') return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
-                return ascending ? (v2 || 0) - (v1 || 0) : (v1 || 0) - (v2 || 0);
+                if (v1 === null || v1 === undefined) return 1;
+                if (v2 === null || v2 === undefined) return -1;
+
+                if (typeof v1 === 'string' && typeof v2 === 'string') {
+                    return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
+                }
+                return ascending ? (v2 - v1) : (v1 - v2);
             });
 
             th.classList.toggle('asc', !ascending);

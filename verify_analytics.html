@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Verification: Teacher Analytics Overhaul</title>
+    <link rel="stylesheet" href="CSS/base.css">
+    <link rel="stylesheet" href="CSS/layout.css">
+    <link rel="stylesheet" href="CSS/components.css">
+</head>
+<body class="teacher-dashboard">
+    <div id="pageContent">Loading...</div>
+
+    <script>
+        // 1. Full Environment Mock
+        window.currentRenderId = 0;
+        window.TimerManager = { getTime: () => Date.now() };
+
+        window.escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        window.escapeAttr = (s) => String(s).replace(/"/g, '&quot;');
+        window.debounce = (func, wait) => {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        };
+
+        window.SessionManager = {
+            getCurrentUser: async () => {
+                console.log("MOCK: getCurrentUser called");
+                return { email: 'teacher@example.com', full_name: 'Overhaul Tester', role: 'teacher' };
+            },
+            setCurrentUser: () => {},
+            clearCurrentUser: () => {},
+            getSessionId: () => 'v-session-123'
+        };
+
+        window.UI = {
+            renderRichText: (t) => t || '',
+            showNotification: (m, type) => console.log(`NOTIF [${type}]: ${m}`),
+            showLoading: (id, msg) => {
+                console.log("MOCK: showLoading", id, msg);
+                const el = document.getElementById(id);
+                if(el) el.innerHTML = `<div class="p-20 text-center">${msg}</div>`;
+            },
+            clearCountdowns: () => {},
+            renderTable: (id, headers, data, rowFn) => {
+                console.log("MOCK: renderTable", id);
+                const el = document.getElementById(id);
+                if(!el) return;
+                let html = '<table><thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+                html += data.map(rowFn).join('');
+                html += '</tbody></table>';
+                el.innerHTML = html;
+            },
+            renderPagination: (id) => {
+                const el = document.getElementById(id);
+                if(el) el.innerHTML = '';
+            }
+        };
+
+        window.SupabaseDB = {
+            getUser: async () => ({ email: 'teacher@example.com', role: 'teacher', active: true, flagged: false }),
+            getCount: async () => 1,
+            getCourses: async () => {
+                console.log("MOCK: getCourses called");
+                return { data: [
+                    { id: '11111111-1111-1111-1111-111111111111', title: 'Mathematics 101', semester: 'Fall 2024' },
+                    { id: '22222222-2222-2222-2222-222222222222', title: 'Advanced Physics', semester: 'Spring 2025' }
+                ], total: 2 };
+            },
+            getTeacherSemesters: async () => {
+                console.log("MOCK: getTeacherSemesters called");
+                return [{ semester: 'Fall 2024' }, { semester: 'Spring 2025' }];
+            },
+            getCourseAnalyticsSummary: async () => {
+                console.log("MOCK: getCourseAnalyticsSummary called");
+                return [{ id: '11111111-1111-1111-1111-111111111111', title: 'Math 101', semester: 'Fall 2024', total_students: 25, total_assignments: 5, total_quizzes: 3, avg_assignment_score: 82.5, avg_quiz_score: 75.2 }];
+            },
+            getStudentPerformanceComparison: async () => ([
+                { full_name: 'Alice Smith', email: 'alice@student.com', course_title: 'Math 101', avg_assignment_grade: 92, avg_quiz_grade: 88, overall_average: 90 },
+                { full_name: 'Bob Jones', email: 'bob@student.com', course_title: 'Math 101', avg_assignment_grade: 45, avg_quiz_grade: 52, overall_average: 48.5 }
+            ]),
+            getAssessmentPerformanceAnalysis: async () => ([
+                { type: 'assignment', id: 'a1', title: 'Homework 1', course_title: 'Math 101', avg_score: 85, min_score: 60, max_score: 100, submission_count: 24 },
+                { type: 'quiz', id: 'q1', title: 'Midterm', course_title: 'Math 101', avg_score: 72, min_score: 30, max_score: 95, submission_count: 25 }
+            ]),
+            getLearningGapsAndInterventions: async () => ({
+                low_performing_students: [{ full_name: 'Bob Jones', email: 'bob@student.com', total_avg: 48.5, risk_level: 'CRITICAL' }],
+                course_average: 78.4
+            }),
+            getAttendanceHeatmapData: async () => ({ '2024-01-01': 5 }),
+            invalidateCache: () => {}
+        };
+
+        window.NotificationManager = { init: () => {}, queueUpdate: () => {}, initRealtimeSubscriptions: () => {} };
+        window.SessionGuard = { init: () => {}, validate: () => Promise.resolve() };
+        window.TeacherState = { analyticsCache: new Map() };
+        function clearActiveCountdowns() {}
+
+        // Block teacher.js DOMContentLoaded auto-render to allow clean verification
+        window.initDashboard = async () => null;
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="js/teacher.js"></script>
+
+    <script>
+        window.addEventListener('load', async () => {
+            console.log("Page loaded, manually calling renderAnalytics...");
+            try {
+                // Ensure pageContent is ready
+                document.getElementById('pageContent').innerHTML = '';
+                await renderAnalytics();
+                console.log("renderAnalytics completed successfully");
+            } catch (e) {
+                console.error("renderAnalytics FAILED:", e);
+            }
+        });
+    </script>
+</body>
+</html>
