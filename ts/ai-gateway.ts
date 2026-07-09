@@ -21,7 +21,11 @@ serve(async (req) => {
       throw new Error('Missing environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
     }
 
-    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
+    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
+      global: {
+        headers: { 'x-session-id': req.headers.get('x-session-id') || '' }
+      }
+    });
 
     const { type, payload } = await req.json();
 
@@ -32,93 +36,48 @@ serve(async (req) => {
       });
     }
 
-    // 1. Feature: Kofi AI (Platform Assistant) - Public, no auth required
-    if (type === 'platform_assistant') {
-        return await handlePlatformAssistant(payload);
+    // Enterprise Grade Authorization: Use the existing identity system via DB RPC.
+    // This avoids duplicated authentication and inconsistent session validation.
+    // We inject the session ID into the RPC call via headers which are handled by the DB.
+
+    // To allow the RPC to identify the user, we must set the session context in the client.
+    // In Edge Functions using service_role, we simulate the user context for the RPC call.
+    const { data: authContext, error: authError } = await supabaseClient.rpc('get_ai_access_context', {
+        p_operation_type: type,
+        p_payload: payload
+    });
+
+    if (authError) {
+        throw new Error(`Authorization RPC failed: ${authError.message}`);
     }
 
-    // Authentication & Authorization for other features
-    const sessionId = req.headers.get('x-session-id');
-    if (!sessionId) {
-      return new Response(JSON.stringify({ error: 'Authentication required: Missing x-session-id' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 401,
-      });
-    }
-
-    const { data: secretData, error: secretError } = await supabaseClient
-        .from('user_secrets')
-        .select('email')
-        .eq('session_id', sessionId)
-        .single();
-
-    if (secretError || !secretData) {
-        return new Response(JSON.stringify({ error: 'Invalid or expired session' }), {
+    if (!authContext.authorized) {
+        return new Response(JSON.stringify({ error: authContext.error || 'Unauthorized' }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 401,
+            status: authContext.error === 'Authentication required' ? 401 : 403,
         });
     }
 
-    const { data: userData, error: userError } = await supabaseClient
-        .from('users')
-        .select('role, full_name')
-        .eq('email', secretData.email)
-        .single();
+    const { email: userEmail, role: userRole } = authContext;
 
-    if (userError || !userData) {
-        return new Response(JSON.stringify({ error: 'User profile not found' }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 404,
-        });
-    }
-
-    const userEmail = secretData.email;
-    const userRole = userData.role;
-
-    // Feature Routing with RBAC/ABAC
+    // Feature Routing (RBAC/ABAC already verified by RPC)
     switch (type) {
+      case 'platform_assistant':
+        return await handlePlatformAssistant(payload);
+
       case 'tutor':
-        // Enrolled students or staff only
         return await handleCourseTutor(userEmail, userRole, payload, supabaseClient);
 
       case 'index_course':
-        // Feature 6: Knowledge Base Indexing (Teacher/Admin only)
-        if (userRole !== 'teacher' && userRole !== 'admin') {
-            return new Response(JSON.stringify({ error: 'Unauthorized: Teacher role required for indexing' }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                status: 403,
-            });
-        }
         return await handleIndexCourse(userEmail, userRole, payload, supabaseClient);
 
       case 'generate_assessment':
-        // Teacher/Admin only
-        if (userRole !== 'teacher' && userRole !== 'admin') {
-            return new Response(JSON.stringify({ error: 'Unauthorized: Teacher role required for assessment generation' }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                status: 403,
-            });
-        }
         return await handleAssessmentGenerator(payload);
 
       case 'grading':
-        // Teacher/Admin only
-        if (userRole !== 'teacher' && userRole !== 'admin') {
-            return new Response(JSON.stringify({ error: 'Unauthorized: Teacher role required for grading assistance' }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                status: 403,
-            });
-        }
         return await handleGradingAssistant(payload);
 
       case 'analytics':
-        // Users can only access their own analytics (verified via userEmail in payload matches session)
-        if (payload.user_email && payload.user_email !== userEmail && userRole !== 'admin') {
-             return new Response(JSON.stringify({ error: 'Unauthorized: You can only query your own analytics' }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                status: 403,
-            });
-        }
         return await handleAnalyticsAI(userEmail, userRole, payload);
 
       default:
@@ -142,18 +101,7 @@ serve(async (req) => {
  */
 async function handleCourseTutor(email, role, payload, supabase) {
     const { course_id, message, history = [] } = payload;
-    if (!course_id || !message) throw new Error('course_id and message are required');
-
-    // ABAC Verification: Check enrollment
-    if (role === 'student') {
-        const { data: enrollment } = await supabase
-            .from('enrollments')
-            .select('course_id')
-            .match({ course_id: course_id, student_email: email })
-            .maybeSingle();
-
-        if (!enrollment) throw new Error('Access Denied: You must be enrolled in this course to use the AI Tutor');
-    }
+    // Note: Verification of enrollment already performed by DB RPC
 
     // 1. Generate embedding for the user's message
     const embeddingApiKey = Deno.env.get('GEMINI_EMBEDDING_API_KEY');

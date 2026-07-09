@@ -1644,6 +1644,33 @@ DROP TRIGGER IF EXISTS tr_violation_data_inherit ON violations;
 CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
 
 
+-- 5b. Security Field Protection
+-- Prevents unauthorized manipulation of security critical fields (lockouts, flags)
+-- while allowing trusted backend RPCs (like authenticate_user) to manage them.
+CREATE OR REPLACE FUNCTION tr_protect_user_lockout() RETURNS TRIGGER AS $$
+BEGIN
+  -- ABAC: Only administrators or trusted system-level contexts (postgres role)
+  -- can modify sensitive security fields. This prevents client-side privilege escalation.
+  -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres'.
+  IF (OLD.failed_attempts IS DISTINCT FROM NEW.failed_attempts OR
+      OLD.locked_until IS DISTINCT FROM NEW.locked_until OR
+      OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
+      OLD.flagged IS DISTINCT FROM NEW.flagged)
+      AND NOT is_admin()
+      AND current_setting('role') != 'postgres' THEN
+
+      RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
+CREATE TRIGGER tr_user_lockout_protection
+BEFORE UPDATE ON users
+FOR EACH ROW EXECUTE PROCEDURE tr_protect_user_lockout();
+
 -- 5. Validation Triggers
 
 CREATE OR REPLACE FUNCTION validate_submission_time()
@@ -2651,6 +2678,91 @@ BEGIN
     JOIN users u ON d.user_email = u.email
     WHERE d.id = p_id
     LIMIT 1;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- 7d. AI Gateway Centralized Authorization RPC
+-- Consolidates all AI-related RBAC/ABAC and identity verification into the database.
+-- This ensures the AI Gateway relies 100% on the existing identity system.
+CREATE OR REPLACE FUNCTION get_ai_access_context(p_operation_type TEXT, p_payload JSONB DEFAULT '{}'::jsonb)
+RETURNS JSONB AS $$
+DECLARE
+  v_email VARCHAR;
+  v_role VARCHAR;
+  v_full_name VARCHAR;
+  v_course_id UUID;
+  v_is_authorized BOOLEAN := FALSE;
+BEGIN
+  -- 1. Identity Resolution (Standardized Auth)
+  v_email := get_auth_email();
+  v_role := get_auth_role();
+
+  -- Public Feature: platform_assistant (Kofi AI) - Accessible by anyone
+  IF p_operation_type = 'platform_assistant' THEN
+    RETURN jsonb_build_object(
+        'authorized', true,
+        'email', v_email,
+        'role', COALESCE(v_role, 'visitor'),
+        'full_name', (SELECT full_name FROM users WHERE email = v_email)
+    );
+  END IF;
+
+  -- 2. Authentication Check for all other features
+  IF v_email IS NULL THEN
+    RETURN jsonb_build_object('authorized', false, 'error', 'Authentication required');
+  END IF;
+
+  SELECT full_name INTO v_full_name FROM users WHERE email = v_email;
+
+  -- 3. RBAC/ABAC Enforcement
+  CASE p_operation_type
+    WHEN 'tutor' THEN
+      v_course_id := (p_payload->>'course_id')::UUID;
+      IF v_course_id IS NULL THEN
+         RETURN jsonb_build_object('authorized', false, 'error', 'course_id is required');
+      END IF;
+
+      -- Teachers/Admins always authorized for their own courses or all (admin)
+      IF v_role = 'admin' THEN
+          v_is_authorized := true;
+      ELSIF v_role = 'teacher' THEN
+          SELECT EXISTS(SELECT 1 FROM courses WHERE id = v_course_id AND teacher_email = v_email) INTO v_is_authorized;
+      ELSE
+          -- Student: Check enrollment
+          SELECT EXISTS(SELECT 1 FROM enrollments WHERE course_id = v_course_id AND student_email = v_email) INTO v_is_authorized;
+      END IF;
+
+      IF NOT v_is_authorized THEN
+          RETURN jsonb_build_object('authorized', false, 'error', 'Access Denied: You must be enrolled in this course to use the AI Tutor');
+      END IF;
+
+    WHEN 'index_course', 'generate_assessment', 'grading' THEN
+      -- Staff only
+      IF v_role IN ('admin', 'teacher') THEN
+          v_is_authorized := true;
+      ELSE
+          RETURN jsonb_build_object('authorized', false, 'error', 'Unauthorized: Staff privileges required for ' || p_operation_type);
+      END IF;
+
+    WHEN 'analytics' THEN
+      -- Self-analytics or Admin
+      IF v_role = 'admin' OR (COALESCE(p_payload->>'user_email', v_email) = v_email) THEN
+          v_is_authorized := true;
+      ELSE
+          RETURN jsonb_build_object('authorized', false, 'error', 'Unauthorized: You can only query your own analytics');
+      END IF;
+
+    ELSE
+      RETURN jsonb_build_object('authorized', false, 'error', 'Unsupported AI operation: ' || p_operation_type);
+  END CASE;
+
+  -- 4. Return Authorized Context
+  RETURN jsonb_build_object(
+    'authorized', v_is_authorized,
+    'email', v_email,
+    'role', v_role,
+    'full_name', v_full_name
+  );
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
