@@ -238,8 +238,12 @@ async function editCourse(id) {
 
   content.innerHTML = `
     <div class="card flex-between">
-      <h2 class="m-0">Course: ${escapeHtml(course.title)}</h2>
+      <div>
+        <h2 class="m-0">Course: ${escapeHtml(course.title)}</h2>
+        <p class="tiny text-muted mt-5">ID: ${course.id}</p>
+      </div>
       <div class="flex gap-10">
+        <button class="button secondary w-auto" style="background: #ecfdf5; color: #065f46; border-color: #a7f3d0" onclick="indexCourseForAI('${id}')">✨ Index Course for AI Tutor</button>
         <button class="button secondary w-auto" onclick="renderCourses()">← Back to Courses</button>
       </div>
     </div>
@@ -1153,7 +1157,10 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         </div>
 
         <div class="mt-20">
-          <h3 class="m-0">Questions</h3>
+          <div class="flex-between">
+            <h3 class="m-0">Questions</h3>
+            <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIAssignmentGenerator()">✨ Generate with AI</button>
+          </div>
           <div id="questionsContainer" class="mt-15"></div>
           <button type="button" class="button w-auto secondary small" onclick="addQuestionField()">+ Add Question</button>
         </div>
@@ -1412,10 +1419,13 @@ async function gradeSubmission(assignmentId, studentEmail) {
           <label>Feedback:</label>
           <textarea id="feedback" rows="4" placeholder="Enter feedback for student...">${escapeHtml(UI.htmlToPlainText(submission.feedback || ''))}</textarea>
         </div>
-        <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40" id="submitGradeBtn">Submit Grade</button>
-          <button type="button" class="button secondary w-auto px-40" id="saveDraftBtn">Save Draft</button>
-          <button type="button" class="button secondary w-auto px-40" onclick="renderGrading()">Cancel</button>
+        <div class="flex-between mt-20 flex-wrap gap-10">
+          <div class="flex gap-10">
+            <button type="submit" class="button w-auto px-40" id="submitGradeBtn">Submit Grade</button>
+            <button type="button" class="button secondary w-auto px-40" id="saveDraftBtn">Save Draft</button>
+            <button type="button" class="button secondary w-auto px-40" onclick="renderGrading()">Cancel</button>
+          </div>
+          <button type="button" id="aiGradingBtn" class="button w-auto secondary" style="background: #f5f3ff; border-color: #ddd6fe; color: #6d28d9" onclick="openAIGradingAssistant('${escapeAttr(assignmentId)}', '${escapeAttr(studentEmail)}')">🤖 AI Grading Insight</button>
         </div>
       </form>
     </div>
@@ -2707,7 +2717,10 @@ async function showQuizForm(quiz = null) {
         <div class="mt-20">
           <div class="flex-between">
             <h3 class="m-0">Questions</h3>
-            <button type="button" class="button secondary w-auto small" onclick="shuffleQuizQuestions()">Shuffle Order</button>
+            <div class="flex gap-5">
+                <button type="button" class="button w-auto secondary small" style="background: #fdf2f8; border-color: #fbcfe8; color: #be185d" onclick="openAIQuizGenerator()">✨ Generate with AI</button>
+                <button type="button" class="button secondary w-auto small" onclick="shuffleQuizQuestions()">Shuffle Order</button>
+            </div>
           </div>
           <div id="quizQuestionsContainer" class="mt-15"></div>
           <button type="button" class="button secondary w-auto small" onclick="addQuizQuestionField()">+ Add Question</button>
@@ -3849,7 +3862,195 @@ window.renderQuizOptions = renderQuizOptions;
 window.toggleQuizOptions = toggleQuizOptions;
 window.shuffleQuizQuestions = shuffleQuizQuestions;
 window.addQuestionField = addQuestionField;
+window.openAIGradingAssistant = openAIGradingAssistant;
 window.updateAssignmentTotalPoints = updateAssignmentTotalPoints;
+window.openAIQuizGenerator = openAIQuizGenerator;
+window.openAIAssignmentGenerator = openAIAssignmentGenerator;
+window.indexCourseForAI = indexCourseForAI;
+
+async function indexCourseForAI(courseId) {
+    if (!await UI.confirm('This will process all course lessons and materials to populate the AI Tutor\'s knowledge base. This may take a few moments. Continue?', 'Index Course for AI')) return;
+
+    const btn = document.querySelector('button[onclick*="indexCourseForAI"]');
+    const originalText = btn.textContent;
+    btn.disabled = true; btn.textContent = '⚡ Indexing...';
+
+    try {
+        const result = await AIManager.indexCourse(courseId);
+        UI.showNotification(result.message || 'Course indexed successfully!', 'success');
+    } catch (e) {
+        console.error(e);
+        UI.showNotification('Indexing failed: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false; btn.textContent = originalText;
+    }
+}
+
+async function openAIQuizGenerator() {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.style.display = 'flex';
+    backdrop.innerHTML = `
+        <div class="modal" style="max-width: 500px">
+            <div class="flex-between mb-20">
+                <h3 class="m-0">AI Quiz Generator</h3>
+                <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+            </div>
+            <div class="flex-column gap-15">
+                <div>
+                    <label class="small bold">Topic</label>
+                    <input type="text" id="aiQuizTopic" placeholder="e.g. Photosynthesis, World War II" class="m-0">
+                </div>
+                <div class="grid-2 gap-10">
+                    <div>
+                        <label class="small bold">Count</label>
+                        <input type="number" id="aiQuizCount" value="5" min="1" max="20" class="m-0">
+                    </div>
+                    <div>
+                        <label class="small bold">Difficulty</label>
+                        <select id="aiQuizDifficulty" class="m-0">
+                            <option value="Beginner">Beginner</option>
+                            <option value="Intermediate" selected>Intermediate</option>
+                            <option value="Advanced">Advanced</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="button w-auto" id="generateAIQuizBtn">Generate Questions</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    document.getElementById('generateAIQuizBtn').onclick = async () => {
+        const topic = document.getElementById('aiQuizTopic').value.trim();
+        const count = document.getElementById('aiQuizCount').value;
+        const difficulty = document.getElementById('aiQuizDifficulty').value;
+
+        if (!topic) return UI.showNotification('Please enter a topic', 'warn');
+
+        const btn = document.getElementById('generateAIQuizBtn');
+        btn.disabled = true; btn.textContent = 'Generating...';
+
+        try {
+            const questions = await AIManager.generateAssessment({ topic, count, difficulty, type: 'quiz' });
+            questions.forEach(q => addQuizQuestionField(q));
+            UI.showNotification(`Successfully generated ${questions.length} questions!`, 'success');
+            backdrop.remove();
+        } catch (e) {
+            console.error(e);
+            UI.showNotification('Generation failed. Ensure your prompt results in valid JSON.', 'error');
+            btn.disabled = false; btn.textContent = 'Generate Questions';
+        }
+    };
+}
+
+async function openAIGradingAssistant(assignmentId, studentEmail) {
+    const renderId = window.currentRenderId;
+    const btn = document.getElementById('aiGradingBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '🤖 Analyzing...'; }
+
+    try {
+        const [assignment, submission] = await Promise.all([
+            SupabaseDB.getAssignment(assignmentId),
+            SupabaseDB.getSubmission(assignmentId, studentEmail)
+        ]);
+
+        if (renderId !== window.currentRenderId) return;
+
+        // Prepare context for AI
+        const studentSubmission = Object.entries(submission.answers).map(([idx, ans]) => {
+            return `Q${parseInt(idx)+1}: ${typeof ans === 'object' ? ans.value : ans}`;
+        }).join('\n');
+
+        const insight = await AIManager.getGradingInsights({
+            assignment_title: assignment.title,
+            student_submission: studentSubmission,
+            rubric: assignment.description, // Use description as rubric if specific rubric not available
+            questions: assignment.questions.map(q => q.text)
+        });
+
+        if (renderId !== window.currentRenderId) return;
+
+        UI.showModal('AI Grading Insights', `
+            <div class="p-10">
+                <div class="badge badge-purple mb-10">AI ASSISTANT FEEDBACK</div>
+                <div class="small" style="line-height: 1.6; white-space: pre-line;">${insight.replace(/\n/g, '<br>')}</div>
+                <hr class="my-15">
+                <p class="tiny text-muted italic">Note: These insights are generated by AI and should be verified by the teacher before finalizing the grade.</p>
+                <button class="button secondary small w-auto" onclick="const fb=document.getElementById('feedback'); if(fb) fb.value += (fb.value ? '\\n\\n' : '') + 'AI Insight: ' + \`${insight.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`; this.closest('.modal-backdrop').remove();">Apply to Feedback</button>
+            </div>
+        `, { maxWidth: '700px' });
+
+    } catch (e) {
+        console.error(e);
+        UI.showNotification('AI Grading failed: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🤖 AI Grading Insight'; }
+    }
+}
+
+async function openAIAssignmentGenerator() {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.style.display = 'flex';
+    backdrop.innerHTML = `
+        <div class="modal" style="max-width: 500px">
+            <div class="flex-between mb-20">
+                <h3 class="m-0">AI Assignment Generator</h3>
+                <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+            </div>
+            <div class="flex-column gap-15">
+                <div>
+                    <label class="small bold">Topic / Learning Objective</label>
+                    <input type="text" id="aiAssignTopic" placeholder="e.g. Critical Analysis of Macbeth" class="m-0">
+                </div>
+                <div>
+                    <label class="small bold">Specific Rubrics / Instructions</label>
+                    <textarea id="aiAssignRubrics" placeholder="e.g. Focus on character development, minimum 500 words" rows="3" class="m-0"></textarea>
+                </div>
+                <div class="grid-2 gap-10">
+                    <div>
+                        <label class="small bold">Questions Count</label>
+                        <input type="number" id="aiAssignCount" value="1" min="1" max="10" class="m-0">
+                    </div>
+                    <div>
+                        <label class="small bold">Difficulty</label>
+                        <select id="aiAssignDifficulty" class="m-0">
+                            <option value="Beginner">Beginner</option>
+                            <option value="Intermediate" selected>Intermediate</option>
+                            <option value="Advanced">Advanced</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="button w-auto" id="generateAIAssignBtn">Generate Assignment Content</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    document.getElementById('generateAIAssignBtn').onclick = async () => {
+        const topic = document.getElementById('aiAssignTopic').value.trim();
+        const rubrics = document.getElementById('aiAssignRubrics').value.trim();
+        const count = document.getElementById('aiAssignCount').value;
+        const difficulty = document.getElementById('aiAssignDifficulty').value;
+
+        if (!topic) return UI.showNotification('Please enter a topic', 'warn');
+
+        const btn = document.getElementById('generateAIAssignBtn');
+        btn.disabled = true; btn.textContent = 'Generating...';
+
+        try {
+            const questions = await AIManager.generateAssessment({ topic, rubrics, count, difficulty, type: 'assignment' });
+            questions.forEach(q => addQuestionField(q));
+            UI.showNotification(`Generated ${questions.length} assignment questions!`, 'success');
+            backdrop.remove();
+        } catch (e) {
+            console.error(e);
+            UI.showNotification('Generation failed.', 'error');
+            btn.disabled = false; btn.textContent = 'Generate Assignment Content';
+        }
+    };
+}
 
 // Enterprise-grade safety: Ensure escape helpers are available even if core.js load is deferred
 const _safeEscapeAttr = (s) => {
@@ -4104,7 +4305,23 @@ function renderAnalyticsUI(data) {
         </div>
       </div>
     </div>
+
+    <div id="analyticsAIChat" class="mt-20"></div>
   `;
+
+  AIManager.renderChatbot('analyticsAIChat', {
+      title: 'Teacher Insights Assistant',
+      welcomeMessage: 'Hi! I can help you analyze class performance, identify at-risk students, and suggest teaching interventions based on your course data.',
+      onSend: async (msg) => {
+          const dataContext = {
+              class_summary: summary,
+              at_risk_count: gaps?.low_performing_students?.length || 0,
+              assessment_performance: assessments.map(a => ({ title: a.title, avg: a.avg_score })),
+              top_risk_students: (gaps?.low_performing_students || []).slice(0, 5)
+          };
+          return await AIManager.analyzeAnalytics(msg, dataContext);
+      }
+  });
 
   renderAttendanceHeatmap('attendanceHeatmap', heatmapData);
   renderAnalyticsCharts(students, assessments);
