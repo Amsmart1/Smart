@@ -3895,11 +3895,11 @@ async function renderAnalytics() {
         <div class="flex gap-10 flex-wrap">
           <select id="analyticsSemesterSelect" class="m-0" style="width:150px">
             <option value="">All Semesters</option>
-            ${(semesters || []).map(s => `<option value="${_safeEscapeAttr(s.semester)}">${_safeEscapeHtml(s.semester)}</option>`).join('')}
+            ${semesters.map(s => `<option value="${escapeAttr(s.semester)}">${escapeHtml(s.semester)}</option>`).join('')}
           </select>
           <select id="analyticsCourseSelect" class="m-0" style="width:200px">
             <option value="">All My Courses</option>
-            ${(courses || []).map(c => `<option value="${c.id}" data-semester="${_safeEscapeAttr(c.semester || '')}">${_safeEscapeHtml(c.title)}</option>`).join('')}
+            ${courses.map(c => `<option value="${c.id}" data-semester="${escapeAttr(c.semester || '')}">${escapeHtml(c.title)}</option>`).join('')}
           </select>
           <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
         </div>
@@ -3909,7 +3909,6 @@ async function renderAnalytics() {
 
     const courseSelect = document.getElementById('analyticsCourseSelect');
     const semSelect = document.getElementById('analyticsSemesterSelect');
-    if (!courseSelect || !semSelect) return;
 
     const updateFilter = () => renderAnalyticsDashboard(courseSelect.value, semSelect.value);
 
@@ -3923,7 +3922,7 @@ async function renderAnalytics() {
             opt.style.display = (!selectedSem || courseSem === selectedSem) ? '' : 'none';
         });
         // If current selected course is hidden, reset to All
-        if (courseSelect.selectedOptions && courseSelect.selectedOptions[0]?.style.display === 'none') {
+        if (courseSelect.selectedOptions[0]?.style.display === 'none') {
             courseSelect.value = '';
         }
         updateFilter();
@@ -4159,13 +4158,8 @@ function initTableInteractivity(data) {
             const ascending = th.classList.contains('asc');
             document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
-            const riskMap = { 'CRITICAL': 3, 'AT_RISK': 2, 'STABLE': 1 };
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
-                if (prop === 'risk_level') {
-                    v1 = riskMap[v1] || 0;
-                    v2 = riskMap[v2] || 0;
-                }
                 if (typeof v1 === 'string') return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
                 return ascending ? (v2 || 0) - (v1 || 0) : (v1 || 0) - (v2 || 0);
             });
