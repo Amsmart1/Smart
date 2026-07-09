@@ -5,8 +5,9 @@
      * Anti-Cheat System for SmartLMS
      * Blocks copy/paste, DevTools, tab switching, and more based on configuration.
      */
-    class AntiCheatSystem {
+    class AntiCheatSystem extends EventEmitter {
         constructor() {
+            super();
             this.config = {
                 DEBUG: false,
                 FULLSCREEN_REQUIRED: false,
@@ -79,10 +80,15 @@
          * This logs the START event and begins proctoring media streams.
          */
         async start() {
-            if (!this.state.isActive) return;
+            if (this.state.isActive) return;
+            this.state.isActive = true;
             this.state.startTime = Date.now();
             this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
-            await this.startProctoring();
+            this.emit('ASSESSMENT_STARTED', {
+                attemptId: this.state.attemptId,
+                assessmentId: this.state.assessmentId,
+                assessmentType: this.state.assessmentType
+            });
         }
 
         async init(assessmentId, assessmentType, userEmail, config = {}) {
@@ -107,7 +113,7 @@
             this.state.courseId = config.courseId || null;
             this.state.userEmail = userEmail;
             this.state.startTime = null; // Set when start() is called
-            this.state.isActive = true;
+            this.state.isActive = false; // Remains false until start() is called
 
             // Re-sync device info in case of changes
             if (window.DeviceUtils) {
@@ -259,6 +265,7 @@
                     courseId: this.state.courseId,
                     userId: this.state.userEmail,
                     debug: this.config.DEBUG,
+                    orchestrator: this,
                     webcam: { enabled: webcam },
                     screen: { enabled: screen },
                     audio: { enabled: audio },
@@ -275,33 +282,17 @@
         }
 
         /**
-         * Starts the proctoring engine if initialized.
-         */
-        async startProctoring() {
-            if (this.proctor && !this.proctor.state.isActive) {
-                try {
-                    await this.proctor.start();
-                    if (this.config.DEBUG) console.log('Anti-Cheat: Proctoring started');
-                } catch (err) {
-                    console.error('Anti-Cheat: Failed to start proctoring', err);
-                    this.logViolation('PROCTORING_FAILURE', { error: err.message, severity: 'MEDIUM' });
-                    throw err;
-                }
-            }
-        }
-
-        /**
          * Pauses all proctoring activities if active.
          */
         async pauseProctoring() {
-            if (this.proctor) await this.proctor.pause();
+            this.emit('ASSESSMENT_PAUSED', { attemptId: this.state.attemptId });
         }
 
         /**
          * Resumes all proctoring activities if active.
          */
         async resumeProctoring() {
-            if (this.proctor) await this.proctor.resume();
+            this.emit('ASSESSMENT_RESUMED', { attemptId: this.state.attemptId });
         }
 
         async injectViolation(violation) {
@@ -316,7 +307,9 @@
         }
 
         logViolation(type, metadata = {}, options = {}) {
-            if (!this.state.isActive) return;
+            // Internal/Life-cycle logs bypass isActive check if session is initialized
+            const isLifecycle = ['ASSESSMENT_SESSION_STARTED', 'ASSESSMENT_SESSION_ENDED'].includes(type);
+            if (!this.state.isActive && !isLifecycle) return;
 
             const now = Date.now();
             const lastTime = this.state.lastViolationTime[type] || 0;
@@ -838,22 +831,16 @@
         }
 
         async destroy() {
-            if (!this.state.isActive) return;
+            // Can destroy initialized but not yet started session
+            if (!this.state.attemptId) return;
 
             const duration = Date.now() - (this.state.startTime || Date.now());
             this.logViolation('ASSESSMENT_SESSION_ENDED', { duration }, { severity: 'INFO', score: 0 });
+            this.emit('ASSESSMENT_STOPPED', { attemptId: this.state.attemptId, duration });
 
             this.state.isActive = false;
-
-            // Stop Proctoring session and streams
-            if (this.proctor) {
-                try {
-                    await this.proctor.stop();
-                } catch (e) {
-                    console.error('Anti-Cheat: Proctor stop failed', e);
-                }
-                this.proctor = null;
-            }
+            this.state.attemptId = null;
+            this.proctor = null;
 
             if (this._tabInterval) {
                 clearInterval(this._tabInterval);

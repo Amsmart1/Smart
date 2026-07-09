@@ -4137,13 +4137,8 @@ function initTableInteractivity(data) {
             const ascending = th.classList.contains('asc');
             document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
-            const riskMap = { 'CRITICAL': 3, 'AT_RISK': 2, 'STABLE': 1 };
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
-                if (prop === 'risk_level') {
-                    v1 = riskMap[v1] || 0;
-                    v2 = riskMap[v2] || 0;
-                }
                 if (typeof v1 === 'string') return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
                 return ascending ? (v2 || 0) - (v1 || 0) : (v1 || 0) - (v2 || 0);
             });
