@@ -1477,7 +1477,24 @@ async function renderAnalytics() {
           <div id="gradeStats" class="mt-15"></div>
         </div>
       </div>
+      <div id="analyticsAIChat" class="mt-20"></div>
     `;
+
+    AIManager.renderChatbot('analyticsAIChat', {
+        title: 'LMS Learning Assistant',
+        welcomeMessage: 'Hi! I can analyze your performance trends and suggest areas for improvement. Ask me anything about your progress!',
+        onSend: async (msg) => {
+            const dataContext = {
+                graded_count: graded.length,
+                average_score: avg,
+                recent_grades: graded.map(s => ({
+                    title: assigns.find(a => a.id === s.assignment_id)?.title,
+                    score: s.final_grade
+                }))
+            };
+            return await AIManager.analyzeAnalytics(msg, dataContext);
+        }
+    });
 
     if (graded.length > 0) {
       const ctx = document.getElementById('gradeChart').getContext('2d');
@@ -1610,6 +1627,61 @@ async function renderDiscussions() {
 async function viewStudentDiscussions(courseId) {
   DiscussionManager.render('pageContent', courseId);
 }
+
+async function renderAITutor() {
+  const renderId = ++window.currentRenderId;
+  clearActiveCountdowns();
+  const container = document.getElementById('pageContent');
+  if (!container) return;
+
+  try {
+    const user = await SessionManager.getCurrentUser();
+    if (renderId !== window.currentRenderId) return;
+    const { data: myCourses } = await SupabaseDB.getEnrolledCourses(user.email);
+    if (renderId !== window.currentRenderId) return;
+
+    UI.renderCourseList('pageContent', myCourses, {
+        title: 'AI Tutor',
+        subtitle: 'Select a course to start a tutoring session. I can help you with lessons, explain difficult concepts, and give hints on your assignments.',
+        buttonText: 'Start Tutoring',
+        onButtonClick: (id) => startAITutor(id),
+        emptyMessage: 'Enroll in a course to use the AI Tutor.'
+    });
+  } catch (e) {
+    console.error('AI Tutor render error:', e);
+    container.innerHTML = `<div class="empty">Error loading AI Tutor.</div>`;
+  }
+}
+
+async function startAITutor(courseId) {
+    const container = document.getElementById('pageContent');
+    if (!container) return;
+
+    const course = await SupabaseDB.getCourse(courseId);
+
+    container.innerHTML = `
+        <div class="flex-between mb-20">
+            <button class="button secondary w-auto" onclick="renderAITutor()">← Back to Courses</button>
+            <div class="text-right">
+                <div class="bold">${escapeHtml(course?.title)}</div>
+                <div class="tiny text-muted uppercase">Interactive Tutoring Session</div>
+            </div>
+        </div>
+        <div id="aiTutorChatContainer"></div>
+    `;
+
+    AIManager.renderChatbot('aiTutorChatContainer', {
+        title: 'AI Course Tutor',
+        welcomeMessage: `Hi! I'm your AI tutor for **${course?.title}**. Ask me anything about the course materials, or if you need help with an assignment!`,
+        placeholder: 'Ask about lessons, topics, or concepts...',
+        onSend: async (msg) => {
+            return await AIManager.askTutor(courseId, msg);
+        }
+    });
+}
+window.renderAITutor = renderAITutor;
+window.startAITutor = startAITutor;
+
 window.enroll = enroll;
 window.viewCourse = viewCourse;
 window.showLesson = showLesson;
@@ -1624,6 +1696,7 @@ window.renderAnalytics = renderAnalytics;
 window.renderCalendar = renderCalendar;
 window.renderMaterials = renderMaterials;
 window.renderDiscussions = renderDiscussions;
+window.renderAITutor = renderAITutor;
 window.renderCertificates = renderCertificates;
 window.showCertificateDetails = showCertificateDetails;
 
@@ -3330,6 +3403,7 @@ function initNav() {
         else if(page === 'materials') renderMaterials();
         else if(page === 'anticheat') renderAntiCheat();
         else if(page === 'discussions') renderDiscussions();
+        else if(page === 'ai-tutor') renderAITutor();
         else if(page === 'certificates') renderCertificates();
         else if(page === 'planner') renderPlanner();
         else if(page === 'live') renderLiveClasses();

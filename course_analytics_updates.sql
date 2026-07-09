@@ -256,7 +256,6 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_caller_email TEXT := COALESCE(auth.email(), get_auth_email_raw());
-    v_result JSONB;
 BEGIN
     -- Authorization Check
     IF v_caller_email != p_teacher_email AND NOT EXISTS (SELECT 1 FROM users WHERE email = v_caller_email AND role = 'admin') THEN
