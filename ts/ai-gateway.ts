@@ -17,9 +17,8 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
 
-    if (!supabaseUrl || !supabaseAnonKey) {
-      throw new Error('Missing environment variables: SUPABASE_URL or SUPABASE_ANON_KEY');
-    }
+    if (!supabaseUrl) throw new Error('Missing environment variable: SUPABASE_URL');
+    if (!supabaseAnonKey) throw new Error('Missing environment variable: SUPABASE_ANON_KEY');
 
     const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: {
@@ -49,6 +48,11 @@ serve(async (req) => {
 
     if (authError) {
         throw new Error(`Authorization RPC failed: ${authError.message}`);
+    }
+
+    // Explicit null check for authContext to prevent runtime exceptions
+    if (!authContext) {
+        throw new Error('Authorization RPC returned no context');
     }
 
     if (!authContext.authorized) {
@@ -124,9 +128,11 @@ async function handleCourseTutor(email, role, payload, supabase) {
             supabase.from('materials').select('title, description').eq('course_id', course_id).limit(5),
             supabase.from('lessons').select('title, content').eq('course_id', course_id).limit(5)
         ]);
+
+        // Safe fallbacks for materials and lessons to prevent mapping errors if null
         context = [
-            ...materials.map(m => `Material: ${m.title} - ${m.description}`),
-            ...lessons.map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
+            ...(materials || []).map(m => `Material: ${m.title} - ${m.description}`),
+            ...(lessons || []).map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
         ].join('\n\n');
     }
 
