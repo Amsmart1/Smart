@@ -4115,11 +4115,11 @@ async function renderAnalytics() {
         <div class="flex gap-10 flex-wrap">
           <select id="analyticsSemesterSelect" class="m-0" style="width:150px">
             <option value="">All Semesters</option>
-            ${semesters.map(s => `<option value="${escapeAttr(s.semester)}">${escapeHtml(s.semester)}</option>`).join('')}
+            ${(semesters || []).map(s => `<option value="${_safeEscapeAttr(s.semester)}">${_safeEscapeHtml(s.semester)}</option>`).join('')}
           </select>
           <select id="analyticsCourseSelect" class="m-0" style="width:200px">
             <option value="">All My Courses</option>
-            ${courses.map(c => `<option value="${c.id}" data-semester="${escapeAttr(c.semester || '')}">${escapeHtml(c.title)}</option>`).join('')}
+            ${(courses || []).map(c => `<option value="${_safeEscapeAttr(c.id)}" data-semester="${_safeEscapeAttr(c.semester || '')}">${_safeEscapeHtml(c.title)}</option>`).join('')}
           </select>
           <button class="button secondary w-auto small" onclick="window.clearAnalyticsFilters()">🧹 Clear</button>
           <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
@@ -4157,9 +4157,9 @@ async function renderAnalytics() {
 }
 
 async function renderAnalyticsDashboard(courseId, semester = null, bypassCache = false) {
+  const renderId = ++window.currentRenderId;
   const dashboard = document.getElementById('analyticsDashboard');
   if (!dashboard) return;
-  const renderId = window.currentRenderId;
 
   const cacheKey = `${courseId || 'all'}_${semester || 'all'}`;
   const now = Date.now();
@@ -4187,7 +4187,7 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
 
     if (renderId !== window.currentRenderId) return;
 
-    let processedData = { summary, students, assessments, gaps, heatmapData };
+    let processedData = { summary, students, assessments, gaps, heatmapData, semester };
 
     TeacherState.analyticsCache.set(cacheKey, { data: processedData, timestamp: now });
     renderAnalyticsUI(processedData);
@@ -4329,23 +4329,28 @@ function renderAnalyticsUI(data) {
 }
 
 function renderAssessmentRows(items) {
-    return items.map(a => `
+    return (items || []).map(a => `
         <tr>
-          <td><div class="bold small">${escapeHtml(a.title)}</div><div class="tiny text-muted">${escapeHtml(a.course_title || '')}</div></td>
-          <td><span class="badge tiny">${escapeHtml(a.type.toUpperCase())}</span></td>
+          <td><div class="bold small">${_safeEscapeHtml(a.title)}</div><div class="tiny text-muted">${_safeEscapeHtml(a.course_title || '')}</div></td>
+          <td><span class="badge tiny">${_safeEscapeHtml(a.type ? a.type.toUpperCase() : '')}</span></td>
           <td>${a.avg_score ? parseFloat(a.avg_score).toFixed(1) + '%' : '---'}</td>
-          <td>${a.submission_count}</td>
+          <td>${a.submission_count || 0}</td>
         </tr>
     `).join('') || '<tr><td colspan="4" class="empty">No assessments found.</td></tr>';
 }
 
 function renderInterventionRows(items) {
-    return items.map(s => `
+    return (items || []).map(s => `
         <tr>
-          <td><div class="bold small">${escapeHtml(s.full_name)}</div></td>
-          <td class="tiny">${escapeHtml(s.email)}</td>
-          <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg).toFixed(1)}%</td>
-          <td><span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${s.risk_level}</span></td>
+          <td><div class="bold small">${_safeEscapeHtml(s.full_name)}</div></td>
+          <td class="tiny">${_safeEscapeHtml(s.email)}</td>
+          <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg || 0).toFixed(1)}%</td>
+          <td>
+            <div class="flex-between gap-10">
+                <span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${_safeEscapeHtml(s.risk_level || 'UNKNOWN')}</span>
+                <button class="button secondary tiny w-auto" onclick="window.viewStudentDetails('${_safeEscapeAttr(s.email)}')">View</button>
+            </div>
+          </td>
         </tr>
     `).join('') || '<tr><td colspan="4" class="empty success-text">All students are performing well.</td></tr>';
 }
@@ -4390,6 +4395,9 @@ function initTableInteractivity(data) {
             const ascending = th.classList.contains('asc');
             table.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
+            // Sort in-place on the list (which is a reference to the array in data object)
+            // Note: Since we want charts to remain chronological, we should be careful.
+            // However, charts are rendered BEFORE interactivity, and table updates only re-render table rows.
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
                 if (v1 === null || v1 === undefined) return 1;
@@ -4418,11 +4426,11 @@ function renderAnalyticsCharts(students, assessments) {
   const distCtx = document.getElementById('distributionChart')?.getContext('2d');
   const studCtx = document.getElementById('studentChart')?.getContext('2d');
 
-  if (perfCtx) {
+  if (perfCtx && assessments && assessments.length > 0) {
     new Chart(perfCtx, {
       type: 'line',
       data: {
-        labels: assessments.map(a => a.title.substring(0, 12)),
+        labels: assessments.map(a => (a.title || '').substring(0, 12)),
         datasets: [{
           label: 'Avg Score %',
           data: assessments.map(a => a.avg_score || 0),
@@ -4441,10 +4449,10 @@ function renderAnalyticsCharts(students, assessments) {
     });
   }
 
-  if (distCtx) {
+  if (distCtx && students) {
       const buckets = { '90-100': 0, '80-89': 0, '70-79': 0, '60-69': 0, '< 60': 0 };
       students.forEach(s => {
-          const avg = s.overall_average;
+          const avg = s.overall_average || 0;
           if (avg >= 90) buckets['90-100']++;
           else if (avg >= 80) buckets['80-89']++;
           else if (avg >= 70) buckets['70-79']++;
@@ -4470,12 +4478,12 @@ function renderAnalyticsCharts(students, assessments) {
       });
   }
 
-  if (studCtx) {
-    const topStudents = [...students].sort((a,b) => b.overall_average - a.overall_average).slice(0, 5);
+  if (studCtx && students && students.length > 0) {
+    const topStudents = [...students].sort((a,b) => (b.overall_average || 0) - (a.overall_average || 0)).slice(0, 5);
     new Chart(studCtx, {
       type: 'radar',
       data: {
-        labels: topStudents.map(s => s.full_name.split(' ')[0]),
+        labels: topStudents.map(s => (s.full_name || 'Student').split(' ')[0]),
         datasets: [{
           label: 'Quiz Avg',
           data: topStudents.map(s => s.avg_quiz_grade || 0),
@@ -4497,11 +4505,14 @@ function renderAnalyticsCharts(students, assessments) {
   }
 }
 
-function renderAttendanceHeatmap(containerId, heatmapData) {
+function renderAttendanceHeatmap(containerId, heatmapData, activeSemester = null) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
-    const year = new Date().getFullYear();
+    // Detect target year from semester string (e.g., "Fall 2023") or fallback to current year
+    const yearMatch = activeSemester ? String(activeSemester).match(/\d{4}/) : null;
+    const year = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
+
     const startDate = new Date(year, 0, 1);
     // Align to the start of the week (Sunday)
     const startOffset = startDate.getDay();

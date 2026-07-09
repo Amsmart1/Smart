@@ -250,7 +250,7 @@ $$;
 
 -- 5. Fetch Unique Semesters for Teacher
 CREATE OR REPLACE FUNCTION get_teacher_semesters(p_teacher_email TEXT)
-RETURNS TABLE (semester VARCHAR)
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
@@ -262,12 +262,15 @@ BEGIN
         RAISE EXCEPTION 'Unauthorized';
     END IF;
 
-    RETURN QUERY
-    SELECT DISTINCT c.semester
-    FROM courses c
-    WHERE c.teacher_email = p_teacher_email
-    AND c.semester IS NOT NULL
-    ORDER BY c.semester DESC;
+    SELECT jsonb_agg(t) INTO v_result FROM (
+        SELECT DISTINCT c.semester
+        FROM courses c
+        WHERE c.teacher_email = p_teacher_email
+        AND c.semester IS NOT NULL
+        ORDER BY c.semester DESC
+    ) t;
+
+    RETURN COALESCE(v_result, '[]'::jsonb);
 END;
 $$;
 
