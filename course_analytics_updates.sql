@@ -56,18 +56,18 @@ BEGIN
             (SELECT count(*) FROM enrollments e WHERE e.course_id = c.id) as total_students,
             (SELECT count(*) FROM assignments a WHERE a.course_id = c.id) as total_assignments,
             (SELECT count(*) FROM quizzes q WHERE q.course_id = c.id) as total_quizzes,
-            (
+            COALESCE((
                 SELECT ROUND(AVG(final_grade)::numeric, 1)
                 FROM submissions s
                 JOIN assignments a ON s.assignment_id = a.id
                 WHERE a.course_id = c.id AND s.status = 'graded'
-            ) as avg_assignment_score,
-            (
+            ), 0) as avg_assignment_score,
+            COALESCE((
                 SELECT ROUND(AVG(score)::numeric, 1)
                 FROM quiz_submissions qs
                 JOIN quizzes q ON qs.quiz_id = q.id
                 WHERE q.course_id = c.id AND qs.status = 'submitted'
-            ) as avg_quiz_score
+            ), 0) as avg_quiz_score
         FROM courses c
         WHERE c.teacher_email = p_teacher_email
         AND (p_course_id IS NULL OR c.id = p_course_id)
@@ -146,9 +146,9 @@ BEGIN
             a.id,
             a.title,
             c.title as course_title,
-            ROUND(AVG(s.final_grade)::numeric, 1) as avg_score,
-            MIN(s.final_grade) as min_score,
-            MAX(s.final_grade) as max_score,
+            COALESCE(ROUND(AVG(s.final_grade)::numeric, 1), 0) as avg_score,
+            COALESCE(MIN(s.final_grade), 0) as min_score,
+            COALESCE(MAX(s.final_grade), 0) as max_score,
             COUNT(s.id) as submission_count,
             COALESCE(a.due_date, a.created_at) as sort_date
         FROM assignments a
@@ -165,9 +165,9 @@ BEGIN
             q.id,
             q.title,
             c.title as course_title,
-            ROUND(AVG(qs.score)::numeric, 1) as avg_score,
-            MIN(qs.score) as min_score,
-            MAX(qs.score) as max_score,
+            COALESCE(ROUND(AVG(qs.score)::numeric, 1), 0) as avg_score,
+            COALESCE(MIN(qs.score), 0) as min_score,
+            COALESCE(MAX(qs.score), 0) as max_score,
             COUNT(qs.id) as submission_count,
             COALESCE(q.end_at, q.created_at) as sort_date
         FROM quizzes q
@@ -255,6 +255,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
+    v_result JSONB;
     v_caller_email TEXT := COALESCE(auth.email(), get_auth_email_raw());
 BEGIN
     -- Authorization Check
