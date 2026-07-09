@@ -2066,34 +2066,56 @@ class SupabaseDB {
         });
     }
 
-    static async getCourseAnalyticsSummary(teacherEmail, courseId = null) {
+    static async getCourseAnalyticsSummary(teacherEmail, courseId = null, semester = null) {
         const { data, error } = await supabaseClient.rpc('get_course_analytics_summary', {
             p_teacher_email: teacherEmail,
-            p_course_id: courseId
+            p_course_id: courseId,
+            p_semester: semester
         });
         if (error) throw error;
         return data;
     }
 
-    static async getStudentPerformanceComparison(courseId) {
+    static async getStudentPerformanceComparison(courseId = null, semester = null) {
         const { data, error } = await supabaseClient.rpc('get_student_performance_comparison', {
-            p_course_id: courseId
+            p_course_id: courseId,
+            p_semester: semester
         });
         if (error) throw error;
         return data;
     }
 
-    static async getAssessmentPerformanceAnalysis(courseId) {
+    static async getAssessmentPerformanceAnalysis(courseId = null, semester = null) {
         const { data, error } = await supabaseClient.rpc('get_assessment_performance_analysis', {
-            p_course_id: courseId
+            p_course_id: courseId,
+            p_semester: semester
         });
         if (error) throw error;
         return data;
     }
 
-    static async getLearningGapsAndInterventions(courseId) {
+    static async getLearningGapsAndInterventions(courseId = null, semester = null) {
         const { data, error } = await supabaseClient.rpc('get_learning_gaps_and_interventions', {
-            p_course_id: courseId
+            p_course_id: courseId,
+            p_semester: semester
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    static async getTeacherSemesters(teacherEmail) {
+        const { data, error } = await supabaseClient.rpc('get_teacher_semesters', {
+            p_teacher_email: teacherEmail
+        });
+        if (error) throw error;
+        return data;
+    }
+
+    static async getAttendanceHeatmapData(teacherEmail, courseId = null, semester = null) {
+        const { data, error } = await supabaseClient.rpc('get_attendance_heatmap_data', {
+            p_teacher_email: teacherEmail,
+            p_course_id: courseId,
+            p_semester: semester
         });
         if (error) throw error;
         return data;
