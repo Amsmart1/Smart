@@ -87,7 +87,10 @@ async function renderCourses() {
           <h3 class="m-0">${escapeHtml(c.title)}</h3>
           <div class="small">${UI.renderRichText(c.description)}</div>
           <div class="mt-10 flex-between flex-wrap gap-5">
-            <span class="badge ${c.status === 'published' ? 'badge-active' : 'badge-lock'}">${escapeHtml(c.status)}</span>
+            <div class="flex gap-5 flex-wrap">
+                <span class="badge ${c.status === 'published' ? 'badge-active' : 'badge-lock'}">${escapeHtml(c.status)}</span>
+                ${c.semester ? `<span class="badge badge-purple">${escapeHtml(c.semester)}</span>` : ''}
+            </div>
             <span class="tiny bold ${isFull ? 'danger-text' : 'text-muted'}">${escapeHtml(limitDisplay)}</span>
           </div>
           <div class="flex gap-10 mt-15">
@@ -148,6 +151,10 @@ function showCourseForm(course = null) {
             <input type="number" id="courseEnrollmentLimit" placeholder="Max students" min="0" value="${isEdit ? (course.enrollment_limit || 0) : 0}">
           </div>
           <div>
+            <label>Semester</label>
+            <input type="text" id="courseSemester" placeholder="e.g. Fall 2024" value="${isEdit ? escapeHtml(course.semester || '') : ''}">
+          </div>
+          <div>
             <label>Status</label>
             <select id="courseStatus">
               <option value="draft" ${isEdit && course.status === 'draft' ? 'selected' : ''}>Draft</option>
@@ -181,6 +188,7 @@ function showCourseForm(course = null) {
         id: courseId,
         title: title,
         description: document.getElementById('courseDescription').value,
+        semester: document.getElementById('courseSemester').value.trim() || null,
         enrollment_id: document.getElementById('courseEnrollmentId').value || null,
         enrollment_limit: parseInt(document.getElementById('courseEnrollmentLimit').value) || null,
         status: document.getElementById('courseStatus').value,
@@ -3854,39 +3862,64 @@ async function renderAnalytics() {
     const user = await SessionManager.getCurrentUser();
     if (renderId !== window.currentRenderId) return;
 
-    const { data: courses } = await SupabaseDB.getCourses(user.email, null, { all: true });
+    const [{ data: courses }, semesters] = await Promise.all([
+      SupabaseDB.getCourses(user.email, null, { all: true }),
+      SupabaseDB.getTeacherSemesters(user.email)
+    ]);
     if (renderId !== window.currentRenderId) return;
 
     content.innerHTML = `
       <div class="card mb-20 flex-between flex-wrap gap-15">
         <h2 class="m-0">Course Analytics & Insights</h2>
-        <div class="flex gap-10">
-          <select id="analyticsCourseSelect" class="m-0" style="width:250px">
-            <option value="">All My Courses</option>
-            ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
+        <div class="flex gap-10 flex-wrap">
+          <select id="analyticsSemesterSelect" class="m-0" style="width:150px">
+            <option value="">All Semesters</option>
+            ${semesters.map(s => `<option value="${escapeAttr(s.semester)}">${escapeHtml(s.semester)}</option>`).join('')}
           </select>
-          <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, true)">🔄 Refresh</button>
+          <select id="analyticsCourseSelect" class="m-0" style="width:200px">
+            <option value="">All My Courses</option>
+            ${courses.map(c => `<option value="${c.id}" data-semester="${escapeAttr(c.semester || '')}">${escapeHtml(c.title)}</option>`).join('')}
+          </select>
+          <button class="button secondary w-auto small" onclick="renderAnalyticsDashboard(document.getElementById('analyticsCourseSelect').value, document.getElementById('analyticsSemesterSelect').value, true)">🔄 Refresh</button>
         </div>
       </div>
       <div id="analyticsDashboard"></div>
     `;
 
-    const select = document.getElementById('analyticsCourseSelect');
-    select.addEventListener('change', () => renderAnalyticsDashboard(select.value));
+    const courseSelect = document.getElementById('analyticsCourseSelect');
+    const semSelect = document.getElementById('analyticsSemesterSelect');
 
-    renderAnalyticsDashboard(select.value);
+    const updateFilter = () => renderAnalyticsDashboard(courseSelect.value, semSelect.value);
+
+    courseSelect.addEventListener('change', updateFilter);
+    semSelect.addEventListener('change', () => {
+        // Optionally filter course list by semester
+        const selectedSem = semSelect.value;
+        Array.from(courseSelect.options).forEach(opt => {
+            if (!opt.value) return; // Skip "All"
+            const courseSem = opt.dataset.semester;
+            opt.style.display = (!selectedSem || courseSem === selectedSem) ? '' : 'none';
+        });
+        // If current selected course is hidden, reset to All
+        if (courseSelect.selectedOptions[0]?.style.display === 'none') {
+            courseSelect.value = '';
+        }
+        updateFilter();
+    });
+
+    updateFilter();
   } catch (error) {
     console.error('Analytics Error:', error);
     UI.showNotification('Error loading analytics: ' + error.message, 'error');
   }
 }
 
-async function renderAnalyticsDashboard(courseId, bypassCache = false) {
+async function renderAnalyticsDashboard(courseId, semester = null, bypassCache = false) {
   const dashboard = document.getElementById('analyticsDashboard');
   if (!dashboard) return;
   const renderId = window.currentRenderId;
 
-  const cacheKey = courseId || 'all';
+  const cacheKey = `${courseId || 'all'}_${semester || 'all'}`;
   const now = Date.now();
   if (!bypassCache && TeacherState.analyticsCache.has(cacheKey)) {
     const cached = TeacherState.analyticsCache.get(cacheKey);
@@ -3900,34 +3933,17 @@ async function renderAnalyticsDashboard(courseId, bypassCache = false) {
 
   try {
     const user = await SessionManager.getCurrentUser();
-    const [summary, students, assessments, gaps] = await Promise.all([
-      SupabaseDB.getCourseAnalyticsSummary(user.email, courseId),
-      courseId ? SupabaseDB.getStudentPerformanceComparison(courseId) : Promise.resolve([]),
-      courseId ? SupabaseDB.getAssessmentPerformanceAnalysis(courseId) : Promise.resolve([]),
-      courseId ? SupabaseDB.getLearningGapsAndInterventions(courseId) : Promise.resolve({ low_performing_students: [], course_average: 0 })
+    const [summary, students, assessments, gaps, heatmapData] = await Promise.all([
+      SupabaseDB.getCourseAnalyticsSummary(user.email, courseId || null, semester || null),
+      SupabaseDB.getStudentPerformanceComparison(courseId || null, semester || null),
+      SupabaseDB.getAssessmentPerformanceAnalysis(courseId || null, semester || null),
+      SupabaseDB.getLearningGapsAndInterventions(courseId || null, semester || null),
+      SupabaseDB.getAttendanceHeatmapData(user.email, courseId || null, semester || null)
     ]);
 
     if (renderId !== window.currentRenderId) return;
 
-    // Aggregate data if "All My Courses" is selected
-    let processedData = { summary, students, assessments, gaps };
-
-    if (!courseId) {
-        // Fetch all course analytics in parallel to aggregate
-        const allCourseIds = summary.map(c => c.id);
-        const [allStudents, allAssessments, allGaps] = await Promise.all([
-            Promise.all(allCourseIds.map(id => SupabaseDB.getStudentPerformanceComparison(id))),
-            Promise.all(allCourseIds.map(id => SupabaseDB.getAssessmentPerformanceAnalysis(id))),
-            Promise.all(allCourseIds.map(id => SupabaseDB.getLearningGapsAndInterventions(id)))
-        ]);
-
-        processedData.students = allStudents.flat();
-        processedData.assessments = allAssessments.flat();
-        processedData.gaps = {
-            low_performing_students: allGaps.map(g => g.low_performing_students).flat(),
-            course_average: allGaps.length > 0 ? (allGaps.reduce((sum, g) => sum + (parseFloat(g.course_average) || 0), 0) / allGaps.length) : 0
-        };
-    }
+    let processedData = { summary, students, assessments, gaps, heatmapData };
 
     TeacherState.analyticsCache.set(cacheKey, { data: processedData, timestamp: now });
     renderAnalyticsUI(processedData);
@@ -3941,62 +3957,118 @@ function renderAnalyticsUI(data) {
   const dashboard = document.getElementById('analyticsDashboard');
   if (!dashboard) return;
 
-  const { summary, students, assessments, gaps } = data;
+  const { summary, students, assessments, gaps, heatmapData } = data;
   const totalStudents = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
-  const avgScore = summary.length > 0 ? (summary.reduce((sum, c) => sum + (parseFloat(c.avg_assignment_score) || 0) + (parseFloat(c.avg_quiz_score) || 0), 0) / (summary.length * 2)).toFixed(1) : 0;
+
+  // Calculate average performance across all categories that actually have scores
+  let totalPoints = 0;
+  let categoriesCount = 0;
+  summary.forEach(c => {
+      if (c.avg_assignment_score !== null) {
+          totalPoints += parseFloat(c.avg_assignment_score);
+          categoriesCount++;
+      }
+      if (c.avg_quiz_score !== null) {
+          totalPoints += parseFloat(c.avg_quiz_score);
+          categoriesCount++;
+      }
+  });
+  const avgScore = categoriesCount > 0 ? (totalPoints / categoriesCount).toFixed(1) : 0;
 
   dashboard.innerHTML = `
-    <div class="stats-grid mb-20">
-      <div class="stat-card"><h4>Active Students</h4><div class="value">${totalStudents}</div></div>
-      <div class="stat-card"><h4>Avg Performance</h4><div class="value">${avgScore}%</div></div>
-      <div class="stat-card warn"><h4>At Risk</h4><div class="value">${gaps?.low_performing_students?.length || 0}</div></div>
-      <div class="stat-card"><h4>Assessments</h4><div class="value">${assessments?.length || 0}</div></div>
+    <div class="stats-grid mb-20 animate-fade-in">
+      <div class="stat-card">
+        <h4>Active Students</h4>
+        <div class="value">${totalStudents}</div>
+        <div class="tiny text-muted mt-5">Across ${summary.length} courses</div>
+      </div>
+      <div class="stat-card">
+        <h4>Avg Performance</h4>
+        <div class="value">${avgScore}%</div>
+        <div class="tiny text-muted mt-5">All assessments</div>
+      </div>
+      <div class="stat-card warn">
+        <h4>At Risk</h4>
+        <div class="value">${gaps?.low_performing_students?.length || 0}</div>
+        <div class="tiny text-muted mt-5">Needs intervention</div>
+      </div>
+      <div class="stat-card">
+        <h4>Total Assessments</h4>
+        <div class="value">${assessments?.length || 0}</div>
+        <div class="tiny text-muted mt-5">Published items</div>
+      </div>
     </div>
 
-    <div class="grid-2 gap-20">
+    <div class="card mb-20">
+      <div class="flex-between mb-15">
+        <h3 class="m-0">Attendance & Activity Heatmap</h3>
+        <div class="flex gap-10 tiny text-muted">
+            <span>Less</span>
+            <div style="width:12px; height:12px; background:#ebedf0; border-radius:2px"></div>
+            <div style="width:12px; height:12px; background:#9be9a8; border-radius:2px"></div>
+            <div style="width:12px; height:12px; background:#40c463; border-radius:2px"></div>
+            <div style="width:12px; height:12px; background:#30a14e; border-radius:2px"></div>
+            <div style="width:12px; height:12px; background:#216e39; border-radius:2px"></div>
+            <span>More</span>
+        </div>
+      </div>
+      <div id="attendanceHeatmap" class="heatmap-container" style="overflow-x:auto"></div>
+    </div>
+
+    <div class="grid-3 gap-20">
       <div class="card">
-        <h3>Performance Trends</h3>
-        <canvas id="performanceChart" height="200"></canvas>
+        <h3>Exam Performance Trends</h3>
+        <canvas id="performanceChart" height="250"></canvas>
       </div>
       <div class="card">
-        <h3>Student Comparison</h3>
-        <canvas id="studentChart" height="200"></canvas>
+        <h3>Grade Distribution</h3>
+        <canvas id="distributionChart" height="250"></canvas>
+      </div>
+      <div class="card">
+        <h3>Top Student Profiles</h3>
+        <canvas id="studentChart" height="250"></canvas>
       </div>
     </div>
 
     <div class="grid-2 gap-20 mt-20">
       <div class="card">
-        <h3>Assessment Breakdown</h3>
+        <div class="flex-between flex-wrap gap-10 mb-15">
+            <h3 class="m-0">Assessment Breakdown</h3>
+            <input type="text" id="assessmentSearch" placeholder="Search assessments..." class="small m-0" style="width:200px">
+        </div>
         <div class="p-0 mt-10" style="overflow-x:auto">
           <table>
-            <thead><tr><th>Assessment</th><th>Type</th><th>Avg Score</th><th>Submissions</th></tr></thead>
-            <tbody>
-              ${assessments.map(a => `
+            <thead>
                 <tr>
-                  <td><div class="bold small">${escapeHtml(a.title)}</div></td>
-                  <td><span class="badge tiny">${escapeHtml(a.type.toUpperCase())}</span></td>
-                  <td>${a.avg_score ? parseFloat(a.avg_score).toFixed(1) + '%' : '---'}</td>
-                  <td>${a.submission_count}</td>
+                    <th class="pointer sortable" data-sort="title">Assessment ↕</th>
+                    <th class="pointer sortable" data-sort="type">Type ↕</th>
+                    <th class="pointer sortable" data-sort="avg_score">Avg Score ↕</th>
+                    <th class="pointer sortable" data-sort="submission_count">Count ↕</th>
                 </tr>
-              `).join('') || '<tr><td colspan="4" class="empty">No assessments found.</td></tr>'}
+            </thead>
+            <tbody id="assessmentTableBody">
+              ${renderAssessmentRows(assessments)}
             </tbody>
           </table>
         </div>
       </div>
       <div class="card">
-        <h3 class="danger-text">Students Needing Intervention</h3>
+        <div class="flex-between flex-wrap gap-10 mb-15">
+            <h3 class="m-0 danger-text">Intervention Insights</h3>
+            <input type="text" id="interventionSearch" placeholder="Search students..." class="small m-0" style="width:200px">
+        </div>
         <div class="p-0 mt-10" style="overflow-x:auto">
           <table>
-            <thead><tr><th>Student</th><th>Email</th><th>Average</th><th>Risk</th></tr></thead>
-            <tbody>
-              ${gaps?.low_performing_students?.map(s => `
+            <thead>
                 <tr>
-                  <td><div class="bold small">${escapeHtml(s.full_name)}</div></td>
-                  <td class="tiny">${escapeHtml(s.email)}</td>
-                  <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg).toFixed(1)}%</td>
-                  <td><span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${s.risk_level}</span></td>
+                    <th class="pointer sortable" data-sort="full_name">Student ↕</th>
+                    <th class="pointer sortable" data-sort="email">Email ↕</th>
+                    <th class="pointer sortable" data-sort="total_avg">Avg ↕</th>
+                    <th class="pointer sortable" data-sort="risk_level">Risk ↕</th>
                 </tr>
-              `).join('') || '<tr><td colspan="4" class="empty success-text">All students are performing well.</td></tr>'}
+            </thead>
+            <tbody id="interventionTableBody">
+              ${renderInterventionRows(gaps?.low_performing_students || [])}
             </tbody>
           </table>
         </div>
@@ -4004,28 +4076,141 @@ function renderAnalyticsUI(data) {
     </div>
   `;
 
+  renderAttendanceHeatmap('attendanceHeatmap', heatmapData);
   renderAnalyticsCharts(students, assessments);
+  initTableInteractivity(data);
+}
+
+function renderAssessmentRows(items) {
+    return items.map(a => `
+        <tr>
+          <td><div class="bold small">${escapeHtml(a.title)}</div><div class="tiny text-muted">${escapeHtml(a.course_title || '')}</div></td>
+          <td><span class="badge tiny">${escapeHtml(a.type.toUpperCase())}</span></td>
+          <td>${a.avg_score ? parseFloat(a.avg_score).toFixed(1) + '%' : '---'}</td>
+          <td>${a.submission_count}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="4" class="empty">No assessments found.</td></tr>';
+}
+
+function renderInterventionRows(items) {
+    return items.map(s => `
+        <tr>
+          <td><div class="bold small">${escapeHtml(s.full_name)}</div></td>
+          <td class="tiny">${escapeHtml(s.email)}</td>
+          <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg).toFixed(1)}%</td>
+          <td><span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${s.risk_level}</span></td>
+        </tr>
+    `).join('') || '<tr><td colspan="4" class="empty success-text">All students are performing well.</td></tr>';
+}
+
+function initTableInteractivity(data) {
+    const assessSearch = document.getElementById('assessmentSearch');
+    const interSearch = document.getElementById('interventionSearch');
+
+    const updateAssessTable = () => {
+        const term = assessSearch.value.toLowerCase();
+        const filtered = data.assessments.filter(a =>
+            a.title.toLowerCase().includes(term) || (a.course_title || '').toLowerCase().includes(term)
+        );
+        document.getElementById('assessmentTableBody').innerHTML = renderAssessmentRows(filtered);
+    };
+
+    const updateInterTable = () => {
+        const term = interSearch.value.toLowerCase();
+        const filtered = (data.gaps?.low_performing_students || []).filter(s =>
+            s.full_name.toLowerCase().includes(term) || s.email.toLowerCase().includes(term)
+        );
+        document.getElementById('interventionTableBody').innerHTML = renderInterventionRows(filtered);
+    };
+
+    assessSearch.addEventListener('input', updateAssessTable);
+    interSearch.addEventListener('input', updateInterTable);
+
+    // Sort logic
+    document.querySelectorAll('.sortable').forEach(th => {
+        th.addEventListener('click', () => {
+            const tableId = th.closest('table').parentElement.nextElementSibling?.id || th.closest('table').querySelector('tbody').id;
+            const isAssess = tableId === 'assessmentTableBody';
+            const prop = th.dataset.sort;
+            const list = isAssess ? data.assessments : (data.gaps?.low_performing_students || []);
+
+            const ascending = th.classList.contains('asc');
+            document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
+
+            const riskMap = { 'CRITICAL': 3, 'AT_RISK': 2, 'STABLE': 1 };
+            list.sort((a, b) => {
+                let v1 = a[prop], v2 = b[prop];
+                if (prop === 'risk_level') {
+                    v1 = riskMap[v1] || 0;
+                    v2 = riskMap[v2] || 0;
+                }
+                if (typeof v1 === 'string') return ascending ? v2.localeCompare(v1) : v1.localeCompare(v2);
+                return ascending ? (v2 || 0) - (v1 || 0) : (v1 || 0) - (v2 || 0);
+            });
+
+            th.classList.toggle('asc', !ascending);
+            th.classList.toggle('desc', ascending);
+
+            if (isAssess) updateAssessTable(); else updateInterTable();
+        });
+    });
 }
 
 function renderAnalyticsCharts(students, assessments) {
   const perfCtx = document.getElementById('performanceChart')?.getContext('2d');
+  const distCtx = document.getElementById('distributionChart')?.getContext('2d');
   const studCtx = document.getElementById('studentChart')?.getContext('2d');
 
   if (perfCtx) {
     new Chart(perfCtx, {
-      type: 'bar',
+      type: 'line',
       data: {
-        labels: assessments.map(a => a.title.substring(0, 10) + '...'),
+        labels: assessments.map(a => a.title.substring(0, 12)),
         datasets: [{
-          label: 'Average Score (%)',
+          label: 'Avg Score %',
           data: assessments.map(a => a.avg_score || 0),
-          backgroundColor: 'rgba(102, 126, 234, 0.6)',
-          borderColor: 'rgba(102, 126, 234, 1)',
-          borderWidth: 1
+          borderColor: '#667eea',
+          backgroundColor: 'rgba(102, 126, 234, 0.1)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 4,
+          pointHoverRadius: 6
         }]
       },
-      options: { scales: { y: { beginAtZero: true, max: 100 } } }
+      options: {
+          scales: { y: { beginAtZero: true, max: 100 } },
+          plugins: { legend: { display: false } }
+      }
     });
+  }
+
+  if (distCtx) {
+      const buckets = { '90-100': 0, '80-89': 0, '70-79': 0, '60-69': 0, '< 60': 0 };
+      students.forEach(s => {
+          const avg = s.overall_average;
+          if (avg >= 90) buckets['90-100']++;
+          else if (avg >= 80) buckets['80-89']++;
+          else if (avg >= 70) buckets['70-79']++;
+          else if (avg >= 60) buckets['60-69']++;
+          else buckets['< 60']++;
+      });
+
+      new Chart(distCtx, {
+          type: 'bar',
+          data: {
+              labels: Object.keys(buckets),
+              datasets: [{
+                  label: 'Students',
+                  data: Object.values(buckets),
+                  backgroundColor: ['#48bb78', '#38b2ac', '#4299e1', '#ed8936', '#f56565'],
+                  borderRadius: 4
+              }]
+          },
+          options: {
+              plugins: { legend: { display: false } },
+              scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+          }
+      });
   }
 
   if (studCtx) {
@@ -4053,6 +4238,51 @@ function renderAnalyticsCharts(students, assessments) {
       options: { elements: { line: { borderWidth: 3 } } }
     });
   }
+}
+
+function renderAttendanceHeatmap(containerId, heatmapData) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    const year = new Date().getFullYear();
+    const startDate = new Date(year, 0, 1);
+    // Align to the start of the week (Sunday)
+    const startOffset = startDate.getDay();
+    const displayStart = new Date(startDate);
+    displayStart.setDate(startDate.getDate() - startOffset);
+
+    const endDate = new Date(year, 11, 31);
+
+    let html = `<div class="heatmap-wrapper" style="display: flex; gap: 10px;">
+        <div class="heatmap-labels tiny text-muted" style="display: grid; grid-template-rows: repeat(7, 1fr); gap: 3px; padding-top: 15px;">
+            <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+        </div>
+        <div class="heatmap-grid" style="display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; gap: 3px; overflow-x: auto; padding-bottom: 5px;">`;
+
+    const day = new Date(displayStart);
+    // Render 53 weeks to ensure full year coverage
+    const totalDays = 53 * 7;
+    for (let i = 0; i < totalDays; i++) {
+        // Use local date parts to avoid timezone shifts common with toISOString()
+        const dateStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+        const count = heatmapData[dateStr] || 0;
+        const isCurrentYear = day.getFullYear() === year;
+
+        let color = isCurrentYear ? '#ebedf0' : 'transparent';
+        if (isCurrentYear && count > 0) {
+            if (count > 10) color = '#216e39';
+            else if (count > 5) color = '#30a14e';
+            else if (count > 2) color = '#40c463';
+            else color = '#9be9a8';
+        }
+
+        html += `<div class="heatmap-day" title="${isCurrentYear ? dateStr + ': ' + count + ' activities' : ''}"
+                     style="width: 12px; height: 12px; background: ${color}; border-radius: 2px; border: ${isCurrentYear ? '1px solid rgba(27,31,35,0.06)' : 'none'}"></div>`;
+        day.setDate(day.getDate() + 1);
+    }
+
+    html += `</div></div>`;
+    container.innerHTML = html;
 }
 
 document.addEventListener('DOMContentLoaded', async () => {

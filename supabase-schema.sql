@@ -231,6 +231,7 @@ CREATE TABLE IF NOT EXISTS courses (
   created_by VARCHAR(255), -- Stores teacher's full name
   enrollment_id VARCHAR(255), -- Optional ID required for student enrollment
   enrollment_limit INTEGER DEFAULT NULL,
+  semester VARCHAR(100),
   status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -554,6 +555,7 @@ BEGIN
     ALTER TABLE users ADD CONSTRAINT users_email_check CHECK (validate_email_format(email));
 
     ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS resolution_notes TEXT;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS semester VARCHAR(100);
 
     -- Maintenance ID constraint cleanup for production-readiness
     ALTER TABLE maintenance DROP CONSTRAINT IF EXISTS maintenance_id_check;
@@ -1851,6 +1853,7 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_active ON users(active);
 CREATE INDEX IF NOT EXISTS idx_users_auth_lookup ON users(active, flagged, locked_until);
 CREATE INDEX IF NOT EXISTS idx_courses_teacher ON courses(teacher_email);
+CREATE INDEX IF NOT EXISTS idx_courses_semester ON courses(semester);
 CREATE INDEX IF NOT EXISTS idx_topics_course ON topics(course_id);
 CREATE INDEX IF NOT EXISTS idx_lessons_course ON lessons(course_id);
 CREATE INDEX IF NOT EXISTS idx_lessons_topic ON lessons(topic_id);
