@@ -3873,6 +3873,19 @@ window.initTableInteractivity = initTableInteractivity;
 window.renderAnalyticsCharts = renderAnalyticsCharts;
 window.renderAttendanceHeatmap = renderAttendanceHeatmap;
 
+window.viewStudentDetails = (email) => {
+    const navBtn = document.querySelector('nav button[data-page="students"]');
+    if (!navBtn) return;
+    navBtn.click();
+    setTimeout(() => {
+        const searchInput = document.getElementById('studentSearch');
+        if (searchInput) {
+            searchInput.value = email;
+            searchInput.dispatchEvent(new Event('input'));
+        }
+    }, 500);
+};
+
 window.clearAnalyticsFilters = () => {
     const cs = document.getElementById('analyticsCourseSelect');
     const ss = document.getElementById('analyticsSemesterSelect');
@@ -3956,9 +3969,9 @@ async function renderAnalytics() {
 }
 
 async function renderAnalyticsDashboard(courseId, semester = null, bypassCache = false) {
+  const renderId = ++window.currentRenderId;
   const dashboard = document.getElementById('analyticsDashboard');
   if (!dashboard) return;
-  const renderId = window.currentRenderId;
 
   const cacheKey = `${courseId || 'all'}_${semester || 'all'}`;
   const now = Date.now();
@@ -3976,6 +3989,10 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
     const user = await SessionManager.getCurrentUser();
     if (!user) return;
 
+    // Authoritative reconciliation for data freshness before analytics fetch
+    try { await SupabaseDB.reconcileQuizAttempts(); } catch(e) { console.warn('Analytics reconciliation skipped:', e); }
+    if (renderId !== window.currentRenderId) return;
+
     const [summary, students, assessments, gaps, heatmapData] = await Promise.all([
       SupabaseDB.getCourseAnalyticsSummary(user.email, courseId || null, semester || null),
       SupabaseDB.getStudentPerformanceComparison(courseId || null, semester || null),
@@ -3986,7 +4003,7 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
 
     if (renderId !== window.currentRenderId) return;
 
-    let processedData = { summary, students, assessments, gaps, heatmapData };
+    let processedData = { summary, students, assessments, gaps, heatmapData, semester };
 
     TeacherState.analyticsCache.set(cacheKey, { data: processedData, timestamp: now });
     renderAnalyticsUI(processedData);
@@ -4107,7 +4124,7 @@ function renderAnalyticsUI(data) {
   `;
 
   try {
-    renderAttendanceHeatmap('attendanceHeatmap', heatmapData);
+    renderAttendanceHeatmap('attendanceHeatmap', heatmapData, data.semester);
     renderAnalyticsCharts(students, assessments);
     initTableInteractivity(data);
   } catch (err) {
@@ -4132,7 +4149,12 @@ function renderInterventionRows(items) {
           <td><div class="bold small">${_safeEscapeHtml(s.full_name)}</div></td>
           <td class="tiny">${_safeEscapeHtml(s.email)}</td>
           <td class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}">${parseFloat(s.total_avg || 0).toFixed(1)}%</td>
-          <td><span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${_safeEscapeHtml(s.risk_level || 'UNKNOWN')}</span></td>
+          <td>
+            <div class="flex-between gap-10">
+                <span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'}">${_safeEscapeHtml(s.risk_level || 'UNKNOWN')}</span>
+                <button class="button secondary tiny w-auto" onclick="window.viewStudentDetails('${_safeEscapeAttr(s.email)}')">View</button>
+            </div>
+          </td>
         </tr>
     `).join('') || '<tr><td colspan="4" class="empty success-text">All students are performing well.</td></tr>';
 }
@@ -4177,6 +4199,9 @@ function initTableInteractivity(data) {
             const ascending = th.classList.contains('asc');
             table.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
 
+            // Sort in-place on the list (which is a reference to the array in data object)
+            // Note: Since we want charts to remain chronological, we should be careful.
+            // However, charts are rendered BEFORE interactivity, and table updates only re-render table rows.
             list.sort((a, b) => {
                 let v1 = a[prop], v2 = b[prop];
                 if (v1 === null || v1 === undefined) return 1;
@@ -4284,11 +4309,14 @@ function renderAnalyticsCharts(students, assessments) {
   }
 }
 
-function renderAttendanceHeatmap(containerId, heatmapData) {
+function renderAttendanceHeatmap(containerId, heatmapData, activeSemester = null) {
     const container = document.getElementById(containerId);
     if (!container) return;
 
-    const year = new Date().getFullYear();
+    // Detect target year from semester string (e.g., "Fall 2023") or fallback to current year
+    const yearMatch = activeSemester ? String(activeSemester).match(/\d{4}/) : null;
+    const year = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
+
     const startDate = new Date(year, 0, 1);
     // Align to the start of the week (Sunday)
     const startOffset = startDate.getDay();
