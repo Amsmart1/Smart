@@ -424,6 +424,31 @@ class KofiAIManager {
                 await handleSend();
             };
 
+            // Handle system-level microphone or recognition errors gracefully
+            window.voiceEngine.onError = (err) => {
+                if (!err) return;
+                console.warn("[Voice Engine Alert]", err);
+
+                // For permissions denied or user inactivity pause, append an informative system card
+                let alertHtml = '';
+                if (err.type === 'permission_denied') {
+                    alertHtml = `<span style="color: #ef4444; font-weight: 600;">🎙️ Mic Access Denied:</span> Please enable microphone permissions in your browser address bar to use voice features.`;
+                } else if (err.type === 'silence_timeout') {
+                    alertHtml = `🎙️ <em>${window.escapeHtml(err.message)}</em>`;
+                    // Automatically disable hands-free states on error/silence timeout
+                    syncVoiceUI(window.voiceEngine.getStatus());
+                } else if (err.type === 'no_speech') {
+                    // Suppress noise alerts unless continuous/hands-free gets stuck
+                    return;
+                } else {
+                    alertHtml = `<span style="color: #ef4444;">⚠️ Voice Error:</span> ${window.escapeHtml(err.message)}`;
+                }
+
+                if (alertHtml) {
+                    appendMessage('assistant', alertHtml, true);
+                }
+            };
+
             // Set initial state
             syncVoiceUI(window.voiceEngine.getStatus());
         }

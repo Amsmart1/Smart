@@ -208,6 +208,8 @@ if (typeof speechSynthesis !== 'undefined') {
 const speechRecognitionEngine = {
   recognition: null,
   _manuallyStopped: false,
+  _consecutiveSilenceCount: 0,
+  _MAX_SILENCE_RESTARTS: 3,
 
   initialize() {
     const SpeechRecognition =
@@ -235,6 +237,7 @@ const speechRecognitionEngine = {
 
     this.recognition.onresult = (event) => {
       const text = event.results[0][0].transcript;
+      this._consecutiveSilenceCount = 0; // Reset silence restarts on successful capture
       updateVoiceState({
         currentText: text
       });
@@ -249,8 +252,28 @@ const speechRecognitionEngine = {
       });
       console.log("Listening stopped.");
 
-      // Handle auto-restart if enabled and not manually stopped
-      if (voiceSettings.autoRestartListening && !this._manuallyStopped && !voiceState.speaking) {
+      // Continuous dialogue / Auto-restart handling
+      if (voiceSettings.conversationMode && !this._manuallyStopped && !voiceState.speaking) {
+        if (this._consecutiveSilenceCount < this._MAX_SILENCE_RESTARTS) {
+          this._consecutiveSilenceCount++;
+          console.log(`Auto-restarting speech recognition due to pause/silence (Attempt ${this._consecutiveSilenceCount}/${this._MAX_SILENCE_RESTARTS})`);
+          setTimeout(() => {
+            if (voiceSettings.conversationMode && !voiceState.speaking) {
+              this.start();
+            }
+          }, 300);
+        } else {
+          console.log("Silence restart threshold reached. Stopping conversation mode to prevent battery drain.");
+          // Inform the user or listener that dialogue is paused
+          if (typeof window.voiceEngine?.onError === 'function') {
+            window.voiceEngine.onError({
+              type: 'silence_timeout',
+              message: "Hands-free mode paused due to inactivity."
+            });
+          }
+          conversationManager.stop();
+        }
+      } else if (voiceSettings.autoRestartListening && !this._manuallyStopped && !voiceState.speaking) {
         setTimeout(() => {
           this.start();
         }, 100);
@@ -259,9 +282,31 @@ const speechRecognitionEngine = {
 
     this.recognition.onerror = (event) => {
       console.error("Recognition error:", event.error);
+      let errorType = 'recognition_error';
+      let errorMsg = `Speech recognition error: ${event.error}`;
+
       if (event.error === 'not-allowed') {
-        console.warn("Microphone access permission denied.");
+        errorType = 'permission_denied';
+        errorMsg = "Microphone access permission denied. Please allow microphone access in your browser settings.";
+        console.warn(errorMsg);
+      } else if (event.error === 'no-speech') {
+        errorType = 'no_speech';
+        errorMsg = "No speech detected.";
       }
+
+      // Propagate error to voiceEngine listeners
+      if (typeof window.voiceEngine?.onError === 'function') {
+        try {
+          window.voiceEngine.onError({
+            type: errorType,
+            message: errorMsg,
+            rawEvent: event
+          });
+        } catch (e) {
+          console.error("Error invoking voiceEngine.onError callback:", e);
+        }
+      }
+
       updateVoiceState({
         status: "idle",
         recognitionActive: false
@@ -308,12 +353,14 @@ const conversationManager = {
   start() {
     this.enabled = true;
     voiceSettings.conversationMode = true;
+    speechRecognitionEngine._consecutiveSilenceCount = 0; // Reset counter when starting conversation
     speechRecognitionEngine.start();
   },
 
   stop() {
     this.enabled = false;
     voiceSettings.conversationMode = false;
+    speechRecognitionEngine._consecutiveSilenceCount = 0; // Clean up counter
     speechRecognitionEngine.stop();
     speechSynthesisEngine.stop();
   },
@@ -379,8 +426,9 @@ const voiceEngine = {
     return voiceState;
   },
 
-  // Extension: Callbacks for state-driven UI updates
+  // Extension: Callbacks for state-driven UI updates and error handling
   onStateChange: null,
+  onError: null,
 
   isSupported() {
     const recognitionSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
