@@ -10,12 +10,54 @@ class AIManager {
      * Hardened with direct Supabase Edge Function fallback to prevent CORS and platform failures.
      */
     static async _invoke(type, payload) {
-        const sid = sessionStorage.getItem('sessionId');
-        const enrichedPayload = {
-            ...(payload || {}),
-            session_id: sid || '',
-            sessionId: sid || ''
-        };
+
+    const sid = sessionStorage.getItem('sessionId');
+
+    const enrichedPayload = {
+        ...(payload || {}),
+        session_id: sid || '',
+        sessionId: sid || ''
+    };
+
+
+    try {
+
+        const response = await fetch('/api/ai-gateway', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-session-id': sid || ''
+            },
+            body: JSON.stringify({
+                type,
+                payload: enrichedPayload
+            })
+        });
+
+
+        const data = await response.json();
+
+
+        if (!response.ok) {
+            throw new Error(
+                data.error || `AI Gateway HTTP ${response.status}`
+            );
+        }
+
+
+        return data;
+
+
+    } catch (error) {
+
+        console.error(
+            "Vercel AI Gateway request failed:",
+            error
+        );
+
+        throw error;
+    }
+}
 
         // 1. Attempt Vercel relative same-origin route (CORS-free bypass model)
         try {
