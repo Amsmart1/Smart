@@ -22,10 +22,66 @@ module.exports = async function handler(req, res) {
     const signature = req.headers['x-supabase-signature'];
     const expectedSignature = process.env.AI_GATEWAY_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-    if (!signature || signature !== expectedSignature) {
-      res.writeHead(401, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing gateway signature' }));
-      return;
+    let userEmail = null;
+    let userRole = null;
+
+    const { type, payload } = req.body || {};
+
+    if (signature && signature === expectedSignature) {
+      // Delegated request (e.g. from Supabase Edge Function with validated signature)
+      // Trust the payload's email and role
+      userEmail = payload?.email;
+      userRole = payload?.role;
+    } else {
+      // Direct same-origin request from client
+      // Perform server-to-server validation by calling Supabase RPC get_ai_access_context directly
+      const sessionId = req.headers['x-session-id'] || '';
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Server configuration error: missing SUPABASE_URL or SUPABASE_ANON_KEY' }));
+        return;
+      }
+
+      if (!type) {
+        res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing request type' }));
+        return;
+      }
+
+      // Call Supabase REST RPC for authorization
+      const authResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/get_ai_access_context`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'x-session-id': sessionId
+        },
+        body: JSON.stringify({
+          p_operation_type: type,
+          p_payload: payload || {}
+        })
+      });
+
+      if (!authResponse.ok) {
+        const errorText = await authResponse.text();
+        res.writeHead(403, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Authorization failed: ${errorText}` }));
+        return;
+      }
+
+      const authContext = await authResponse.json();
+      if (!authContext || !authContext.authorized) {
+        res.writeHead(authContext?.error === 'Authentication required' ? 401 : 403, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: authContext?.error || 'Unauthorized' }));
+        return;
+      }
+
+      userEmail = authContext.email;
+      userRole = authContext.role;
     }
 
     if (req.method !== 'POST') {
@@ -34,12 +90,95 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const { type, payload } = req.body || {};
-
     if (!type || !payload) {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing request type or payload' }));
       return;
+    }
+
+    // Attach verified identity to payload
+    payload.email = userEmail;
+    payload.role = userRole;
+
+    // Process materials RAG inside tutor if direct request (so that semantic search works!)
+    if (type === 'tutor' && !signature) {
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+      const { course_id, message } = payload;
+
+      // 1. Generate embedding for user message
+      const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
+      let context = '';
+
+      if (apiKey) {
+        try {
+          const embedRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: "models/text-embedding-004",
+              content: { parts: [{ text: message }] }
+            })
+          });
+
+          if (embedRes.ok) {
+            const embedData = await embedRes.json();
+            const embedding = embedData.embedding.values;
+
+            // 2. Call match_materials RPC
+            const matchResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/match_materials`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`,
+                'x-session-id': req.headers['x-session-id'] || ''
+              },
+              body: JSON.stringify({
+                query_embedding: embedding,
+                match_threshold: 0.3,
+                match_count: 5,
+                p_course_id: course_id
+              })
+            });
+
+            if (matchResponse.ok) {
+              const matches = await matchResponse.json();
+              if (matches && matches.length > 0) {
+                context = matches.map(m => m.content).join('\n---\n');
+              }
+            }
+          }
+        } catch (embedError) {
+          console.error('Semantic search in Vercel failed:', embedError);
+        }
+      }
+
+      if (!context) {
+        // Fallback to basic retrieval using REST API endpoints
+        try {
+          const [matRes, lesRes] = await Promise.all([
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            }),
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            })
+          ]);
+
+          const materials = matRes.ok ? await matRes.json() : [];
+          const lessons = lesRes.ok ? await lesRes.json() : [];
+
+          context = [
+            ...(materials || []).map(m => `Material: ${m.title} - ${m.description}`),
+            ...(lessons || []).map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
+          ].join('\n\n');
+        } catch (retrievalError) {
+          console.error('Basic context retrieval failed:', retrievalError);
+        }
+      }
+
+      payload.context = context;
     }
 
     switch (type) {
