@@ -238,16 +238,16 @@ const LandingUI = {
             // Initialize if first time
             if (!chatWindow.dataset.initialized) {
                 chatWindow.dataset.initialized = 'true';
-                AIManager.renderChatbot('kofiChatBody', {
+                KofiAIManager.renderChatbot('kofiChatBody', {
                     title: 'Kofi AI Assistant',
                     welcomeMessage: 'Hi! I\'m Kofi AI, your guide to the SmartLMS platform. How can I help you today?',
                     placeholder: 'Ask about platform features...',
                     onSend: async (msg) => {
-                        return await AIManager.askKofi(msg);
+                        return await KofiAIManager.askKofi(msg);
                     },
                     onClear: () => {
                         // Clear the platform assistant history for Kofi AI
-                        AIManager.clearHistory('kofi');
+                        KofiAIManager.clearHistory('kofi');
                     }
                 });
             }

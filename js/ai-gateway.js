@@ -482,24 +482,6 @@ class AIManager {
         return response.content;
     }
 
-    /**
-     * 5. LMS UI Feature Assistant (Kofi AI)
-     */
-    static async askKofi(message) {
-        const historyKey = 'kofi';
-        const history = this._history.get(historyKey) || [];
-
-        const response = await this._invoke('platform_assistant', {
-            message,
-            history
-        });
-
-        history.push({ role: 'user', content: message });
-        history.push({ role: 'assistant', content: response.content });
-        this._history.set(historyKey, history.slice(-10)); // Maintain moderate history for Kofi
-
-        return response.content;
-    }
 
     /**
      * Clears conversational history for a specific key or all history if no key is provided.
