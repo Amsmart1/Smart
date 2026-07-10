@@ -1,11 +1,106 @@
 // Vercel Serverless Function: api/kofi-assistant.js
 // Handles platform guide (Kofi AI) requests publicly without auth, session or Supabase check.
+// Enhanced with enterprise-grade rate limiting, same-origin domain lock, input sanitization, and robust error handling.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'content-type',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
 };
+
+// Static in-memory cache for IP-based rate limiting
+const ipRateLimitCache = new Map();
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 30; // 30 requests per minute per IP
+
+/**
+ * Clean up rate limit cache lazily to prevent memory leaks
+ */
+function cleanRateLimitCache() {
+  if (ipRateLimitCache.size > 2000) {
+    const now = Date.now();
+    for (const [ip, timestamps] of ipRateLimitCache.entries()) {
+      const active = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+      if (active.length === 0) {
+        ipRateLimitCache.delete(ip);
+      } else {
+        ipRateLimitCache.set(ip, active);
+      }
+    }
+  }
+}
+
+/**
+ * Checks if an IP is rate limited
+ */
+function checkRateLimit(ip) {
+  const now = Date.now();
+  cleanRateLimitCache();
+
+  if (!ipRateLimitCache.has(ip)) {
+    ipRateLimitCache.set(ip, [now]);
+    return false;
+  }
+
+  const timestamps = ipRateLimitCache.get(ip);
+  const activeTimestamps = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  activeTimestamps.push(now);
+  ipRateLimitCache.set(ip, activeTimestamps);
+
+  return activeTimestamps.length > MAX_REQUESTS_PER_WINDOW;
+}
+
+/**
+ * Assesses if the referer/origin is authorized (Same-Origin Protection)
+ */
+function isAuthorizedOrigin(req) {
+  const referer = req.headers.referer;
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+
+  // Local development bypass
+  if (process.env.NODE_ENV !== 'production') {
+    return true;
+  }
+
+  try {
+    const refOrOrig = referer || origin;
+    if (!refOrOrig) {
+      // In production, browsers send Referer/Origin for POST. If completely missing,
+      // block to prevent direct terminal curls/hotlinking, but allow if host matches localhost.
+      if (host && (host.startsWith('localhost') || host.startsWith('127.0.0.1'))) {
+        return true;
+      }
+      return false;
+    }
+
+    const urlObj = new URL(refOrOrig);
+    const refHost = urlObj.host; // e.g. "smartlms.vercel.app"
+
+    // If referrer host matches API server host, it's same-origin
+    if (host && refHost === host) {
+      return true;
+    }
+
+    // Check against standard Vercel environment variables
+    const vercelUrl = process.env.VERCEL_PROJECT_URL || process.env.VERCEL_URL;
+    if (vercelUrl) {
+      const vercelHost = vercelUrl.replace(/^https?:\/\//, '');
+      if (urlObj.hostname === vercelHost || urlObj.hostname.endsWith('.' + vercelHost)) {
+        return true;
+      }
+    }
+
+    // Allow typical localhost development
+    if (urlObj.hostname === 'localhost' || urlObj.hostname === '127.0.0.1') {
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
 
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
@@ -27,14 +122,56 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  try {
-    const { message, history = [] } = req.body || {};
+  // 1. Same-Origin & Referer Domain Lock Protection
+  if (!isAuthorizedOrigin(req)) {
+    res.writeHead(403, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Forbidden: Request origin is not authorized' }));
+    return;
+  }
 
-    if (!message) {
+  // 2. Client-IP based sliding window rate limiting
+  const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || 'unknown';
+  if (checkRateLimit(clientIp)) {
+    res.writeHead(429, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Too Many Requests: Please slow down and try again in a minute.' }));
+    return;
+  }
+
+  try {
+    let { message, history = [] } = req.body || {};
+
+    // 3. Strict Input Verification and Sanitization
+    if (!message || typeof message !== 'string') {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing message parameter' }));
+      res.end(JSON.stringify({ error: 'Missing or invalid message parameter' }));
       return;
     }
+
+    message = message.trim();
+    if (message.length > 1000) {
+      res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Message is too long (maximum 1000 characters)' }));
+      return;
+    }
+
+    if (!Array.isArray(history)) {
+      history = [];
+    }
+
+    // Keep history tight and validate schemas
+    const sanitizedHistory = history
+      .slice(-10) // Limit conversational memory to prevent API injection or token overhead
+      .filter(h => {
+        return h &&
+               typeof h === 'object' &&
+               typeof h.content === 'string' &&
+               h.content.trim().length > 0 &&
+               (h.role === 'user' || h.role === 'assistant' || h.role === 'model');
+      })
+      .map(h => ({
+        role: h.role === 'assistant' ? 'assistant' : 'user',
+        content: h.content.trim().substring(0, 2000)
+      }));
 
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
 
@@ -56,7 +193,7 @@ module.exports = async function handler(req, res) {
   - Keep responses professional, friendly, and concise.
   - Use markdown for formatting (bullet points for features, bold for emphasis).`;
 
-    await callGemini(apiKey, message, systemPrompt, history, res);
+    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -88,30 +225,46 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents,
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      }
-    })
-  });
+  let response;
+  try {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+  } catch (fetchErr) {
+    console.error('Failed to contact Gemini API:', fetchErr);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
+    return;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
     console.error('Gemini API Error:', errorText);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
     return;
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (jsonErr) {
+    console.error('Malformed JSON from Gemini API:', jsonErr);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Bad Gateway: Upstream AI model returned invalid JSON response.' }));
+    return;
+  }
 
   const aiResponse = {
     content: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.',

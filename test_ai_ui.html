@@ -2,30 +2,84 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <title>AI UI Components Verification</title>
     <link rel="stylesheet" href="CSS/base.css">
     <link rel="stylesheet" href="CSS/components.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="js/supabase-config.js"></script>
     <script src="js/core.js"></script>
     <script src="js/ai-gateway.js"></script>
+    <script src="js/kofi-ai-manager.js"></script>
 </head>
-<body>
-    <div id="testChatContainer" style="padding: 20px; max-width: 600px; margin: 0 auto;"></div>
+<body style="background: #f1f5f9; font-family: 'Inter', sans-serif; padding: 40px;">
+    <div style="max-width: 1200px; margin: 0 auto;">
+        <h1 style="text-align: center; color: #1e293b; margin-bottom: 40px;">AI Components Verification Dashboard</h1>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 40px;">
+            <!-- Column 1: AIManager (Enterprise Gateway Assistant) -->
+            <div>
+                <h2 style="color: #475569; font-size: 1.25rem; margin-bottom: 15px; text-align: center;">Enterprise AI Tutor (AIManager)</h2>
+                <div id="testChatContainer"></div>
+            </div>
+
+            <!-- Column 2: KofiAIManager (Separate Public Guide) -->
+            <div>
+                <h2 style="color: #475569; font-size: 1.25rem; margin-bottom: 15px; text-align: center;">Kofi Public Guide (KofiAIManager)</h2>
+                <div id="kofiChatContainer"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            AIManager.renderChatbot('testChatContainer', {
-                title: 'AI Tutor Verification',
-                welcomeMessage: 'Testing the AI Tutor component UI.',
-                onSend: async (msg) => {
-                    if (msg.toLowerCase().includes('markdown')) {
-                        return "Here is some markdown:\n\n* Item 1\n* Item 2\n\nCheck out [SmartLMS](https://example.com) for more info. **Bold text** here.";
+            // 1. Verify AIManager (Zero regression)
+            if (typeof AIManager !== 'undefined') {
+                AIManager.renderChatbot('testChatContainer', {
+                    title: 'AI Tutor Verification',
+                    welcomeMessage: 'Testing the AI Tutor component UI.',
+                    onSend: async (msg) => {
+                        if (msg.toLowerCase().includes('markdown')) {
+                            return "Here is some markdown:\n\n* Item 1\n* Item 2\n\nCheck out [SmartLMS](https://example.com) for more info. **Bold text** here.";
+                        }
+                        return "Simulated response for: " + msg;
+                    },
+                    onClear: () => {
+                        console.log('Chat history cleared');
                     }
-                    return "Simulated response for: " + msg;
-                },
-                onClear: () => {
-                    console.log('Chat history cleared');
-                }
-            });
+                });
+                console.log('✅ AIManager verified and rendered successfully.');
+            } else {
+                console.error('❌ AIManager is not defined!');
+            }
+
+            // 2. Verify KofiAIManager (New Enterprise enhancements)
+            if (typeof KofiAIManager !== 'undefined') {
+                KofiAIManager.renderChatbot('kofiChatContainer', {
+                    title: 'Kofi Guide Verification',
+                    welcomeMessage: 'Hi! I\'m Kofi AI, your guide with enterprise formatting, code block processing, interactive character counter, smooth UX scrolling, and Escape key listeners.',
+                    onSend: async (msg) => {
+                        if (msg.toLowerCase().includes('markdown')) {
+                            return "Here is rich markdown testing:\n\n" +
+                                   "* Bullet item 1\n" +
+                                   "* Bullet item 2 with **bold text**\n" +
+                                   "Here is an inline code block: `const x = 42;` and a multi-line code block:\n" +
+                                   "```javascript\n" +
+                                   "function helloWorld() {\n" +
+                                   "    console.log('Hello from Kofi AI!');\n" +
+                                   "}\n" +
+                                   "```\n" +
+                                   "Check out our [SmartLMS Platform](https://example.com) for secure certifications.";
+                        }
+                        return "Simulated Kofi response: " + msg;
+                    },
+                    onClear: () => {
+                        console.log('Kofi history cleared callback successfully invoked.');
+                    }
+                });
+                console.log('✅ KofiAIManager verified and rendered successfully.');
+            } else {
+                console.error('❌ KofiAIManager is not defined!');
+            }
         });
     </script>
 </body>
