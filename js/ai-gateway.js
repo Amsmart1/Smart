@@ -1,6 +1,6 @@
 /**
  * AI Gateway Frontend Manager
- * Centralizes communication with the Supabase Edge Function AI Gateway.
+ * Centralizes communication with the Vercel AI Gateway.
  */
 class AIManager {
     static _history = new Map();
