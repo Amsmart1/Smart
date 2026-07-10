@@ -1,90 +1,391 @@
 /**
  * AI Gateway Frontend Manager
- * Centralizes communication with the Vercel AI Gateway.
+ *
+ * Enterprise frontend communication layer for SmartLMS AI services.
+ *
+ * Architecture:
+ *
+ * Browser
+ *    ↓
+ * AIManager
+ *    ↓
+ * /api/ai-gateway (Vercel Serverless Function)
+ *    ↓
+ * Authorization Layer
+ *    ↓
+ * Gemini AI Services
+ *
+ * Maintains compatibility with:
+ * - Custom session authentication
+ * - x-session-id header
+ * - Existing Vercel gateway endpoint
  */
+
 class AIManager {
+
     static _history = new Map();
 
-    /**
-     * Internal helper to invoke the AI Gateway same-origin relative endpoint.
-     * Hardened with direct Supabase Edge Function fallback to prevent CORS and platform failures.
-     */
-    static async _invoke(type, payload) {
+    static _activeRequests = new Map();
 
-    const sid = sessionStorage.getItem('sessionId');
 
-    const enrichedPayload = {
-        ...(payload || {}),
-        session_id: sid || '',
-        sessionId: sid || ''
+    static CONFIG = {
+
+        endpoint: '/api/ai-gateway',
+
+        timeout: 60000,
+
+        maxHistoryMessages: 10,
+
+        retryAttempts: 2,
+
+        retryDelay: 1000
+
     };
 
 
-    try {
 
-        const response = await fetch('/api/ai-gateway', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-session-id': sid || ''
-            },
-            body: JSON.stringify({
-                type,
-                payload: enrichedPayload
-            })
-        });
+    /**
+     * Safely retrieve current session ID.
+     */
+    static _getSessionId() {
 
+        try {
 
-        const data = await response.json();
+            return sessionStorage.getItem('sessionId') || '';
 
+        } catch (error) {
 
-        if (!response.ok) {
-            throw new Error(
-                data.error || `AI Gateway HTTP ${response.status}`
+            console.warn(
+                "Unable to access session storage",
+                error
             );
+
+            return '';
+
+        }
+
+    }
+
+
+
+
+    /**
+     * Internal helper to communicate with AI Gateway.
+     *
+     * Includes:
+     * - Timeout protection
+     * - Controlled retry
+     * - Duplicate request prevention
+     * - Safe JSON handling
+     * - Structured error handling
+     */
+    static async _invoke(type, payload = {}) {
+
+
+        if (!type) {
+
+            throw new Error(
+                "AI operation type is required"
+            );
+
         }
 
 
-        return data;
+
+        const requestKey =
+            `${type}_${JSON.stringify(payload)}`;
 
 
-    } catch (error) {
 
-        console.error(
-            "Vercel AI Gateway request failed:",
-            error
+        if (this._activeRequests.has(requestKey)) {
+
+            return this._activeRequests.get(requestKey);
+
+        }
+
+
+
+        const requestPromise =
+            this._executeRequest(type, payload);
+
+
+
+        this._activeRequests.set(
+            requestKey,
+            requestPromise
         );
 
-        throw error;
-    }
-}
 
-        // 1. Attempt Vercel relative same-origin route (CORS-free bypass model)
+
         try {
-            const response = await fetch('/api/ai-gateway', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-session-id': sid || ''
-                },
-                body: JSON.stringify({ type, payload: enrichedPayload })
-            });
 
-            if (response.ok) {
-                return await response.json();
+            return await requestPromise;
+
+
+        } finally {
+
+
+            this._activeRequests.delete(
+                requestKey
+            );
+
+
+        }
+
+    }
+
+
+
+
+
+    /**
+     * Executes actual AI request.
+     */
+    static async _executeRequest(type, payload) {
+
+
+        const sid = this._getSessionId();
+
+
+
+        const enrichedPayload = {
+
+            ...payload,
+
+            session_id: sid,
+
+            sessionId: sid
+
+        };
+
+
+
+        let lastError;
+
+
+
+        for (
+            let attempt = 0;
+            attempt <= this.CONFIG.retryAttempts;
+            attempt++
+        ) {
+
+
+            try {
+
+
+                const controller =
+                    new AbortController();
+
+
+
+                const timeout =
+                    setTimeout(
+                        () => controller.abort(),
+                        this.CONFIG.timeout
+                    );
+
+
+
+                let response;
+
+
+
+                try {
+
+
+                    response = await fetch(
+                        this.CONFIG.endpoint,
+                        {
+                            method: 'POST',
+
+                            headers: {
+
+                                'Content-Type':
+                                    'application/json',
+
+                                'x-session-id':
+                                    sid
+
+                            },
+
+
+                            body: JSON.stringify({
+
+                                type,
+
+                                payload:
+                                    enrichedPayload
+
+                            }),
+
+
+                            signal:
+                                controller.signal
+
+                        }
+                    );
+
+
+                } finally {
+
+
+                    clearTimeout(timeout);
+
+
+                }
+
+
+
+
+                let data;
+
+
+
+                try {
+
+
+                    data =
+                        await response.json();
+
+
+                } catch {
+
+
+                    throw new Error(
+                        "AI gateway returned invalid response"
+                    );
+
+                }
+
+
+
+
+
+                if (!response.ok) {
+
+
+                    throw new Error(
+
+                        data?.error ||
+                        `AI Gateway HTTP ${response.status}`
+
+                    );
+
+
+                }
+
+
+
+
+                return data;
+
+
+
+            } catch (error) {
+
+
+                lastError = error;
+
+
+
+                if (
+                    error.name === 'AbortError'
+                ) {
+
+
+                    lastError =
+                        new Error(
+                            "AI request timed out. Please try again."
+                        );
+
+
+                }
+
+
+
+                if (
+                    attempt <
+                    this.CONFIG.retryAttempts
+                ) {
+
+
+                    await this._delay(
+                        this.CONFIG.retryDelay *
+                        (attempt + 1)
+                    );
+
+
+                    continue;
+
+
+                }
+
+
             }
 
-            // If relative path returned a non-200 error, capture and throw to proceed to fallback
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `HTTP ${response.status}`);
-        } catch (e) {
-            console.warn(`Local relative AI Gateway route failed. Falling back to direct Supabase Edge Function...`, e);
+        }
 
-                } catch (e) {
-            console.error("Vercel AI Gateway failed:", e);
-            throw e;
-        }
-        }
+
+
+
+        console.error(
+            "AI Gateway failed",
+            {
+                operation: type,
+                error:
+                    lastError?.message
+            }
+        );
+
+
+
+        throw lastError ||
+            new Error(
+                "AI service unavailable"
+            );
+
+    }
+
+
+
+
+    /**
+     * Delay helper for retry mechanism.
+     */
+    static _delay(ms) {
+
+        return new Promise(
+            resolve =>
+                setTimeout(resolve, ms)
+        );
+
+    }
+
+
+
+
+    /**
+     * Maintain bounded conversation history.
+     */
+    static _updateHistory(
+        key,
+        messages
+    ) {
+
+
+        const limited =
+            messages.slice(
+                -this.CONFIG.maxHistoryMessages
+            );
+
+
+        this._history.set(
+            key,
+            limited
+        );
+
+
     }
 
     /**
