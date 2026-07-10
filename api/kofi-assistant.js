@@ -102,6 +102,176 @@ function isAuthorizedOrigin(req) {
   }
 }
 
+/**
+ * Scans user inputs to detect prompt injection, toxic keywords, or out-of-scope requests.
+ * Returns a professional, friendly refusal response string if blocked, or null if allowed.
+ */
+/**
+ * Provides instant, cost-efficient, high-fidelity predefined answers for common platform inquiries.
+ * Returns a markdown response string if matched, or null to fallback to the Gemini model.
+ */
+function findPreciseResponse(message) {
+  const normalized = message.toLowerCase().trim();
+
+  // Mapping of user intent keywords/questions to high-fidelity, precise predefined responses.
+  const keywordMappings = [
+    {
+      keywords: ["login", "sign in", "signin", "how to login", "how do i login"],
+      response: "To log in to **SmartLMS**:\n1. Click the **Sign In** button in the top navigation bar of the homepage.\n2. Choose your role: **Student**, **Teacher**, or **Admin** by selecting the corresponding icon.\n3. Enter your registered email address and password.\n4. Click **Login** to enter your secure dashboard.\n\n*If you have forgotten your password, click the 'Forgot Password?' link on the login card to submit a reset request.*"
+    },
+    {
+      keywords: ["signup", "sign up", "register", "create account", "create an account"],
+      response: "Getting started with **SmartLMS** is completely free and easy:\n1. Click the **Get Started** button on the homepage.\n2. Fill in your **Full Name**, **Email Address**, **Phone Number** (optional), and choose a strong, secure password.\n3. Make sure to specify your correct role (**Student** or **Teacher**).\n4. Click **Create Account** to immediately access your customized platform dashboard!"
+    },
+    {
+      keywords: ["proctoring", "anti-cheat", "cheat", "anti cheat", "integrity", "assessment security", "monitoring"],
+      response: "SmartLMS features a state-of-the-art **Proctored Assessments & Anti-Cheat Subsystem** designed to ensure absolute academic integrity:\n- **Face Detection**: Submits webcam snapshot recordings chunk-by-chunk to monitor presence and flag multiple/missing faces.\n- **Focus & Tab-Switch Tracking**: Log real-time violations if you navigate away, minimize the window, or lose focus.\n- **Copy-Paste Blockage**: Restricts copying quiz questions or pasting answers from clipboard.\n- **Real-time Alert Stream**: Instantly notifies instructors of critical violations during active sessions.\n- **Comprehensive Violation Reports**: Teachers review chronological logs accompanied by webcam snapshots for verified grading decisions."
+    },
+    {
+      keywords: ["certificate", "certification", "verify", "verification id", "pdf certificate", "diploma"],
+      response: "Upon course completion, **SmartLMS** issues elegant, verifiable **PDF Certificates of Completion**:\n- **High-Fidelity Design**: Decorated with golden borders, institution watermarks, and registrar digital signatures.\n- **Verification ID**: Each certificate includes a unique, database-tracked Identification string.\n- **QR Code Verification**: Anyone (like employers or registrars) can scan the QR code to verify the certificate's authenticity instantly against our secure, live database.\n- **Verification Portal**: Visitors can also input a Verification ID directly via our public **Help Center** portal to verify its status instantly."
+    },
+    {
+      keywords: ["contact", "support", "help", "email", "phone", "contact us", "billing", "customer service"],
+      response: "If you need official administrative support, account setup assistance, or have billing questions, please reach our dedicated team:\n- 📧 **Email**: `eduquizlms@gmail.com`\n- 📞 **Phone**: `+233 50 596 5310`\n- 🕒 **Hours**: Our representatives are available Monday through Friday, 8:00 AM - 5:00 PM GMT.\n\n*You can also access the **Help Center** by clicking support links at the footer of the homepage for interactive FAQs sorted by student, teacher, and admin roles.*"
+    },
+    {
+      keywords: ["features", "what can you do", "capabilities", "platform overview", "lms features"],
+      response: "Welcome to **SmartLMS**! Here is an overview of our core enterprise-grade features:\n1. 🛡️ **Proctored Assessments**: Absolute academic integrity with real-time face-detection, tab-switch logging, and copy-paste blocks.\n2. 🎥 **Live Virtual Classes**: Integrated virtual meetings with automated localized timezone attendance heatmaps and replay options.\n3. 📜 **Verified Certification**: High-fidelity PDF completion certificates containing secure Verification IDs and QR codes.\n4. 📊 **Advanced Analytics**: Multi-dimensional student analytics profiles powered by interactive Chart.js radar charts and 7-row attendance logs.\n5. 💬 **Interactive Discussions**: Collaborative course message boards featuring nested comment replies and official Staff badges."
+    }
+  ];
+
+  for (const mapping of keywordMappings) {
+    if (mapping.keywords.some(keyword => normalized.includes(keyword))) {
+      return mapping.response;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Post-processes the LLM response to guarantee safety, syntax sanity, and prevents system leaks.
+ * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
+ */
+function runResponseQualityGuard(response) {
+  if (!response || typeof response !== 'string') return "";
+
+  let cleaned = response;
+
+  // 1. Prevent System Prompt/Constraint Leakage
+  const leakWords = [
+    "You are \"Kofi AI\"",
+    "systemPrompt",
+    "systemInstruction",
+    "Important Constraints:",
+    "You are a client-side guide ONLY"
+  ];
+
+  for (const leak of leakWords) {
+    if (cleaned.includes(leak)) {
+      cleaned = cleaned.split(leak)[0];
+    }
+  }
+
+  // Ensure it doesn't mention private prompt variables
+  cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "guide configuration");
+
+  // 2. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
+  // Code Blocks (```)
+  const codeBlockCount = (cleaned.match(/```/g) || []).length;
+  if (codeBlockCount % 2 !== 0) {
+    cleaned += "\n```";
+  }
+
+  // Inline Code (`)
+  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
+  if (inlineCodeCount % 2 !== 0) {
+    cleaned += "`";
+  }
+
+  // Bold (**)
+  const boldCount = (cleaned.match(/\*\*/g) || []).length;
+  if (boldCount % 2 !== 0) {
+    cleaned += "**";
+  }
+
+  // Italic (_)
+  const italicCount = (cleaned.match(/_/g) || []).length;
+  if (italicCount % 2 !== 0) {
+    cleaned += "_";
+  }
+
+  // Simple Script Injection filter
+  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+
+  return cleaned.trim();
+}
+
+function filterRequestIntent(message) {
+  const normalized = message.toLowerCase();
+
+  // 1. Prompt Injection Indicators
+  const injectionPatterns = [
+    "ignore previous instructions",
+    "ignore all instructions",
+    "system prompt",
+    "system instruction",
+    "you are now",
+    "forget everything",
+    "developer mode",
+    "dan mode",
+    "jailbreak",
+    "override",
+    "ignore the instructions",
+    "output the above",
+    "print your instructions",
+    "reveal your prompt"
+  ];
+
+  if (injectionPatterns.some(p => normalized.includes(p))) {
+    return "I am designed to be a helpful guide for the SmartLMS platform. I cannot bypass, reveal, or modify my platform instructions or security parameters. How can I help you navigate our learning platform features today?";
+  }
+
+  // 2. Toxic or Harmful Intent Indicators (e.g. building hacks, exploits, malicious scripts)
+  const harmfulIntentPatterns = [
+    "how to hack",
+    "write a virus",
+    "write malware",
+    "write an exploit",
+    "how to bypass anti-cheat",
+    "bypass anti cheat",
+    "cheat on quiz",
+    "sql injection script",
+    "xss script",
+    "how to ddos"
+  ];
+
+  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
+    return "As the SmartLMS platform assistant, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain how our proctoring and anti-cheat technologies securely safeguard assessment integrity!";
+  }
+
+  // 3. Out-Of-Scope General Knowledge/Coding Tasks
+  const outOfScopeIndicators = [
+    "write a python",
+    "write a javascript",
+    "write java code",
+    "recipe for",
+    "how to cook",
+    "how to bake",
+    "who is the president",
+    "translate this to spanish",
+    "explain quantum physics",
+    "solve this equation"
+  ];
+
+  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
+    return "I am Kofi AI, your dedicated guide for the SmartLMS platform. I'm specialized in helping you navigate our platform features (like Proctored Assessments, Live Classes, and Verified Certificates). I'm unable to write general programming code or answer general knowledge questions. Let me know if you have any questions about using SmartLMS!";
+  }
+
+  return null;
+}
+
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
     method: req.method,
@@ -172,6 +342,22 @@ module.exports = async function handler(req, res) {
         role: h.role === 'assistant' ? 'assistant' : 'user',
         content: h.content.trim().substring(0, 2000)
       }));
+
+    // 4. Request Intent Filter
+    const filterRefusal = filterRequestIntent(message);
+    if (filterRefusal) {
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ content: filterRefusal }));
+      return;
+    }
+
+    // 5. Precise Response Lookup
+    const preciseResponse = findPreciseResponse(message);
+    if (preciseResponse) {
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ content: preciseResponse }));
+      return;
+    }
 
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
 
@@ -266,8 +452,11 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
     return;
   }
 
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+  const guardedText = runResponseQualityGuard(rawText);
+
   const aiResponse = {
-    content: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.',
+    content: guardedText,
     raw: data
   };
 
