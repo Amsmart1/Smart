@@ -6,7 +6,7 @@ class AIManager {
     static _history = new Map();
 
     /**
-     * Internal helper to invoke the AI Gateway edge function.
+     * Internal helper to invoke the AI Gateway same-origin relative endpoint.
      */
     static async _invoke(type, payload) {
         const sid = sessionStorage.getItem('sessionId');
@@ -16,14 +16,18 @@ class AIManager {
         };
 
         try {
-            // We use the same name as the edge function: 'ai-gateway'
-            const { data, error } = await window.supabaseClient.functions.invoke('ai-gateway', {
-                body: { type, payload },
-                headers: headers
+            const response = await fetch('/api/ai-gateway', {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ type, payload })
             });
 
-            if (error) throw error;
-            return data;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+
+            return await response.json();
         } catch (e) {
             console.error(`AI Gateway (${type}) failed:`, e);
             throw e;

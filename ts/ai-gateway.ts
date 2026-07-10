@@ -244,13 +244,14 @@ serve(async (req) => {
       status: 200,
     });
 
-  } catch (error) {
-    console.error('AI Gateway Error:', error.message);
-    const status = error.message.includes('Authentication') ? 401 :
-                   error.message.includes('Unauthorized') || error.message.includes('Access Denied') ? 403 : 500;
+  } catch (error: any) {
+    const errorMsg = error instanceof Error ? error.message : (error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error));
+    console.error('AI Gateway Error:', errorMsg);
+    const status = errorMsg.includes('Authentication') ? 401 :
+                   errorMsg.includes('Unauthorized') || errorMsg.includes('Access Denied') ? 403 : 500;
 
     return new Response(JSON.stringify({
-        error: error.message,
+        error: errorMsg,
         timestamp: new Date().toISOString(),
         type: 'ai_gateway_error'
     }), {

@@ -22,10 +22,66 @@ module.exports = async function handler(req, res) {
     const signature = req.headers['x-supabase-signature'];
     const expectedSignature = process.env.AI_GATEWAY_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-    if (!signature || signature !== expectedSignature) {
-      res.writeHead(401, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing gateway signature' }));
-      return;
+    let userEmail = null;
+    let userRole = null;
+
+    const { type, payload } = req.body || {};
+
+    if (signature && signature === expectedSignature) {
+      // Delegated request (e.g. from Supabase Edge Function with validated signature)
+      // Trust the payload's email and role
+      userEmail = payload?.email;
+      userRole = payload?.role;
+    } else {
+      // Direct same-origin request from client
+      // Perform server-to-server validation by calling Supabase RPC get_ai_access_context directly
+      const sessionId = req.headers['x-session-id'] || '';
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Server configuration error: missing SUPABASE_URL or SUPABASE_ANON_KEY' }));
+        return;
+      }
+
+      if (!type) {
+        res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing request type' }));
+        return;
+      }
+
+      // Call Supabase REST RPC for authorization
+      const authResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/get_ai_access_context`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'x-session-id': sessionId
+        },
+        body: JSON.stringify({
+          p_operation_type: type,
+          p_payload: payload || {}
+        })
+      });
+
+      if (!authResponse.ok) {
+        const errorText = await authResponse.text();
+        res.writeHead(403, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Authorization failed: ${errorText}` }));
+        return;
+      }
+
+      const authContext = await authResponse.json();
+      if (!authContext || !authContext.authorized) {
+        res.writeHead(authContext?.error === 'Authentication required' ? 401 : 403, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: authContext?.error || 'Unauthorized' }));
+        return;
+      }
+
+      userEmail = authContext.email;
+      userRole = authContext.role;
     }
 
     if (req.method !== 'POST') {
@@ -34,12 +90,95 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const { type, payload } = req.body || {};
-
     if (!type || !payload) {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing request type or payload' }));
       return;
+    }
+
+    // Attach verified identity to payload
+    payload.email = userEmail;
+    payload.role = userRole;
+
+    // Process materials RAG inside tutor if direct request (so that semantic search works!)
+    if (type === 'tutor' && !signature) {
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+      const { course_id, message } = payload;
+
+      // 1. Generate embedding for user message
+      const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
+      let context = '';
+
+      if (apiKey) {
+        try {
+          const embedRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: "models/text-embedding-004",
+              content: { parts: [{ text: message }] }
+            })
+          });
+
+          if (embedRes.ok) {
+            const embedData = await embedRes.json();
+            const embedding = embedData.embedding.values;
+
+            // 2. Call match_materials RPC
+            const matchResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/match_materials`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`,
+                'x-session-id': req.headers['x-session-id'] || ''
+              },
+              body: JSON.stringify({
+                query_embedding: embedding,
+                match_threshold: 0.3,
+                match_count: 5,
+                p_course_id: course_id
+              })
+            });
+
+            if (matchResponse.ok) {
+              const matches = await matchResponse.json();
+              if (matches && matches.length > 0) {
+                context = matches.map(m => m.content).join('\n---\n');
+              }
+            }
+          }
+        } catch (embedError) {
+          console.error('Semantic search in Vercel failed:', embedError);
+        }
+      }
+
+      if (!context) {
+        // Fallback to basic retrieval using REST API endpoints
+        try {
+          const [matRes, lesRes] = await Promise.all([
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            }),
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            })
+          ]);
+
+          const materials = matRes.ok ? await matRes.json() : [];
+          const lessons = lesRes.ok ? await lesRes.json() : [];
+
+          context = [
+            ...(materials || []).map(m => `Material: ${m.title} - ${m.description}`),
+            ...(lessons || []).map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
+          ].join('\n\n');
+        } catch (retrievalError) {
+          console.error('Basic context retrieval failed:', retrievalError);
+        }
+      }
+
+      payload.context = context;
     }
 
     switch (type) {
@@ -71,10 +210,11 @@ module.exports = async function handler(req, res) {
     }
 
   } catch (error) {
-    console.error('Vercel AI Gateway Error:', error.message);
+    const errorMsg = error instanceof Error ? error.message : (error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error));
+    console.error('Vercel AI Gateway Error:', errorMsg);
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      error: error.message,
+      error: errorMsg,
       timestamp: new Date().toISOString(),
       type: 'vercel_gateway_error'
     }));
@@ -98,7 +238,10 @@ async function handleCourseTutor(payload, res) {
   3. Scaffolding: Provide hints and guide the student towards finding the answer themselves.
   4. Follow-up: Always ask a relevant follow-up question to deepen the student's understanding.
 
-  If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
+  Strict Academic Guardrails:
+  - You have absolutely NO access to quizzes, exams, assignments, student submissions, or grades.
+  - If a student asks about their grades, specific assignment answers, quiz solutions, or submission statuses, you MUST politely explain that you do not have access to that information and can only assist them in learning and understanding the course concepts, lessons, and materials.
+  - Do not make up answers. If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
 
   Course Context:
   ${context.substring(0, 15000)}`;
@@ -113,10 +256,35 @@ async function handleAssessmentGenerator(payload, res) {
   const { topic, type, count, difficulty, rubrics, email, role } = payload;
   const apiKey = process.env.GEMINI_ASSESSMENT_API_KEY;
 
+  let schemaPrompt = '';
+  if (type === 'quiz') {
+    schemaPrompt = `Each question object in the array MUST use the following fields:
+  - "text": string (the question text)
+  - "type": "mcq" (Multiple Choice), "tf" (True/False), or "short" (Short Answer)
+  - "points": number (e.g. 5)
+  - "hint": string (optional hint)
+  - "explanation": string (optional explanation for the correct answer)
+  - "options": array of 4 strings (for "mcq" type; empty/omitted for others)
+  - "correct": string
+    * For "mcq": index of the correct option as a string (e.g., "0", "1", "2", "3")
+    * For "tf": "True" or "False"
+    * For "short": string containing the correct exact-match answer`;
+  } else {
+    schemaPrompt = `Each question object in the array MUST use the following fields:
+  - "text": string (the question text)
+  - "type": "essay", "file", or "link" (the primary submission type)
+  - "types": array of strings (e.g. ["essay"], ["file"], ["link"] - can include multiple if appropriate)
+  - "points": number (e.g. 10)
+  - "extensions": string (comma-separated list of allowed file extensions, e.g. ".pdf, .docx, .png" if "file" type is used, otherwise empty string)`;
+  }
+
   const prompt = `Generate a ${type} with ${count} questions about "${topic}".
   Difficulty level: ${difficulty}.
   ${rubrics ? `Follow these rubrics: ${rubrics}` : ''}
+
   Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
+  ${schemaPrompt}
+
   Wrap your JSON response in \`\`\`json [CODE] \`\`\` markers.`;
 
   const systemPrompt = `You are an expert curriculum designer and assessment generator.
@@ -138,7 +306,11 @@ async function handleGradingAssistant(payload, res) {
   Questions: ${JSON.stringify(questions)}
   Student Work: ${student_submission}
 
-  Provide a detailed critique, suggested scores per question, and overall feedback for the student.`;
+  Please evaluate this student submission carefully and professionally.
+  Provide a detailed Markdown report containing the following sections:
+  1. **Question-by-Question Evaluation**: For each question, provide a suggested score out of its maximum points, brief critique, and helpful feedback.
+  2. **Rubric Scoring Analysis**: Break down how the student's work aligns with and meets the specified rubric criteria.
+  3. **Overall Feedback & Recommendation**: A final, constructive overall summary highlighting strengths and key areas for improvement, alongside a recommended total score out of the total possible points.`;
 
   const systemPrompt = `You are a fair and insightful teaching assistant.
   Assisting Teacher: ${email}
@@ -161,7 +333,21 @@ async function handleAnalyticsAI(payload, res) {
 
   Analyze the data and provide actionable insights, trends, and risk predictions.`;
 
-  const systemPrompt = "You are a senior educational data analyst. You provide deep insights from LMS performance data.";
+  let systemPrompt = `You are a senior educational data analyst. You provide deep insights from LMS performance data.
+  Analyzing for user: ${email}
+  Role: ${role}.`;
+
+  if (role === 'admin') {
+    systemPrompt += `
+    Since you are an administrator, focus on high-level administrative insights, platform-wide trends, system-wide metrics (such as active users, courses, enrollments, submissions), and potential security, proctoring, or academic integrity risk summaries across the entire institution.`;
+  } else if (role === 'teacher') {
+    systemPrompt += `
+    Since you are a teacher, focus on course-level performance, tracking student completion rates, average scores, identifying low-performing or "at-risk" students, recommending targeted academic interventions, and suggesting updates or adjustments to lesson materials or assignments based on performance gaps.`;
+  } else {
+    systemPrompt += `
+    Since you are a student, focus on personal progress tutoring. Highlight strengths, identify areas of improvement based on recent grades, suggest helpful study habits, and provide encouragement. Be a supportive personal study assistant.`;
+  }
+
   return callGemini(apiKey, prompt, systemPrompt, [], res);
 }
 
@@ -183,9 +369,10 @@ async function handlePlatformAssistant(payload, res) {
   5. Interactive Discussions: Collaborate deeply with course-specific real-time discussion boards supporting nested reply threads, post view-count tracking (recording views of posts currently in the viewport), direct file attachment uploads, and official Staff badges to recognize teachers and admins.
 
   Important Constraints:
-  - You have NO access to personal student data, grades, or private course content.
-  - You cannot perform administrative actions like enrollment, account deletion, or password resets.
-  - For support issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
+  - You are a client-side guide ONLY. You do NOT have any access to personal student data, grades, quiz/assignment submissions, or private course content.
+  - If a user asks for sensitive backend information, SQL databases, server configurations, private student/course records, or personal details, you must politely refuse and remind them that you are a frontend guide designed solely for navigation and feature demonstration.
+  - You cannot perform any administrative or transactional actions like enrollment, course creation, account deletion, password resets, or changing grades.
+  - For technical support, account billing, or official issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
   - Keep responses professional, friendly, and concise.
   - Use markdown for formatting (bullet points for features, bold for emphasis).`;
 
