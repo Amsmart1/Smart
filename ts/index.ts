@@ -24,10 +24,19 @@ serve(async (req) => {
 
     const supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Verify Authorization: Strictly use custom x-session-id header
-    const sessionId = req.headers.get('x-session-id');
+    const { type, payload } = await req.json();
+
+    if (!type || !payload) {
+      return new Response(JSON.stringify({ error: 'Missing request type or payload' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      });
+    }
+
+    // Verify Authorization: Strictly use resolved session ID (header or body)
+    const sessionId = req.headers.get('x-session-id') || payload?.session_id || payload?.sessionId;
     if (!sessionId) {
-      return new Response(JSON.stringify({ error: 'Missing x-session-id header' }), {
+      return new Response(JSON.stringify({ error: 'Missing session ID' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       });
@@ -68,15 +77,6 @@ serve(async (req) => {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 403,
         });
-    }
-
-    const { type, payload } = await req.json();
-
-    if (!type || !payload) {
-      return new Response(JSON.stringify({ error: 'Missing request type or payload' }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 400,
-      });
     }
 
     const { title, message, link, course_id, target_role, target_email, expires_in } = payload;
