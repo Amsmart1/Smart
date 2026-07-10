@@ -5,6 +5,7 @@
  * NO Supabase, sessions, cookies, RBAC, ABAC, database, or RAG.
  * Enhanced with enterprise-grade Markdown processing, full Accessibility support,
  * Character Limit indicator, smooth UX scroll anchoring, and Keyboard controls.
+ * Integrates flawlessly with SmartLMS Centralized Voice Engine.
  */
 
 class KofiAIManager {
@@ -141,17 +142,22 @@ class KofiAIManager {
 
         const chatHtml = `
             <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
-                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc;">
+                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc; gap: 10px; flex-wrap: wrap;">
                     <div class="flex-center-y gap-10" style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 1.5rem" aria-hidden="true">🤖</span>
                         <strong style="color: var(--p, #5b2ea6); font-size: 1.05rem;">${window.escapeHtml(title)}</strong>
                     </div>
-                    <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem;">Clear</button>
+                    <div class="flex-center-y gap-5" style="display: flex; align-items: center; gap: 5px; margin-left: auto;">
+                        <button class="button secondary tiny w-auto ai-handsfree-btn" aria-label="Toggle hands-free conversation mode" style="margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px;">🎙️ Hands-Free: Off</button>
+                        <button class="button secondary tiny w-auto ai-tts-btn" aria-label="Toggle voice output" style="margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px;">🔇 Read Aloud: Off</button>
+                        <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem; border-radius: 4px;">Clear</button>
+                    </div>
                 </div>
                 <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
                 <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 12px 12px;">
                     <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
+                        <button class="button secondary small w-auto ai-mic-btn" aria-label="Start voice input" style="border-radius: 20px; padding: 8px 12px; margin: 0; display: flex; align-items: center; justify-content: center; background: #f1f5f9; border: 1px solid #cbd5e1; font-size: 1.1rem; line-height: 1;" title="Start voice input">🎙️</button>
                         <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
                         <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0;">Send</button>
                     </div>
@@ -167,6 +173,21 @@ class KofiAIManager {
         const clearBtn = container.querySelector('.ai-clear-btn');
         const messagesArea = container.querySelector('.ai-chat-messages');
         const counter = container.querySelector('.ai-char-counter');
+        const micBtn = container.querySelector('.ai-mic-btn');
+        const ttsBtn = container.querySelector('.ai-tts-btn');
+        const handsFreeBtn = container.querySelector('.ai-handsfree-btn');
+
+        // Initial setup for voice elements
+        let ttsEnabled = false;
+        const supported = window.voiceEngine ? window.voiceEngine.isSupported() : { recognition: false, synthesis: false };
+
+        if (!supported.recognition) {
+            if (micBtn) micBtn.style.display = 'none';
+            if (handsFreeBtn) handsFreeBtn.style.display = 'none';
+        }
+        if (!supported.synthesis) {
+            if (ttsBtn) ttsBtn.style.display = 'none';
+        }
 
         const updateCharCounter = () => {
             const len = input.value.length;
@@ -265,6 +286,11 @@ class KofiAIManager {
             messagesArea.innerHTML = '';
             appendMessage('assistant', welcomeMessage);
             if (counter) counter.textContent = '0 / 1000';
+            if (window.voiceEngine) {
+                window.voiceEngine.stop();
+                window.voiceEngine.stopListening();
+                window.voiceEngine.stopConversation();
+            }
         };
 
         // Initial welcome
@@ -298,7 +324,7 @@ class KofiAIManager {
             const typingDiv = document.createElement('div');
             typingDiv.className = 'ai-msg assistant mb-15 typing-indicator';
             typingDiv.style.marginBottom = '15px';
-            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #cbd5e1; display: inline-block; border-radius: 8px; padding: 10px;"><span class="animate-pulse" style="font-weight: 500; color: #64748b;">Kofi is thinking...</span></div>`;
+            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #cbd5e1; display: inline-block;"><span class="animate-pulse" style="font-weight: 500; color: #64748b;">Kofi is thinking...</span></div>`;
             messagesArea.appendChild(typingDiv);
 
             messagesArea.scrollTo({
@@ -310,6 +336,11 @@ class KofiAIManager {
                 const response = await onSend(msg);
                 typingDiv.remove();
                 appendMessage('assistant', response);
+
+                // Synthesize/speak response if active
+                if (ttsEnabled && window.voiceEngine) {
+                    window.voiceEngine.speak(response);
+                }
             } catch (e) {
                 typingDiv.remove();
                 const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
@@ -318,12 +349,120 @@ class KofiAIManager {
             } finally {
                 input.disabled = false;
                 sendBtn.disabled = false;
-                input.focus();
+                // If hands-free is active, we don't steal focus aggressively
+                if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
+                    input.focus();
+                }
             }
         };
 
         sendBtn.onclick = handleSend;
         input.onkeypress = (e) => { if (e.key === 'Enter') handleSend(); };
+
+        // Synchronize Voice Engine state with UI indicators
+        const syncVoiceUI = (state) => {
+            if (!state) return;
+
+            // Mic button styling
+            if (state.status === 'listening') {
+                if (micBtn) {
+                    micBtn.style.background = '#ef4444';
+                    micBtn.style.borderColor = '#ef4444';
+                    micBtn.style.color = '#fff';
+                    micBtn.innerHTML = '🛑';
+                    micBtn.title = 'Stop listening';
+                }
+            } else {
+                if (micBtn) {
+                    micBtn.style.background = '#f1f5f9';
+                    micBtn.style.borderColor = '#cbd5e1';
+                    micBtn.style.color = 'inherit';
+                    micBtn.innerHTML = '🎙️';
+                    micBtn.title = 'Start voice input';
+                }
+            }
+
+            // Handsfree button styling
+            if (handsFreeBtn) {
+                if (window.voiceEngine && window.voiceEngine.settings.conversationMode) {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: On';
+                    handsFreeBtn.style.background = '#dcfce7';
+                    handsFreeBtn.style.color = '#15803d';
+                    handsFreeBtn.style.borderColor = '#bbf7d0';
+                } else {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: Off';
+                    handsFreeBtn.style.background = '#f1f5f9';
+                    handsFreeBtn.style.color = 'inherit';
+                    handsFreeBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+
+            // TTS Read Aloud button styling
+            if (ttsBtn) {
+                if (ttsEnabled) {
+                    ttsBtn.textContent = '🔊 Read Aloud: On';
+                    ttsBtn.style.background = '#dbeafe';
+                    ttsBtn.style.color = '#1d4ed8';
+                    ttsBtn.style.borderColor = '#bfdbfe';
+                } else {
+                    ttsBtn.textContent = '🔇 Read Aloud: Off';
+                    ttsBtn.style.background = '#f1f5f9';
+                    ttsBtn.style.color = 'inherit';
+                    ttsBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+        };
+
+        // Hook up Voice Engine callback subscriptions
+        if (window.voiceEngine) {
+            window.voiceEngine.onStateChange = syncVoiceUI;
+
+            window.voiceEngine.conversationManager.aiCallback = async (text) => {
+                if (!text) return;
+                input.value = text;
+                updateCharCounter();
+                await handleSend();
+            };
+
+            // Set initial state
+            syncVoiceUI(window.voiceEngine.getStatus());
+        }
+
+        if (micBtn) {
+            micBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const state = window.voiceEngine.getStatus();
+                if (state.status === 'listening') {
+                    window.voiceEngine.stopListening();
+                } else {
+                    window.voiceEngine.listen();
+                }
+            };
+        }
+
+        if (ttsBtn) {
+            ttsBtn.onclick = () => {
+                ttsEnabled = !ttsEnabled;
+                if (!ttsEnabled && window.voiceEngine) {
+                    window.voiceEngine.stop();
+                }
+                syncVoiceUI(window.voiceEngine ? window.voiceEngine.getStatus() : null);
+            };
+        }
+
+        if (handsFreeBtn) {
+            handsFreeBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const isConv = !window.voiceEngine.settings.conversationMode;
+                if (isConv) {
+                    ttsEnabled = true; // Auto-enable read aloud for conversational flow
+                    window.voiceEngine.startConversation();
+                } else {
+                    window.voiceEngine.stopConversation();
+                }
+                syncVoiceUI(window.voiceEngine.getStatus());
+            };
+        }
     }
 }
 
