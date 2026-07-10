@@ -9,6 +9,11 @@ const corsHeaders = {
 };
 
 module.exports = async function handler(req, res) {
+  console.log("AI Gateway Request:", {
+    method: req.method,
+    headers: req.headers,
+    body: req.body
+});
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(200, corsHeaders);
