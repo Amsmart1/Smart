@@ -7,30 +7,54 @@ class AIManager {
 
     /**
      * Internal helper to invoke the AI Gateway same-origin relative endpoint.
+     * Hardened with direct Supabase Edge Function fallback to prevent CORS and platform failures.
      */
     static async _invoke(type, payload) {
         const sid = sessionStorage.getItem('sessionId');
-        const headers = {
-            'Content-Type': 'application/json',
-            'x-session-id': sid || ''
+        const enrichedPayload = {
+            ...(payload || {}),
+            session_id: sid || '',
+            sessionId: sid || ''
         };
 
+        // 1. Attempt Vercel relative same-origin route (CORS-free bypass model)
         try {
             const response = await fetch('/api/ai-gateway', {
                 method: 'POST',
-                headers: headers,
-                body: JSON.stringify({ type, payload })
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-session-id': sid || ''
+                },
+                body: JSON.stringify({ type, payload: enrichedPayload })
             });
 
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(errData.error || `HTTP ${response.status}`);
+            if (response.ok) {
+                return await response.json();
             }
 
-            return await response.json();
+            // If relative path returned a non-200 error, capture and throw to proceed to fallback
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${response.status}`);
         } catch (e) {
-            console.error(`AI Gateway (${type}) failed:`, e);
-            throw e;
+            console.warn(`Local relative AI Gateway route failed. Falling back to direct Supabase Edge Function...`, e);
+
+            // 2. Direct Supabase Edge Function Fallback
+            // Since we updated supabase-config.js to omit 'x-session-id' from /functions/v1/ headers,
+            // this fallback will bypass Kong gateway custom header restrictions completely.
+            if (window.supabaseClient && window.supabaseClient.functions && typeof window.supabaseClient.functions.invoke === 'function') {
+                try {
+                    const { data, error } = await window.supabaseClient.functions.invoke('ai-gateway', {
+                        body: { type, payload: enrichedPayload }
+                    });
+                    if (error) throw error;
+                    return data;
+                } catch (edgeErr) {
+                    console.error("Direct Supabase Edge Function fallback also failed:", edgeErr);
+                    throw edgeErr;
+                }
+            } else {
+                throw e; // Rethrow original error if Supabase client fallback is unavailable
+            }
         }
     }
 

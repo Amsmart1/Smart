@@ -25,12 +25,6 @@ serve(async (req) => {
     // Falls back to SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY if not explicitly defined
     const gatewaySecret = Deno.env.get('AI_GATEWAY_SECRET') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || supabaseAnonKey;
 
-    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: { 'x-session-id': req.headers.get('x-session-id') || '' }
-      }
-    });
-
     const { type, payload } = await req.json();
 
     if (!type || !payload) {
@@ -39,6 +33,15 @@ serve(async (req) => {
         status: 400,
       });
     }
+
+    // Enforce robust identity resolution: support both HTTP header and JSON body payload session_id
+    const sessionId = req.headers.get('x-session-id') || payload?.session_id || payload?.sessionId || '';
+
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        headers: { 'x-session-id': sessionId }
+      }
+    });
 
     // Enterprise Grade Authorization: Use the existing identity system via DB RPC.
     // This avoids duplicated authentication and inconsistent session validation.

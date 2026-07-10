@@ -18,13 +18,15 @@ const clientOptions = {
             options = options || {};
             const headers = new Headers(options.headers || {});
 
-            // Inject sid if it exists in sessionStorage
-            if (sid) {
+            // Inject sid and migrationMode if active, unless calling a Supabase Edge Function.
+            // This prevents browser CORS preflight failures on custom headers at the API Gateway.
+            const isEdgeFunction = typeof url === 'string' && url.includes('/functions/v1/');
+
+            if (sid && !isEdgeFunction) {
                 headers.set('x-session-id', sid);
             }
 
-            // Inject migration mode header if active
-            if (migrationMode === 'true') {
+            if (migrationMode === 'true' && !isEdgeFunction) {
                 headers.set('x-migration-mode', 'true');
             }
 
@@ -1337,8 +1339,16 @@ class SupabaseDB {
     }
 
     static async invokeFunction(name, payload) {
+        // Enforce enterprise grade CORS compatibility:
+        // Pass session_id in the body payload instead of headers to avoid preflight issues
+        const sid = sessionStorage.getItem('sessionId');
+        const enrichedPayload = {
+            ...(payload || {}),
+            session_id: sid || '',
+            sessionId: sid || ''
+        };
         const { data, error } = await supabaseClient.functions.invoke(name, {
-            body: payload
+            body: enrichedPayload
         });
         if (error) throw error;
         return data;
