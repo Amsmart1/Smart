@@ -38,11 +38,10 @@ class AIManager {
         } catch (e) {
             console.warn(`Local relative AI Gateway route failed. Falling back to direct Supabase Edge Function...`, e);
 
-          throw e;
-                }
-            } else {
-                throw e; // Rethrow original error if Supabase client fallback is unavailable
-            }
+                } catch (e) {
+            console.error("Vercel AI Gateway failed:", e);
+            throw e;
+        }
         }
     }
 
