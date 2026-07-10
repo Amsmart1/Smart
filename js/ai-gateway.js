@@ -38,19 +38,7 @@ class AIManager {
         } catch (e) {
             console.warn(`Local relative AI Gateway route failed. Falling back to direct Supabase Edge Function...`, e);
 
-            // 2. Direct Supabase Edge Function Fallback
-            // Since we updated supabase-config.js to omit 'x-session-id' from /functions/v1/ headers,
-            // this fallback will bypass Kong gateway custom header restrictions completely.
-            if (window.supabaseClient && window.supabaseClient.functions && typeof window.supabaseClient.functions.invoke === 'function') {
-                try {
-                    const { data, error } = await window.supabaseClient.functions.invoke('ai-gateway', {
-                        body: { type, payload: enrichedPayload }
-                    });
-                    if (error) throw error;
-                    return data;
-                } catch (edgeErr) {
-                    console.error("Direct Supabase Edge Function fallback also failed:", edgeErr);
-                    throw edgeErr;
+          throw e;
                 }
             } else {
                 throw e; // Rethrow original error if Supabase client fallback is unavailable
