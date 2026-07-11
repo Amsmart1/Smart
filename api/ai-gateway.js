@@ -569,6 +569,62 @@ async function handleGradingAssistant(payload, res) {
 }
 
 /**
+ * Dedicated Gemini API Caller for Role-based Analytics with RunTutorResponseQualityGuard
+ */
+async function callAnalyticsGemini(apiKey, prompt, systemInstruction, history = [], res) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    return;
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: prompt }] }
+  ];
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents,
+      system_instruction: { parts: [{ text: systemInstruction }] },
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.8,
+        topK: 40,
+        maxOutputTokens: 2048,
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Gemini API Error:', errorText);
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
+    return;
+  }
+
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+
+  // Apply our enterprise-grade quality guard!
+  const guardedText = runTutorResponseQualityGuard(rawText);
+
+  const aiResponse = {
+    content: guardedText,
+    raw: data
+  };
+
+  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(aiResponse));
+}
+
+/**
  * Feature 4: Role-based Analytics
  */
 async function handleAnalyticsAI(payload, res) {
@@ -597,7 +653,16 @@ async function handleAnalyticsAI(payload, res) {
     Since you are a student, focus on personal progress tutoring. Highlight strengths, identify areas of improvement based on recent grades, suggest helpful study habits, and provide encouragement. Be a supportive personal study assistant.`;
   }
 
-  return callGemini(apiKey, prompt, systemPrompt, [], res);
+  // Enforce conversational quality requirements on the assistant itself via the system prompt as well
+  systemPrompt += `
+  Strict Conversational Quality Check:
+  - Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
+  - Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
+  - Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
+  - Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
+  - Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
+
+  return callAnalyticsGemini(apiKey, prompt, systemPrompt, [], res);
 }
 
 
