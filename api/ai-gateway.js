@@ -502,8 +502,14 @@ async function handleCourseTutor(payload, res) {
  * Feature 2: Assessment Generator
  */
 async function handleAssessmentGenerator(payload, res) {
-  const { topic, type, count, difficulty, rubrics, email, role } = payload;
+  const { topic, type, count, difficulty, rubrics, email, role, lesson_title, lesson_content } = payload;
   const apiKey = process.env.GEMINI_ASSESSMENT_API_KEY;
+
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
+    return;
+  }
 
   let schemaPrompt = '';
   if (type === 'quiz') {
@@ -527,20 +533,138 @@ async function handleAssessmentGenerator(payload, res) {
   - "extensions": string (comma-separated list of allowed file extensions, e.g. ".pdf, .docx, .png" if "file" type is used, otherwise empty string)`;
   }
 
-  const prompt = `Generate a ${type} with ${count} questions about "${topic}".
-  Difficulty level: ${difficulty}.
-  ${rubrics ? `Follow these rubrics: ${rubrics}` : ''}
+  let cognitiveFocus = '';
+  const diffLower = (difficulty || '').toLowerCase();
+  if (diffLower === 'beginner') {
+    cognitiveFocus = `COGNITIVE COMPLEXITY (Bloom's Taxonomy): BEGINNER (Remembering and Understanding).
+  Focus on testing recall, key facts, primary definitions, and basic concepts. Questions should ask "What is...", "Define...", "Identify...", or "Which of the following is true...".`;
+  } else if (diffLower === 'advanced') {
+    cognitiveFocus = `COGNITIVE COMPLEXITY (Bloom's Taxonomy): ADVANCED (Evaluating and Creating).
+  Focus on high-level evaluation, critical analysis, multi-step problem solving, design, and synthesis. Questions should present complex scenarios, asking the user to evaluate solutions, design structures, or critique theoretical frameworks.`;
+  } else {
+    cognitiveFocus = `COGNITIVE COMPLEXITY (Bloom's Taxonomy): INTERMEDIATE (Applying and Analyzing).
+  Focus on application of concepts to specific situations and analytical problem solving. Questions should present a concrete scenario, code snippet, or situation where the concept is applied.`;
+  }
 
-  Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
-  ${schemaPrompt}
-
-  Wrap your JSON response in \`\`\`json [CODE] \`\`\` markers.`;
+  let lessonPrompt = '';
+  if (lesson_content && lesson_content.trim() !== '') {
+    lessonPrompt = `
+  The assessment MUST be strictly aligned with the following lesson content:
+  ---
+  LESSON TITLE: ${lesson_title || 'Selected Lesson'}
+  LESSON CONTENT:
+  ${lesson_content}
+  ---
+  Ensure that you only generate questions about the concepts, definitions, theories, and details explicitly mentioned in the lesson above. Do not include external or off-topic information.`;
+  }
 
   const systemPrompt = `You are an expert curriculum designer and assessment generator.
-  Generating for Teacher: ${email}
-  Role: ${role}
-  You output only valid JSON.`;
-  return callGemini(apiKey, prompt, systemPrompt, [], res);
+  Generating for Teacher: ${email || 'Teacher'}
+  Role: ${role || 'teacher'}
+  You MUST output ONLY a valid JSON array of question objects matching the SmartLMS schema. Do not output any conversational preamble or markdown outer formatting other than the JSON block.`;
+
+  const prompt = `Generate a ${type} with exactly ${count} questions about "${topic}".
+  Difficulty level: ${difficulty}.
+
+  ${cognitiveFocus}
+
+  ${lessonPrompt}
+
+  ${rubrics ? `Follow these rules/rubrics for assessment style: ${rubrics}` : ''}
+
+  Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
+
+  ${schemaPrompt}
+
+  Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          temperature: 0.2, // Lower temperature for high-fidelity structured JSON output
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Gemini API Error (Assessment Generator):', errorText);
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // Robust extraction of JSON array from response
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawText.trim());
+    } catch (e) {
+      const patterns = [
+        /```json\s*([\s\S]*?)\s*```/,
+        /```\s*([\s\S]*?)\s*```/,
+        /(\[\s*\{[\s\S]*\}\s*\])/,
+        /(\{\s*".*"\s*:[\s\S]*\})/
+      ];
+      for (const pattern of patterns) {
+        const match = rawText.match(pattern);
+        if (match) {
+          try {
+            parsed = JSON.parse((match[1] || match[0]).trim());
+            break;
+          } catch (e2) {}
+        }
+      }
+    }
+
+    if (!Array.isArray(parsed)) {
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.questions)) {
+        parsed = parsed.questions;
+      } else if (parsed && typeof parsed === 'object') {
+        parsed = [parsed];
+      } else {
+        parsed = [];
+      }
+    }
+
+    // Sanitize and run Response Quality Guard on string fields
+    parsed.forEach(q => {
+      if (q.text) q.text = runTutorResponseQualityGuard(q.text);
+      if (q.hint) q.hint = runTutorResponseQualityGuard(q.hint);
+      if (q.explanation) q.explanation = runTutorResponseQualityGuard(q.explanation);
+      if (Array.isArray(q.options)) {
+        q.options = q.options.map(opt => typeof opt === 'string' ? runTutorResponseQualityGuard(opt) : opt);
+      }
+      if (typeof q.points === 'string') {
+        q.points = parseInt(q.points) || 5;
+      } else if (typeof q.points !== 'number') {
+        q.points = 5;
+      }
+      q.points = Math.max(1, q.points);
+    });
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: JSON.stringify(parsed),
+      raw: data
+    }));
+
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('Assessment Generator Error:', errorMsg);
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: errorMsg }));
+  }
 }
 
 /**

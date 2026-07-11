@@ -16,6 +16,20 @@
     <div style="max-width: 1200px; margin: 0 auto;">
         <h1 style="text-align: center; color: #1e293b; margin-bottom: 40px;">AI Components Verification Dashboard</h1>
 
+        <!-- Section: Assessment Generators -->
+        <div class="card mb-40" style="padding: 30px; text-align: center; border-radius: 12px; border: 1px solid var(--border);">
+            <h2 style="color: var(--purple); margin-top: 0;">🧪 Assessment AI Assistants</h2>
+            <p class="text-muted">Interactive verification controls for AI-powered assessment generation, topics/lessons filtering, and editable rubrics.</p>
+            <div class="flex gap-15 justify-center mt-20" style="display: flex; gap: 15px; justify-content: center;">
+                <button class="button" onclick="window.openAIQuizGenerator('11111111-2222-3333-4444-555555555555')" style="width: auto;">✨ Open AI Quiz Generator Modal</button>
+                <button class="button secondary" onclick="window.openAIAssignmentGenerator('11111111-2222-3333-4444-555555555555')" style="width: auto;">✨ Open AI Assignment Generator Modal</button>
+            </div>
+            <div id="testOutputArea" class="mt-20 text-left" style="display: none; padding: 15px; background: white; border: 1px solid #e2e8f0; border-radius: 8px;">
+                <h4 class="m-0" style="color: #0f172a;">Generated Output Result:</h4>
+                <pre id="outputCode" style="margin-top: 10px; font-family: monospace; font-size: 0.85rem; color: #334155; white-space: pre-wrap; word-break: break-all;"></pre>
+            </div>
+        </div>
+
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 40px;">
             <!-- Column 1: AIManager (Enterprise Gateway Assistant) -->
             <div>
@@ -30,6 +44,93 @@
             </div>
         </div>
     </div>
+
+    <!-- Mocks and Teacher.js Integration -->
+    <script>
+        // Seed sessionStorage so real SessionManager returns the teacher user
+        sessionStorage.setItem('currentUser', JSON.stringify({
+            email: 'teacher@smartlms.edu',
+            full_name: 'Professor Jane Doe',
+            role: 'teacher'
+        }));
+        sessionStorage.setItem('sessionId', '11111111-2222-3333-4444-555555555555');
+
+        // Mock TimerManager
+        window.TimerManager = {
+            getTime: () => Date.now()
+        };
+
+        // Mock SessionGuard init and validate to be zero-op
+        window.SessionGuard = {
+            init: () => {},
+            validate: async () => true
+        };
+
+        // Mock alert to prevent blocking alert dialogs
+        window.alert = (msg) => {
+            console.log('ALERT BYPASSED:', msg);
+        };
+
+        // Inject mocks directly into the SupabaseDB class static methods
+        SupabaseDB.getTopics = async (courseId) => {
+            console.log('Mock getTopics called for', courseId);
+            return {
+                data: [
+                    { id: 'topic-1', title: 'Chapter 1: Photosynthesis Mechanics', order_index: 1 },
+                    { id: 'topic-2', title: 'Chapter 2: Cellular Respiration', order_index: 2 }
+                ]
+            };
+        };
+
+        SupabaseDB.getLessons = async (courseId) => {
+            console.log('Mock getLessons called for', courseId);
+            return {
+                data: [
+                    { id: 'lesson-1', topic_id: 'topic-1', title: '1.1 The Role of Chlorophyll', content: 'Chlorophyll absorbs sunlight, primarily in the blue and red wavelengths, to drive the light-dependent reactions of photosynthesis...' },
+                    { id: 'lesson-2', topic_id: 'topic-1', title: '1.2 Electron Transport Chain', content: 'High-energy electrons move through plastoquinone and cytochrome complexes to generate an electrochemical proton gradient...' },
+                    { id: 'lesson-3', topic_id: 'topic-2', title: '2.1 Glycolysis Pathway', content: 'Glycolysis breaks down one molecule of glucose into two molecules of pyruvate, generating a net of 2 ATP and 2 NADH...' }
+                ]
+            };
+        };
+
+        SupabaseDB.getUser = async (email) => {
+            console.log('Mock getUser called for', email);
+            return {
+                email: 'teacher@smartlms.edu',
+                full_name: 'Professor Jane Doe',
+                role: 'teacher',
+                active: true,
+                session_id: '11111111-2222-3333-4444-555555555555'
+            };
+        };
+
+        SupabaseDB.getMaintenance = async () => {
+            console.log('Mock getMaintenance called');
+            return null;
+        };
+
+        // Mock assessment placement functions normally in teacher.js to print output
+        window.addQuizQuestionField = (q) => {
+            const area = document.getElementById('testOutputArea');
+            const code = document.getElementById('outputCode');
+            area.style.display = 'block';
+            code.textContent = "Generated Quiz Question Object:\n" + JSON.stringify(q, null, 2);
+        };
+
+        window.addQuestionField = (q) => {
+            const area = document.getElementById('testOutputArea');
+            const code = document.getElementById('outputCode');
+            area.style.display = 'block';
+            code.textContent = "Generated Assignment Question Object:\n" + JSON.stringify(q, null, 2);
+        };
+
+        // Bypass DOMContentLoaded auto-start of dashboard in teacher.js by mocking initDashboard
+        window.initDashboard = async (role) => {
+            console.log('initDashboard mocked for verification dashboard');
+            return { email: 'teacher@smartlms.edu' };
+        };
+    </script>
+    <script src="js/teacher.js"></script>
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
