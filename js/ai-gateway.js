@@ -546,7 +546,6 @@ class AIManager {
             });
 
             // 5. Format bold and italics
-            temp = temp.replace(/\*\*(.*?)\*\"/g, '<strong>$1</strong>');
             temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
             temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
 

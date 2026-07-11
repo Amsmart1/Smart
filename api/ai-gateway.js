@@ -184,7 +184,7 @@ function runTutorResponseQualityGuard(response) {
   }
 
   // Bold (**)
-  const boldCount = (cleaned.match(/\*\Ref\*\*/g) || (cleaned.match(/\*\*/g) || []).length);
+  const boldCount = (cleaned.match(/\*\*/g) || []).length;
   if (boldCount % 2 !== 0) {
     cleaned += "**";
   }
