@@ -3889,19 +3889,61 @@ async function indexCourseForAI(courseId) {
 }
 
 async function openAIQuizGenerator(courseId = null) {
+    let topics = [];
+    let lessons = [];
+    if (courseId) {
+        UI.showNotification('Loading course topics and lessons...', 'info');
+        try {
+            const [topicRes, lessonRes] = await Promise.all([
+                SupabaseDB.getTopics(courseId),
+                SupabaseDB.getLessons(courseId)
+            ]);
+            topics = topicRes.data || [];
+            lessons = lessonRes.data || [];
+        } catch (e) {
+            console.error('Failed to load topics or lessons:', e);
+            UI.showNotification('Failed to load topics/lessons for filtering.', 'warn');
+        }
+    }
+
+    const defaultQuizRubric = `1. Alignment: Align questions with core definitions, equations, and concepts of the selected topic/lesson.
+2. Clarity & Precision: Avoid ambiguous or overly simple phrasing, double negatives, and tricky wordings.
+3. Realistic Distractors: Provide plausible alternative options for multiple-choice questions.
+4. Levels of Assessment: Ensure questions cover appropriate cognitive levels.`;
+
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
     backdrop.innerHTML = `
-        <div class="modal" style="max-width: 500px">
+        <div class="modal" style="max-width: 550px">
             <div class="flex-between mb-20">
                 <h3 class="m-0">AI Quiz Generator</h3>
                 <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
             </div>
             <div class="flex-column gap-15">
+                ${courseId ? `
                 <div>
-                    <label class="small bold">Topic</label>
+                    <label class="small bold">Select Course Topic (Optional)</label>
+                    <select id="aiQuizTopicSelect" class="m-0">
+                        <option value="">-- All Topics --</option>
+                        ${topics.map(t => `<option value="${_safeEscapeAttr(t.id)}" data-title="${_safeEscapeAttr(t.title)}">${_safeEscapeHtml(t.title)}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label class="small bold">Select Lesson for Context (Optional)</label>
+                    <select id="aiQuizLessonSelect" class="m-0">
+                        <option value="">-- No Specific Lesson (Full Topic/Course) --</option>
+                        ${lessons.map(l => `<option value="${_safeEscapeAttr(l.id)}" data-topic="${_safeEscapeAttr(l.topic_id || '')}" data-title="${_safeEscapeAttr(l.title)}">${_safeEscapeHtml(l.title)}</option>`).join('')}
+                    </select>
+                </div>
+                ` : ''}
+                <div>
+                    <label class="small bold">Topic / Learning Objective</label>
                     <input type="text" id="aiQuizTopic" placeholder="e.g. Photosynthesis, World War II" class="m-0">
+                </div>
+                <div>
+                    <label class="small bold">Rules / Rubrics (Teacher Editable)</label>
+                    <textarea id="aiQuizRubrics" rows="3" class="m-0" placeholder="e.g. Focus on key definitions and practical application">${_safeEscapeHtml(defaultQuizRubric)}</textarea>
                 </div>
                 <div class="grid-2 gap-10">
                     <div>
@@ -3923,18 +3965,75 @@ async function openAIQuizGenerator(courseId = null) {
     `;
     document.body.appendChild(backdrop);
 
+    const topicSelect = backdrop.querySelector('#aiQuizTopicSelect');
+    const lessonSelect = backdrop.querySelector('#aiQuizLessonSelect');
+    const topicInput = backdrop.querySelector('#aiQuizTopic');
+
+    if (topicSelect && lessonSelect) {
+        topicSelect.addEventListener('change', () => {
+            const selectedTopicId = topicSelect.value;
+            const selectedTopicTitle = topicSelect.options[topicSelect.selectedIndex]?.dataset.title || '';
+            if (selectedTopicTitle) {
+                topicInput.value = selectedTopicTitle;
+            }
+
+            const options = lessonSelect.querySelectorAll('option');
+            options.forEach(opt => {
+                const optVal = opt.value;
+                if (!optVal) return; // Keep "No Specific Lesson" option
+                const optTopic = opt.dataset.topic;
+                if (!selectedTopicId || optTopic === selectedTopicId) {
+                    opt.style.display = '';
+                } else {
+                    opt.style.display = 'none';
+                }
+            });
+            lessonSelect.value = '';
+        });
+    }
+
+    if (lessonSelect) {
+        lessonSelect.addEventListener('change', () => {
+            const selectedLessonTitle = lessonSelect.options[lessonSelect.selectedIndex]?.dataset.title || '';
+            if (selectedLessonTitle && !topicInput.value) {
+                topicInput.value = selectedLessonTitle;
+            }
+        });
+    }
+
     document.getElementById('generateAIQuizBtn').onclick = async () => {
         const topic = document.getElementById('aiQuizTopic').value.trim();
         const count = document.getElementById('aiQuizCount').value;
         const difficulty = document.getElementById('aiQuizDifficulty').value;
+        const rubrics = document.getElementById('aiQuizRubrics').value.trim();
 
         if (!topic) return UI.showNotification('Please enter a topic', 'warn');
 
         const btn = document.getElementById('generateAIQuizBtn');
         btn.disabled = true; btn.textContent = 'Generating...';
 
+        const selectedLessonId = lessonSelect?.value;
+        let lessonTitle = '';
+        let lessonContent = '';
+        if (selectedLessonId) {
+            const selectedLesson = lessons.find(l => l.id === selectedLessonId);
+            if (selectedLesson) {
+                lessonTitle = selectedLesson.title;
+                lessonContent = selectedLesson.content || '';
+            }
+        }
+
         try {
-            const questions = await AIManager.generateAssessment({ topic, count, difficulty, type: 'quiz', course_id: courseId });
+            const questions = await AIManager.generateAssessment({
+                topic,
+                count,
+                difficulty,
+                type: 'quiz',
+                course_id: courseId,
+                lesson_title: lessonTitle,
+                lesson_content: lessonContent,
+                rubrics: rubrics
+            });
             questions.forEach(q => addQuizQuestionField(q));
             UI.showNotification(`Successfully generated ${questions.length} questions!`, 'success');
             backdrop.remove();
@@ -4094,23 +4193,61 @@ async function openAIGradingAssistant(assignmentId, studentEmail) {
 }
 
 async function openAIAssignmentGenerator(courseId = null) {
+    let topics = [];
+    let lessons = [];
+    if (courseId) {
+        UI.showNotification('Loading course topics and lessons...', 'info');
+        try {
+            const [topicRes, lessonRes] = await Promise.all([
+                SupabaseDB.getTopics(courseId),
+                SupabaseDB.getLessons(courseId)
+            ]);
+            topics = topicRes.data || [];
+            lessons = lessonRes.data || [];
+        } catch (e) {
+            console.error('Failed to load topics or lessons:', e);
+            UI.showNotification('Failed to load topics/lessons for filtering.', 'warn');
+        }
+    }
+
+    const defaultAssignRubric = `1. Depth of Inquiry: Prompt critical thinking, analytical reasoning, and practical application.
+2. Structure & Formatting: Instruct the student to format with headings, introductions, and clear sections.
+3. Technical Rigor: Ensure the response addresses the technical principles and vocabulary of the topic.
+4. Supporting Evidence: Instruct the student to support arguments with logical reasoning or citations.`;
+
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
     backdrop.innerHTML = `
-        <div class="modal" style="max-width: 500px">
+        <div class="modal" style="max-width: 550px">
             <div class="flex-between mb-20">
                 <h3 class="m-0">AI Assignment Generator</h3>
                 <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
             </div>
             <div class="flex-column gap-15">
+                ${courseId ? `
+                <div>
+                    <label class="small bold">Select Course Topic (Optional)</label>
+                    <select id="aiAssignTopicSelect" class="m-0">
+                        <option value="">-- All Topics --</option>
+                        ${topics.map(t => `<option value="${_safeEscapeAttr(t.id)}" data-title="${_safeEscapeAttr(t.title)}">${_safeEscapeHtml(t.title)}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label class="small bold">Select Lesson for Context (Optional)</label>
+                    <select id="aiAssignLessonSelect" class="m-0">
+                        <option value="">-- No Specific Lesson (Full Topic/Course) --</option>
+                        ${lessons.map(l => `<option value="${_safeEscapeAttr(l.id)}" data-topic="${_safeEscapeAttr(l.topic_id || '')}" data-title="${_safeEscapeAttr(l.title)}">${_safeEscapeHtml(l.title)}</option>`).join('')}
+                    </select>
+                </div>
+                ` : ''}
                 <div>
                     <label class="small bold">Topic / Learning Objective</label>
                     <input type="text" id="aiAssignTopic" placeholder="e.g. Critical Analysis of Macbeth" class="m-0">
                 </div>
                 <div>
-                    <label class="small bold">Specific Rubrics / Instructions</label>
-                    <textarea id="aiAssignRubrics" placeholder="e.g. Focus on character development, minimum 500 words" rows="3" class="m-0"></textarea>
+                    <label class="small bold">Specific Rubrics / Instructions (Teacher Editable)</label>
+                    <textarea id="aiAssignRubrics" placeholder="e.g. Focus on character development, minimum 500 words" rows="4" class="m-0">${_safeEscapeHtml(defaultAssignRubric)}</textarea>
                 </div>
                 <div class="grid-2 gap-10">
                     <div>
@@ -4132,6 +4269,42 @@ async function openAIAssignmentGenerator(courseId = null) {
     `;
     document.body.appendChild(backdrop);
 
+    const topicSelect = backdrop.querySelector('#aiAssignTopicSelect');
+    const lessonSelect = backdrop.querySelector('#aiAssignLessonSelect');
+    const topicInput = backdrop.querySelector('#aiAssignTopic');
+
+    if (topicSelect && lessonSelect) {
+        topicSelect.addEventListener('change', () => {
+            const selectedTopicId = topicSelect.value;
+            const selectedTopicTitle = topicSelect.options[topicSelect.selectedIndex]?.dataset.title || '';
+            if (selectedTopicTitle) {
+                topicInput.value = selectedTopicTitle;
+            }
+
+            const options = lessonSelect.querySelectorAll('option');
+            options.forEach(opt => {
+                const optVal = opt.value;
+                if (!optVal) return; // Keep "No Specific Lesson" option
+                const optTopic = opt.dataset.topic;
+                if (!selectedTopicId || optTopic === selectedTopicId) {
+                    opt.style.display = '';
+                } else {
+                    opt.style.display = 'none';
+                }
+            });
+            lessonSelect.value = '';
+        });
+    }
+
+    if (lessonSelect) {
+        lessonSelect.addEventListener('change', () => {
+            const selectedLessonTitle = lessonSelect.options[lessonSelect.selectedIndex]?.dataset.title || '';
+            if (selectedLessonTitle && !topicInput.value) {
+                topicInput.value = selectedLessonTitle;
+            }
+        });
+    }
+
     document.getElementById('generateAIAssignBtn').onclick = async () => {
         const topic = document.getElementById('aiAssignTopic').value.trim();
         const rubrics = document.getElementById('aiAssignRubrics').value.trim();
@@ -4143,8 +4316,28 @@ async function openAIAssignmentGenerator(courseId = null) {
         const btn = document.getElementById('generateAIAssignBtn');
         btn.disabled = true; btn.textContent = 'Generating...';
 
+        const selectedLessonId = lessonSelect?.value;
+        let lessonTitle = '';
+        let lessonContent = '';
+        if (selectedLessonId) {
+            const selectedLesson = lessons.find(l => l.id === selectedLessonId);
+            if (selectedLesson) {
+                lessonTitle = selectedLesson.title;
+                lessonContent = selectedLesson.content || '';
+            }
+        }
+
         try {
-            const questions = await AIManager.generateAssessment({ topic, rubrics, count, difficulty, type: 'assignment', course_id: courseId });
+            const questions = await AIManager.generateAssessment({
+                topic,
+                rubrics,
+                count,
+                difficulty,
+                type: 'assignment',
+                course_id: courseId,
+                lesson_title: lessonTitle,
+                lesson_content: lessonContent
+            });
             questions.forEach(q => addQuestionField(q));
             UI.showNotification(`Generated ${questions.length} assignment questions!`, 'success');
             backdrop.remove();
