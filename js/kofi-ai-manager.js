@@ -115,6 +115,112 @@ class KofiAIManager {
     }
 
     /**
+     * LMS UI Feature Assistant (Kofi AI) with streaming support
+     */
+    static async askKofiStream(message, onChunk, onDone) {
+        const historyKey = 'kofi';
+        const history = this._history.get(historyKey) || [];
+
+        let accumulatedText = "";
+
+        await this._invokeStream(message, history, (chunk) => {
+            accumulatedText += chunk;
+            if (onChunk) {
+                onChunk(chunk, accumulatedText);
+            }
+        });
+
+        const cleanText = accumulatedText;
+
+        history.push({ role: 'user', content: message });
+        history.push({ role: 'assistant', content: cleanText });
+        this._history.set(historyKey, history.slice(-this.CONFIG.maxHistoryMessages));
+
+        if (onDone) {
+            onDone(cleanText);
+        }
+
+        return cleanText;
+    }
+
+    /**
+     * Executes streaming fetch and parses SSE chunks.
+     */
+    static async _invokeStream(message, history, onChunk) {
+        const payload = { message, history, stream: true };
+
+        const response = await fetch(this.CONFIG.endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            let errData;
+            try {
+                errData = await response.json();
+            } catch {
+                throw new Error(`Kofi AI assistant HTTP ${response.status}`);
+            }
+            throw new Error(errData?.error || `Kofi AI assistant HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split("\n");
+            buffer = lines.pop(); // Keep partial line in buffer
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+
+                if (trimmed.startsWith("data: ")) {
+                    const dataStr = trimmed.slice(6).trim();
+                    if (dataStr === "[DONE]") continue;
+
+                    try {
+                        const parsed = JSON.parse(dataStr);
+                        if (parsed.chunk) {
+                            onChunk(parsed.chunk);
+                        } else if (parsed.error) {
+                            throw new Error(parsed.error);
+                        }
+                    } catch (e) {
+                        console.error("Failed to parse SSE line:", trimmed, e);
+                    }
+                }
+            }
+        }
+
+        if (buffer) {
+            const trimmed = buffer.trim();
+            if (trimmed.startsWith("data: ")) {
+                const dataStr = trimmed.slice(6).trim();
+                if (dataStr !== "[DONE]") {
+                    try {
+                        const parsed = JSON.parse(dataStr);
+                        if (parsed.chunk) {
+                            onChunk(parsed.chunk);
+                        }
+                    } catch (e) {
+                        console.error("Failed to parse SSE line end:", trimmed, e);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Clears conversational history for a specific key or all history if no key is provided.
      */
     static clearHistory(historyKey = null) {
@@ -136,9 +242,62 @@ class KofiAIManager {
             title = 'AI Assistant',
             placeholder = 'Ask me anything...',
             onSend = async (msg) => {},
+            onSendStream = null,
             onClear = () => {},
             welcomeMessage = 'Hello! How can I help you today?'
         } = options;
+
+        const formatMarkdown = (content) => {
+            // Escape HTML first
+            let escaped = window.escapeHtml(content);
+
+            // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
+            const placeholders = [];
+
+            // 1. Extract and preserve code blocks (no underscores to prevent italic clash)
+            let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                const idx = placeholders.length;
+                placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
+                return `%%%PLACEHOLDER${idx}%%%`;
+            });
+
+            // 2. Extract and preserve inline code (no underscores to prevent italic clash)
+            temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
+                const idx = placeholders.length;
+                placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
+                return `%%%PLACEHOLDER${idx}%%%`;
+            });
+
+            // 3. Format bullet points: lines starting with '*' or '-'
+            temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+            // 4. Format markdown links safely [text](url)
+            temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                const decodedUrl = url.replace(/&amp;/g, '&');
+                if (window.isValidUrl(decodedUrl)) {
+                    const lowerUrl = decodedUrl.toLowerCase().trim();
+                    // Prevent javascript: or other script execution protocol hacks
+                    if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+                        return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
+                    }
+                }
+                return match;
+            });
+
+            // 5. Format bold and italics
+            temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+            // 6. Format line breaks
+            temp = temp.replace(/\n/g, '<br>');
+
+            // 7. Restore placeholders
+            for (let i = 0; i < placeholders.length; i++) {
+                temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+            }
+
+            return temp;
+        };
 
         const chatHtml = `
             <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
@@ -217,55 +376,7 @@ class KofiAIManager {
             if (isTrustedHtml) {
                 formatted = content;
             } else {
-                // Escape HTML first
-                let escaped = window.escapeHtml(content);
-
-                // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
-                const placeholders = [];
-
-                // 1. Extract and preserve code blocks (no underscores to prevent italic clash)
-                let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
-                    const idx = placeholders.length;
-                    placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
-                    return `%%%PLACEHOLDER${idx}%%%`;
-                });
-
-                // 2. Extract and preserve inline code (no underscores to prevent italic clash)
-                temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
-                    const idx = placeholders.length;
-                    placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
-                    return `%%%PLACEHOLDER${idx}%%%`;
-                });
-
-                // 3. Format bullet points: lines starting with '*' or '-'
-                temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
-
-                // 4. Format markdown links safely [text](url)
-                temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-                    const decodedUrl = url.replace(/&amp;/g, '&');
-                    if (window.isValidUrl(decodedUrl)) {
-                        const lowerUrl = decodedUrl.toLowerCase().trim();
-                        // Prevent javascript: or other script execution protocol hacks
-                        if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
-                            return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
-                        }
-                    }
-                    return match;
-                });
-
-                // 5. Format bold and italics
-                temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-                temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
-
-                // 6. Format line breaks
-                temp = temp.replace(/\n/g, '<br>');
-
-                // 7. Restore placeholders
-                for (let i = 0; i < placeholders.length; i++) {
-                    temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
-                }
-
-                formatted = temp;
+                formatted = formatMarkdown(content);
             }
 
             msgDiv.innerHTML = `
@@ -332,26 +443,90 @@ class KofiAIManager {
                 behavior: 'smooth'
             });
 
-            try {
-                const response = await onSend(msg);
-                typingDiv.remove();
-                appendMessage('assistant', response);
+            if (onSendStream) {
+                try {
+                    let hasStarted = false;
+                    let msgDiv = null;
+                    let contentInner = null;
 
-                // Synthesize/speak response if active
-                if (ttsEnabled && window.voiceEngine) {
-                    window.voiceEngine.speak(response);
+                    await onSendStream(msg, (chunk, accumulated) => {
+                        if (!hasStarted) {
+                            hasStarted = true;
+                            typingDiv.remove();
+
+                            // Create the message div for streaming the response
+                            msgDiv = document.createElement('div');
+                            msgDiv.className = `ai-msg assistant mb-15`;
+                            msgDiv.style.marginBottom = '15px';
+                            msgDiv.innerHTML = `
+                                <div class="p-10 border-radius-md small text-left" style="background: #fff; color: var(--text, #1e293b); border: 1px solid #cbd5e1; display: inline-block; max-width: 85%; border-radius: 8px; padding: 10px; text-align: left; line-height: 1.5; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                                </div>
+                            `;
+                            messagesArea.appendChild(msgDiv);
+                            contentInner = msgDiv.querySelector('div');
+                        }
+
+                        if (contentInner) {
+                            contentInner.innerHTML = formatMarkdown(accumulated);
+                            messagesArea.scrollTo({
+                                top: messagesArea.scrollHeight,
+                                behavior: 'smooth'
+                            });
+                        }
+                    }, (polishedResponse) => {
+                        if (!hasStarted) {
+                            hasStarted = true;
+                            typingDiv.remove();
+                            appendMessage('assistant', polishedResponse);
+                        } else if (contentInner) {
+                            contentInner.innerHTML = formatMarkdown(polishedResponse);
+                            messagesArea.scrollTo({
+                                top: messagesArea.scrollHeight,
+                                behavior: 'smooth'
+                            });
+                        }
+
+                        // Synthesize/speak response if active
+                        if (ttsEnabled && window.voiceEngine) {
+                            window.voiceEngine.speak(polishedResponse);
+                        }
+                    });
+
+                } catch (e) {
+                    if (typingDiv && typingDiv.parentNode) {
+                        typingDiv.remove();
+                    }
+                    const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
+                    appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
+                    console.error(e);
+                } finally {
+                    input.disabled = false;
+                    sendBtn.disabled = false;
+                    if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
+                        input.focus();
+                    }
                 }
-            } catch (e) {
-                typingDiv.remove();
-                const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
-                appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
-                console.error(e);
-            } finally {
-                input.disabled = false;
-                sendBtn.disabled = false;
-                // If hands-free is active, we don't steal focus aggressively
-                if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
-                    input.focus();
+            } else {
+                try {
+                    const response = await onSend(msg);
+                    typingDiv.remove();
+                    appendMessage('assistant', response);
+
+                    // Synthesize/speak response if active
+                    if (ttsEnabled && window.voiceEngine) {
+                        window.voiceEngine.speak(response);
+                    }
+                } catch (e) {
+                    typingDiv.remove();
+                    const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
+                    appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
+                    console.error(e);
+                } finally {
+                    input.disabled = false;
+                    sendBtn.disabled = false;
+                    if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
+                        input.focus();
+                    }
                 }
             }
         };

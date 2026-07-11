@@ -173,6 +173,9 @@ const speechSynthesisEngine = {
       utterance.voice = voice;
     }
 
+    // Keep global reference to prevent Chrome garbage collection synthesis cutoff bug
+    window._activeUtterance = utterance;
+
     utterance.onstart = () => {
       updateVoiceState({
         status: "speaking",
@@ -182,6 +185,7 @@ const speechSynthesisEngine = {
     };
 
     utterance.onend = () => {
+      window._activeUtterance = null;
       updateVoiceState({
         status: "idle",
         speaking: false
@@ -199,6 +203,7 @@ const speechSynthesisEngine = {
     };
 
     utterance.onerror = (error) => {
+      window._activeUtterance = null;
       console.error("Speech error:", error);
       updateVoiceState({
         status: "idle",
@@ -224,6 +229,7 @@ const speechSynthesisEngine = {
   },
 
   stop() {
+    window._activeUtterance = null;
     if (typeof speechSynthesis !== 'undefined') {
       speechSynthesis.cancel();
     }
