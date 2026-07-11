@@ -245,6 +245,9 @@ const LandingUI = {
                     onSend: async (msg) => {
                         return await KofiAIManager.askKofi(msg);
                     },
+                    onSendStream: async (msg, onChunk, onDone) => {
+                        return await KofiAIManager.askKofiStream(msg, onChunk, onDone);
+                    },
                     onClear: () => {
                         // Clear the platform assistant history for Kofi AI
                         KofiAIManager.clearHistory('kofi');

@@ -312,8 +312,7 @@ function filterRequestIntent(message) {
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
     method: req.method,
-    headers: req.headers,
-    body: req.body
+    headers: req.headers
   });
 
   // Handle CORS preflight
@@ -380,19 +379,45 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
+    const isStream = !!(req.body && req.body.stream);
+
     // 4. Request Intent Filter
     const filterRefusal = filterRequestIntent(message);
     if (filterRefusal) {
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ content: filterRefusal }));
+      if (isStream) {
+        res.writeHead(200, {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write(`data: ${JSON.stringify({ chunk: filterRefusal })}\n\n`);
+        res.write(`data: ${JSON.stringify({ final: filterRefusal })}\n\n`);
+        res.end();
+      } else {
+        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content: filterRefusal }));
+      }
       return;
     }
 
     // 5. Precise Response Lookup
     const preciseResponse = findPreciseResponse(message);
     if (preciseResponse) {
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ content: preciseResponse }));
+      if (isStream) {
+        res.writeHead(200, {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write(`data: ${JSON.stringify({ chunk: preciseResponse })}\n\n`);
+        res.write(`data: ${JSON.stringify({ final: preciseResponse })}\n\n`);
+        res.end();
+      } else {
+        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content: preciseResponse }));
+      }
       return;
     }
 
@@ -422,19 +447,158 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
+    if (isStream) {
+      await callGeminiStream(apiKey, message, systemPrompt, sanitizedHistory, res);
+    } else {
+      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
+    }
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error('Kofi AI Gateway Error:', errorMsg);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      error: errorMsg,
-      timestamp: new Date().toISOString(),
-      type: 'kofi_gateway_error'
-    }));
+    // If headers already sent, do not attempt writeHead
+    if (!res.headersSent) {
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: errorMsg,
+        timestamp: new Date().toISOString(),
+        type: 'kofi_gateway_error'
+      }));
+    } else {
+      res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
+      res.end();
+    }
   }
 };
+
+/**
+ * Generic Gemini API Caller with Streaming (Server-Sent Events)
+ */
+async function callGeminiStream(apiKey, prompt, systemInstruction, history = [], res) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    return;
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: prompt }] }
+  ];
+
+  let response;
+  try {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+  } catch (fetchErr) {
+    console.error('Failed to contact Gemini streaming API:', fetchErr);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
+    return;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Gemini streaming API Error:', errorText);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
+    return;
+  }
+
+  res.writeHead(200, {
+    ...corsHeaders,
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  let buffer = "";
+  let accumulatedText = "";
+
+  try {
+    const reader = response.body;
+    for await (const chunk of reader) {
+      buffer += chunk.toString();
+
+      let inString = false;
+      let escaped = false;
+      let braceCount = 0;
+      let startIdx = -1;
+      let i = 0;
+
+      while (i < buffer.length) {
+        const char = buffer[i];
+        if (escaped) {
+          escaped = false;
+          i++;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          i++;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          i++;
+          continue;
+        }
+        if (!inString) {
+          if (char === '{') {
+            if (braceCount === 0) {
+              startIdx = i;
+            }
+            braceCount++;
+          } else if (char === '}') {
+            braceCount--;
+            if (braceCount === 0 && startIdx !== -1) {
+              const jsonStr = buffer.substring(startIdx, i + 1);
+              try {
+                const obj = JSON.parse(jsonStr);
+                const rawText = obj.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (rawText) {
+                  accumulatedText += rawText;
+                  res.write(`data: ${JSON.stringify({ chunk: rawText })}\n\n`);
+                }
+              } catch (e) {
+                // Ignore partial/non-matching JSON structures
+              }
+              buffer = buffer.substring(i + 1);
+              i = -1;
+              startIdx = -1;
+            }
+          }
+        }
+        i++;
+      }
+    }
+
+    // Process final polished output
+    const polishedText = runResponseQualityGuard(accumulatedText);
+    res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
+    res.end();
+
+  } catch (streamErr) {
+    console.error("Stream reader error:", streamErr);
+    res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
+    res.end();
+  }
+}
 
 /**
  * Generic Gemini API Caller
