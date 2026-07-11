@@ -94,11 +94,13 @@ const speechSynthesisEngine = {
   },
 
   /**
-   * Sanitizes text prior to speaking to prevent markdown syntax readouts.
+   * Sanitizes text prior to speaking to prevent markdown syntax readouts, and
+   * enforces strict enterprise-grade quality checks for optimal text-to-speech synthesis.
    */
   sanitizeText(text) {
     if (!text) return "";
-    return text
+
+    let sanitized = text
       .replace(/```[\s\S]*?```/g, "") // Strip code blocks completely
       .replace(/`([^`\n]+)`/g, "$1")  // Inline code ticks removed
       .replace(/\*\*(.*?)\*\*/g, "$1") // Bold markdown stripped
@@ -107,6 +109,44 @@ const speechSynthesisEngine = {
       .replace(/[•*-]\s+/g, "")       // Bullet points cleaned
       .replace(/<[^>]*>/g, "")        // HTML tags stripped
       .replace(/&[a-z0-9#]+;/gi, ""); // HTML entities stripped
+
+    // 1. Strip redundant robot preambles
+    const preambles = [
+      /^sure,?\s*/i,
+      /^absolutely,?\s*/i,
+      /^i'd be happy to help with that,?\s*/i,
+      /^here is the information,?\s*/i,
+      /^as requested,?\s*/i,
+      /^certainly,?\s*/i,
+      /^no problem,?\s*/i
+    ];
+    for (const preamble of preambles) {
+      sanitized = sanitized.replace(preamble, "");
+    }
+
+    // 2. Remove common filler phrases and words to keep spoken text concise
+    sanitized = sanitized.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
+    sanitized = sanitized.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
+    sanitized = sanitized.replace(/\bin order to\b/gi, "to");
+
+    // 3. Remove consecutive duplicated words ("the the", "and and", etc.)
+    sanitized = sanitized.replace(/\b(\w+)\s+\1\b/gi, "$1");
+
+    // 4. Collapse duplicate punctuation
+    sanitized = sanitized.replace(/!{2,}/g, "!");
+    sanitized = sanitized.replace(/\?{2,}/g, "?");
+    sanitized = sanitized.replace(/,{2,}/g, ",");
+    sanitized = sanitized.replace(/\.{4,}/g, "...");
+    sanitized = sanitized.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
+
+    // 5. Clean spacing around punctuation
+    sanitized = sanitized.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
+    sanitized = sanitized.replace(/\s+([,.!?])/g, "$1");
+
+    // 6. Ensure proper capitalization at the beginning of spoken sentences
+    sanitized = sanitized.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
+
+    return sanitized.trim();
   },
 
   speak(text) {

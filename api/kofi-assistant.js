@@ -177,7 +177,44 @@ function runResponseQualityGuard(response) {
   // Ensure it doesn't mention private prompt variables
   cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "guide configuration");
 
-  // 2. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
+  // 2. Strict Conversational Polish & Enterprise-Grade Verification Checks
+  // A. Strip redundant robot/intro preambles for direct, off-topic-free responses
+  const preambles = [
+    /^sure,?\s*/i,
+    /^absolutely,?\s*/i,
+    /^i'd be happy to help with that,?\s*/i,
+    /^here is the information,?\s*/i,
+    /^as requested,?\s*/i,
+    /^certainly,?\s*/i,
+    /^no problem,?\s*/i
+  ];
+  for (const preamble of preambles) {
+    cleaned = cleaned.replace(preamble, "");
+  }
+
+  // B. Prune common filler phrases and words to make the response highly concise
+  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
+
+  // C. Dedup consecutive duplicated words ("the the", "and and", etc.)
+  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+
+  // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
+  cleaned = cleaned.replace(/!{2,}/g, "!");
+  cleaned = cleaned.replace(/\?{2,}/g, "?");
+  cleaned = cleaned.replace(/,{2,}/g, ",");
+  cleaned = cleaned.replace(/\.{4,}/g, "...");
+  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
+
+  // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
+  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
+  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  // F. Flawless Sentence Structure: ensure sentences start with capital letters
+  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
+
+  // 3. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
   // Code Blocks (```)
   const codeBlockCount = (cleaned.match(/```/g) || []).length;
   if (codeBlockCount % 2 !== 0) {
@@ -377,7 +414,13 @@ module.exports = async function handler(req, res) {
   - You cannot perform any administrative or transactional actions like enrollment, course creation, account deletion, password resets, or changing grades.
   - For technical support, account billing, or official issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
   - Keep responses professional, friendly, and concise.
-  - Use markdown for formatting (bullet points for features, bold for emphasis).`;
+  - Use markdown for formatting (bullet points for features, bold for emphasis).
+  - Strict Conversational Quality Check:
+    * Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
+    * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
+    * Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
+    * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
+    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
     await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
 
