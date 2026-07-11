@@ -1463,6 +1463,8 @@ async function renderAnalytics() {
     // Sort graded submissions by date
     const graded = submissions.sort((a,b) => new Date(a.submitted_at) - new Date(b.submitted_at));
 
+    const avg = graded.length > 0 ? Math.round(graded.reduce((acc, s) => acc + s.final_grade, 0) / graded.length) : 0;
+
     container.innerHTML = `
       <h2 class="m-0">Performance Analytics</h2>
       <div class="grid-2 mt-20 mb-20">
@@ -1521,7 +1523,6 @@ async function renderAnalytics() {
         }
       });
 
-      const avg = Math.round(graded.reduce((acc, s) => acc + s.final_grade, 0) / graded.length);
       document.getElementById('gradeStats').innerHTML = `
         <div class="flex-center flex-column p-20">
           <div class="bold" style="font-size:48px; color:var(--purple)">${avg}%</div>
