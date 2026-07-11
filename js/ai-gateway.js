@@ -469,6 +469,72 @@ class AIManager {
     }
 
     /**
+     * Enterprise-grade Markdown and code-block parsing pipeline
+     */
+    static formatMarkdown(content) {
+        if (!content) return '';
+        // Escape HTML first safely (handling deferred loading)
+        const escapeHtmlFn = window.escapeHtml || ((s) => {
+            if (s === null || s === undefined) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        });
+        let escaped = escapeHtmlFn(content);
+
+        // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
+        const placeholders = [];
+
+        // 1. Extract and preserve code blocks
+        let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+            const idx = placeholders.length;
+            placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
+            return `%%%PLACEHOLDER${idx}%%%`;
+        });
+
+        // 2. Extract and preserve inline code
+        temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
+            const idx = placeholders.length;
+            placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
+            return `%%%PLACEHOLDER${idx}%%%`;
+        });
+
+        // 3. Format bullet points: lines starting with '*' or '-'
+        temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+        // 4. Format markdown links safely [text](url)
+        temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+            const decodedUrl = url.replace(/&amp;/g, '&');
+            const isValidUrlFn = window.isValidUrl || ((u) => {
+                try { return !!new URL(u); } catch (e) { return false; }
+            });
+            if (isValidUrlFn(decodedUrl)) {
+                const lowerUrl = decodedUrl.toLowerCase().trim();
+                if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+                    const escapeAttrFn = window.escapeAttr || ((s) => {
+                        if (s === null || s === undefined) return '';
+                        return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                    });
+                    return `<a href="${escapeAttrFn(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
+                }
+            }
+            return match;
+        });
+
+        // 5. Format bold and italics
+        temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+        // 6. Format line breaks
+        temp = temp.replace(/\n/g, '<br>');
+
+        // 7. Restore placeholders
+        for (let i = 0; i < placeholders.length; i++) {
+            temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+        }
+
+        return temp;
+    }
+
+    /**
      * 4. Role-based Analytics
      */
     static async analyzeAnalytics(question, analyticsData, options = {}) {
@@ -510,54 +576,7 @@ class AIManager {
         } = options;
 
         const formatMarkdown = (content) => {
-            // Escape HTML first
-            let escaped = window.escapeHtml(content);
-
-            // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
-            const placeholders = [];
-
-            // 1. Extract and preserve code blocks
-            let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
-                const idx = placeholders.length;
-                placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
-                return `%%%PLACEHOLDER${idx}%%%`;
-            });
-
-            // 2. Extract and preserve inline code
-            temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
-                const idx = placeholders.length;
-                placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
-                return `%%%PLACEHOLDER${idx}%%%`;
-            });
-
-            // 3. Format bullet points: lines starting with '*' or '-'
-            temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
-
-            // 4. Format markdown links safely [text](url)
-            temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-                const decodedUrl = url.replace(/&amp;/g, '&');
-                if (window.isValidUrl(decodedUrl)) {
-                    const lowerUrl = decodedUrl.toLowerCase().trim();
-                    if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
-                        return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
-                    }
-                }
-                return match;
-            });
-
-            // 5. Format bold and italics
-            temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
-
-            // 6. Format line breaks
-            temp = temp.replace(/\n/g, '<br>');
-
-            // 7. Restore placeholders
-            for (let i = 0; i < placeholders.length; i++) {
-                temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
-            }
-
-            return temp;
+            return AIManager.formatMarkdown(content);
         };
 
         const chatHtml = `

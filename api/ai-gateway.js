@@ -550,22 +550,132 @@ async function handleGradingAssistant(payload, res) {
   const { assignment_title, student_submission, rubric, questions, email, role } = payload;
   const apiKey = process.env.GEMINI_GRADING_API_KEY;
 
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    return;
+  }
+
+  let questionList = [];
+  if (Array.isArray(questions)) {
+    questionList = questions.map((q, idx) => {
+      if (typeof q === 'object' && q !== null) {
+        return `Question ${idx + 1}: ${q.text || ''} (Max Points: ${q.points || 0})`;
+      } else {
+        return `Question ${idx + 1}: ${q}`;
+      }
+    });
+  }
+
   const prompt = `Assignment: ${assignment_title}
   Rubric: ${rubric}
-  Questions: ${JSON.stringify(questions)}
+  Questions: ${JSON.stringify(questionList)}
   Student Work: ${student_submission}
 
   Please evaluate this student submission carefully and professionally.
-  Provide a detailed Markdown report containing the following sections:
-  1. **Question-by-Question Evaluation**: For each question, provide a suggested score out of its maximum points, brief critique, and helpful feedback.
-  2. **Rubric Scoring Analysis**: Break down how the student's work aligns with and meets the specified rubric criteria.
-  3. **Overall Feedback & Recommendation**: A final, constructive overall summary highlighting strengths and key areas for improvement, alongside a recommended total score out of the total possible points.`;
+  You MUST return a valid JSON object containing exactly the following three keys:
+  1. "report": A beautifully styled and detailed Markdown report. It should include:
+     - Question-by-Question Evaluation: Breakdown of each question with suggested scores and helpful critique.
+     - Rubric Scoring Analysis: Analysis of how the student's work meets the specified rubric.
+     - Overall Feedback & Recommendation: Summary of strengths, key areas for improvement, and recommended total score.
+  2. "overall_feedback": A summarized, precise, sanitized, and professional overall feedback/recommendation text for the teacher to apply directly. No conversational fillers or preambles. Max 3 sentences.
+  3. "questions": An array of objects for each question:
+     - "question_index": (integer, 0-indexed corresponding to the index in the Questions array)
+     - "score": (number, suggested score for this question, clamped between 0 and the max points for this question)
+     - "feedback": (string, specific, professional, and constructive feedback comment for this specific question index. Max 2 sentences, sanitized)
 
-  const systemPrompt = `You are a fair and insightful teaching assistant.
+  Ensure all scores are numeric and clamped to the max points for the corresponding question. Keep descriptions of feedback professional, constructive, and precise. No conversational filler or preamble in the JSON. Output ONLY the raw JSON block without any markdown code fences or conversational text outside the block.`;
+
+  const systemPrompt = `You are a fair, precise, and insightful teaching assistant.
   Assisting Teacher: ${email}
   Role: ${role}
-  Help the teacher grade by providing insights based on the rubric.`;
-  return callGemini(apiKey, prompt, systemPrompt, [], res);
+  Help the teacher grade by providing insights based on the rubric. Output ONLY valid JSON containing report, overall_feedback, and questions keys.`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          temperature: 0.2, // Lower temperature for structured JSON output
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Gemini API Error (Grading Assistant):', errorText);
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // Robust extraction of JSON object from the response
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawText.trim());
+    } catch (e) {
+      const patterns = [
+        /```json\s*([\s\S]*?)\s*```/,
+        /```\s*([\s\S]*?)\s*```/,
+        /(\{\s*".*"\s*:[\s\S]*\})/
+      ];
+      for (const pattern of patterns) {
+        const match = rawText.match(pattern);
+        if (match) {
+          try {
+            parsed = JSON.parse((match[1] || match[0]).trim());
+            break;
+          } catch (e2) {}
+        }
+      }
+    }
+
+    if (parsed) {
+      // Sanitize and run Response Quality Guard on string fields
+      if (parsed.report) {
+        parsed.report = runTutorResponseQualityGuard(parsed.report);
+      }
+      if (parsed.overall_feedback) {
+        parsed.overall_feedback = runTutorResponseQualityGuard(parsed.overall_feedback);
+      }
+      if (Array.isArray(parsed.questions)) {
+        parsed.questions.forEach(q => {
+          if (q.feedback) {
+            q.feedback = runTutorResponseQualityGuard(q.feedback);
+          }
+        });
+      }
+    } else {
+      // Fallback if AI didn't return valid JSON
+      const guardedText = runTutorResponseQualityGuard(rawText);
+      parsed = {
+        report: guardedText,
+        overall_feedback: "Please review the detailed AI Insights report for grading suggestions.",
+        questions: []
+      };
+    }
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: JSON.stringify(parsed),
+      raw: data
+    }));
+
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('Grading Assistant Error:', errorMsg);
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: errorMsg }));
+  }
 }
 
 /**
