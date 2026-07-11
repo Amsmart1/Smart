@@ -150,9 +150,62 @@ class KofiAIManager {
             title = 'AI Assistant',
             placeholder = 'Ask me anything...',
             onSend = async (msg) => {},
+            onSendStream = null,
             onClear = () => {},
             welcomeMessage = 'Hello! How can I help you today?'
         } = options;
+
+        const formatMarkdown = (content) => {
+            // Escape HTML first
+            let escaped = window.escapeHtml(content);
+
+            // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
+            const placeholders = [];
+
+            // 1. Extract and preserve code blocks (no underscores to prevent italic clash)
+            let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                const idx = placeholders.length;
+                placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
+                return `%%%PLACEHOLDER${idx}%%%`;
+            });
+
+            // 2. Extract and preserve inline code (no underscores to prevent italic clash)
+            temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
+                const idx = placeholders.length;
+                placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
+                return `%%%PLACEHOLDER${idx}%%%`;
+            });
+
+            // 3. Format bullet points: lines starting with '*' or '-'
+            temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+            // 4. Format markdown links safely [text](url)
+            temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                const decodedUrl = url.replace(/&amp;/g, '&');
+                if (window.isValidUrl(decodedUrl)) {
+                    const lowerUrl = decodedUrl.toLowerCase().trim();
+                    // Prevent javascript: or other script execution protocol hacks
+                    if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+                        return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
+                    }
+                }
+                return match;
+            });
+
+            // 5. Format bold and italics
+            temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+            // 6. Format line breaks
+            temp = temp.replace(/\n/g, '<br>');
+
+            // 7. Restore placeholders
+            for (let i = 0; i < placeholders.length; i++) {
+                temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+            }
+
+            return temp;
+        };
 
         const chatHtml = `
             <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
@@ -345,6 +398,136 @@ class KofiAIManager {
 
         sendBtn.onclick = handleSend;
         input.onkeypress = (e) => { if (e.key === 'Enter') handleSend(); };
+
+        // Synchronize Voice Engine state with UI indicators
+        const syncVoiceUI = (state) => {
+            if (!state) return;
+
+            // Mic button styling
+            if (state.status === 'listening') {
+                if (micBtn) {
+                    micBtn.style.background = '#ef4444';
+                    micBtn.style.borderColor = '#ef4444';
+                    micBtn.style.color = '#fff';
+                    micBtn.innerHTML = '🛑';
+                    micBtn.title = 'Stop listening';
+                }
+            } else {
+                if (micBtn) {
+                    micBtn.style.background = '#f1f5f9';
+                    micBtn.style.borderColor = '#cbd5e1';
+                    micBtn.style.color = 'inherit';
+                    micBtn.innerHTML = '🎙️';
+                    micBtn.title = 'Start voice input';
+                }
+            }
+
+            // Handsfree button styling
+            if (handsFreeBtn) {
+                if (window.voiceEngine && window.voiceEngine.settings.conversationMode) {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: On';
+                    handsFreeBtn.style.background = '#dcfce7';
+                    handsFreeBtn.style.color = '#15803d';
+                    handsFreeBtn.style.borderColor = '#bbf7d0';
+                } else {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: Off';
+                    handsFreeBtn.style.background = '#f1f5f9';
+                    handsFreeBtn.style.color = 'inherit';
+                    handsFreeBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+
+            // TTS Read Aloud button styling
+            if (ttsBtn) {
+                if (ttsEnabled) {
+                    ttsBtn.textContent = '🔊 Read Aloud: On';
+                    ttsBtn.style.background = '#dbeafe';
+                    ttsBtn.style.color = '#1d4ed8';
+                    ttsBtn.style.borderColor = '#bfdbfe';
+                } else {
+                    ttsBtn.textContent = '🔇 Read Aloud: Off';
+                    ttsBtn.style.background = '#f1f5f9';
+                    ttsBtn.style.color = 'inherit';
+                    ttsBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+        };
+
+        // Hook up Voice Engine callback subscriptions
+        if (window.voiceEngine) {
+            window.voiceEngine.onStateChange = syncVoiceUI;
+
+            window.voiceEngine.conversationManager.aiCallback = async (text) => {
+                if (!text) return;
+                input.value = text;
+                updateCharCounter();
+                await handleSend();
+            };
+
+            // Handle system-level microphone or recognition errors gracefully
+            window.voiceEngine.onError = (err) => {
+                if (!err) return;
+                console.warn("[Voice Engine Alert]", err);
+
+                // For permissions denied or user inactivity pause, append an informative system card
+                let alertHtml = '';
+                if (err.type === 'permission_denied') {
+                    alertHtml = `<span style="color: #ef4444; font-weight: 600;">🎙️ Mic Access Denied:</span> Please enable microphone permissions in your browser address bar to use voice features.`;
+                } else if (err.type === 'silence_timeout') {
+                    alertHtml = `🎙️ <em>${window.escapeHtml(err.message)}</em>`;
+                    // Automatically disable hands-free states on error/silence timeout
+                    syncVoiceUI(window.voiceEngine.getStatus());
+                } else if (err.type === 'no_speech') {
+                    // Suppress noise alerts unless continuous/hands-free gets stuck
+                    return;
+                } else {
+                    alertHtml = `<span style="color: #ef4444;">⚠️ Voice Error:</span> ${window.escapeHtml(err.message)}`;
+                }
+
+                if (alertHtml) {
+                    appendMessage('assistant', alertHtml, true);
+                }
+            };
+
+            // Set initial state
+            syncVoiceUI(window.voiceEngine.getStatus());
+        }
+
+        if (micBtn) {
+            micBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const state = window.voiceEngine.getStatus();
+                if (state.status === 'listening') {
+                    window.voiceEngine.stopListening();
+                } else {
+                    window.voiceEngine.listen();
+                }
+            };
+        }
+
+        if (ttsBtn) {
+            ttsBtn.onclick = () => {
+                ttsEnabled = !ttsEnabled;
+                if (!ttsEnabled && window.voiceEngine) {
+                    window.voiceEngine.stop();
+                }
+                syncVoiceUI(window.voiceEngine ? window.voiceEngine.getStatus() : null);
+            };
+        }
+
+        if (handsFreeBtn) {
+            handsFreeBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const isConv = !window.voiceEngine.settings.conversationMode;
+                if (isConv) {
+                    ttsEnabled = true; // Auto-enable read aloud for conversational flow
+                    window.voiceEngine.startConversation();
+                } else {
+                    window.voiceEngine.stopConversation();
+                }
+                syncVoiceUI(window.voiceEngine.getStatus());
+            };
+        }
     }
 }
 

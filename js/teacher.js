@@ -3889,19 +3889,61 @@ async function indexCourseForAI(courseId) {
 }
 
 async function openAIQuizGenerator(courseId = null) {
+    let topics = [];
+    let lessons = [];
+    if (courseId) {
+        UI.showNotification('Loading course topics and lessons...', 'info');
+        try {
+            const [topicRes, lessonRes] = await Promise.all([
+                SupabaseDB.getTopics(courseId),
+                SupabaseDB.getLessons(courseId)
+            ]);
+            topics = topicRes.data || [];
+            lessons = lessonRes.data || [];
+        } catch (e) {
+            console.error('Failed to load topics or lessons:', e);
+            UI.showNotification('Failed to load topics/lessons for filtering.', 'warn');
+        }
+    }
+
+    const defaultQuizRubric = `1. Alignment: Align questions with core definitions, equations, and concepts of the selected topic/lesson.
+2. Clarity & Precision: Avoid ambiguous or overly simple phrasing, double negatives, and tricky wordings.
+3. Realistic Distractors: Provide plausible alternative options for multiple-choice questions.
+4. Levels of Assessment: Ensure questions cover appropriate cognitive levels.`;
+
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
     backdrop.innerHTML = `
-        <div class="modal" style="max-width: 500px">
+        <div class="modal" style="max-width: 550px">
             <div class="flex-between mb-20">
                 <h3 class="m-0">AI Quiz Generator</h3>
                 <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
             </div>
             <div class="flex-column gap-15">
+                ${courseId ? `
                 <div>
-                    <label class="small bold">Topic</label>
+                    <label class="small bold">Select Course Topic (Optional)</label>
+                    <select id="aiQuizTopicSelect" class="m-0">
+                        <option value="">-- All Topics --</option>
+                        ${topics.map(t => `<option value="${_safeEscapeAttr(t.id)}" data-title="${_safeEscapeAttr(t.title)}">${_safeEscapeHtml(t.title)}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label class="small bold">Select Lesson for Context (Optional)</label>
+                    <select id="aiQuizLessonSelect" class="m-0">
+                        <option value="">-- No Specific Lesson (Full Topic/Course) --</option>
+                        ${lessons.map(l => `<option value="${_safeEscapeAttr(l.id)}" data-topic="${_safeEscapeAttr(l.topic_id || '')}" data-title="${_safeEscapeAttr(l.title)}">${_safeEscapeHtml(l.title)}</option>`).join('')}
+                    </select>
+                </div>
+                ` : ''}
+                <div>
+                    <label class="small bold">Topic / Learning Objective</label>
                     <input type="text" id="aiQuizTopic" placeholder="e.g. Photosynthesis, World War II" class="m-0">
+                </div>
+                <div>
+                    <label class="small bold">Rules / Rubrics (Teacher Editable)</label>
+                    <textarea id="aiQuizRubrics" rows="3" class="m-0" placeholder="e.g. Focus on key definitions and practical application">${_safeEscapeHtml(defaultQuizRubric)}</textarea>
                 </div>
                 <div class="grid-2 gap-10">
                     <div>
@@ -3923,18 +3965,75 @@ async function openAIQuizGenerator(courseId = null) {
     `;
     document.body.appendChild(backdrop);
 
+    const topicSelect = backdrop.querySelector('#aiQuizTopicSelect');
+    const lessonSelect = backdrop.querySelector('#aiQuizLessonSelect');
+    const topicInput = backdrop.querySelector('#aiQuizTopic');
+
+    if (topicSelect && lessonSelect) {
+        topicSelect.addEventListener('change', () => {
+            const selectedTopicId = topicSelect.value;
+            const selectedTopicTitle = topicSelect.options[topicSelect.selectedIndex]?.dataset.title || '';
+            if (selectedTopicTitle) {
+                topicInput.value = selectedTopicTitle;
+            }
+
+            const options = lessonSelect.querySelectorAll('option');
+            options.forEach(opt => {
+                const optVal = opt.value;
+                if (!optVal) return; // Keep "No Specific Lesson" option
+                const optTopic = opt.dataset.topic;
+                if (!selectedTopicId || optTopic === selectedTopicId) {
+                    opt.style.display = '';
+                } else {
+                    opt.style.display = 'none';
+                }
+            });
+            lessonSelect.value = '';
+        });
+    }
+
+    if (lessonSelect) {
+        lessonSelect.addEventListener('change', () => {
+            const selectedLessonTitle = lessonSelect.options[lessonSelect.selectedIndex]?.dataset.title || '';
+            if (selectedLessonTitle && !topicInput.value) {
+                topicInput.value = selectedLessonTitle;
+            }
+        });
+    }
+
     document.getElementById('generateAIQuizBtn').onclick = async () => {
         const topic = document.getElementById('aiQuizTopic').value.trim();
         const count = document.getElementById('aiQuizCount').value;
         const difficulty = document.getElementById('aiQuizDifficulty').value;
+        const rubrics = document.getElementById('aiQuizRubrics').value.trim();
 
         if (!topic) return UI.showNotification('Please enter a topic', 'warn');
 
         const btn = document.getElementById('generateAIQuizBtn');
         btn.disabled = true; btn.textContent = 'Generating...';
 
+        const selectedLessonId = lessonSelect?.value;
+        let lessonTitle = '';
+        let lessonContent = '';
+        if (selectedLessonId) {
+            const selectedLesson = lessons.find(l => l.id === selectedLessonId);
+            if (selectedLesson) {
+                lessonTitle = selectedLesson.title;
+                lessonContent = selectedLesson.content || '';
+            }
+        }
+
         try {
-            const questions = await AIManager.generateAssessment({ topic, count, difficulty, type: 'quiz', course_id: courseId });
+            const questions = await AIManager.generateAssessment({
+                topic,
+                count,
+                difficulty,
+                type: 'quiz',
+                course_id: courseId,
+                lesson_title: lessonTitle,
+                lesson_content: lessonContent,
+                rubrics: rubrics
+            });
             questions.forEach(q => addQuizQuestionField(q));
             UI.showNotification(`Successfully generated ${questions.length} questions!`, 'success');
             backdrop.remove();
@@ -3945,6 +4044,81 @@ async function openAIQuizGenerator(courseId = null) {
         }
     };
 }
+
+window.applyAIGradingFeedbackFromCache = function() {
+    const data = window.currentAIGradingData;
+    if (!data) return;
+
+    if (data.isStructured) {
+        window.applyAIGradingFeedback(data.overallFeedbackText, data.questionData);
+    } else {
+        const fb = document.getElementById('feedback');
+        if (fb) {
+            fb.value += (fb.value ? '\n\n' : '') + 'AI Insight:\n' + data.reportText;
+            fb.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        UI.showNotification('AI Grading feedback successfully applied!', 'success');
+    }
+};
+
+window.applyAIGradingFeedback = function(overallFeedback, questionsJsonStr) {
+    try {
+        let questions = [];
+        if (Array.isArray(questionsJsonStr)) {
+            questions = questionsJsonStr;
+        } else if (typeof questionsJsonStr === 'string') {
+            try {
+                questions = JSON.parse(decodeURIComponent(questionsJsonStr));
+            } catch (e) {
+                try {
+                    questions = JSON.parse(questionsJsonStr);
+                } catch (e2) {
+                    console.error('Failed to parse questions JSON:', e2);
+                }
+            }
+        }
+
+        // 1. Populate overall feedback
+        const fb = document.getElementById('feedback');
+        if (fb) {
+            fb.value = overallFeedback;
+            fb.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        // 2. Populate questions scores and comments
+        if (Array.isArray(questions)) {
+            questions.forEach(q => {
+                const idx = q.question_index;
+                if (idx === undefined || idx === null) return;
+
+                // Find score input for this question index
+                const scoreInput = document.querySelector(`.q-score-input[data-q-idx="${idx}"]`);
+                if (scoreInput) {
+                    const max = parseInt(scoreInput.dataset.max) || 0;
+                    let val = parseFloat(q.score) || 0;
+                    // Clamp
+                    val = Math.max(0, Math.min(val, max));
+                    scoreInput.value = val;
+                    // Dispatch both input and change to trigger auto-calculation listeners
+                    scoreInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    scoreInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    scoreInput.dispatchEvent(new Event('keyup', { bubbles: true }));
+                }
+
+                // Find feedback input for this question index
+                const feedbackInput = document.querySelector(`.q-feedback-input[data-q-idx="${idx}"]`);
+                if (feedbackInput) {
+                    feedbackInput.value = q.feedback || '';
+                    feedbackInput.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            });
+        }
+        UI.showNotification('AI Grading feedback and scores successfully applied!', 'success');
+    } catch (e) {
+        console.error('Failed to apply AI Grading feedback:', e);
+        UI.showNotification('Failed to apply feedback: ' + e.message, 'error');
+    }
+};
 
 async function openAIGradingAssistant(assignmentId, studentEmail) {
     const renderId = window.currentRenderId;
@@ -3970,20 +4144,65 @@ async function openAIGradingAssistant(assignmentId, studentEmail) {
             assignment_title: assignment.title,
             student_submission: studentSubmission,
             rubric: assignment.description, // Use description as rubric if specific rubric not available
-            questions: assignment.questions.map(q => q.text)
+            questions: assignment.questions.map(q => ({ text: q.text, points: q.points }))
         });
 
         if (renderId !== window.currentRenderId) return;
 
-        UI.showModal('AI Grading Insights', `
+        // Parse the insight as JSON (if it is JSON)
+        let reportText = insight;
+        let overallFeedbackText = '';
+        let questionData = [];
+        let isStructured = false;
+
+        try {
+            const parsed = JSON.parse(insight);
+            if (parsed && typeof parsed === 'object') {
+                reportText = parsed.report || '';
+                overallFeedbackText = parsed.overall_feedback || '';
+                questionData = parsed.questions || [];
+                isStructured = true;
+            }
+        } catch (err) {
+            // Try extracting using AIManager's robust helper
+            try {
+                const extracted = AIManager._extractJSON(insight);
+                if (extracted && typeof extracted === 'object') {
+                    reportText = extracted.report || '';
+                    overallFeedbackText = extracted.overall_feedback || '';
+                    questionData = extracted.questions || [];
+                    isStructured = true;
+                }
+            } catch (err2) {
+                // Not a JSON string - fallback to treating the raw insight as reportText
+                reportText = insight;
+            }
+        }
+
+        // Store current AI grading insight data in memory to completely avoid any quote/character clashing in HTML attributes
+        window.currentAIGradingData = {
+            reportText: reportText,
+            overallFeedbackText: overallFeedbackText,
+            questionData: questionData,
+            isStructured: isStructured
+        };
+
+        const modalBody = `
             <div class="p-10">
                 <div class="badge badge-purple mb-10">AI ASSISTANT FEEDBACK</div>
-                <div class="small" style="line-height: 1.6; white-space: pre-line;">${insight.replace(/\n/g, '<br>')}</div>
+                <div class="small font-markdown-render" style="line-height: 1.6; max-height: 400px; overflow-y: auto; padding: 15px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+                    ${AIManager.formatMarkdown(reportText)}
+                </div>
                 <hr class="my-15">
                 <p class="tiny text-muted italic">Note: These insights are generated by AI and should be verified by the teacher before finalizing the grade.</p>
-                <button class="button secondary small w-auto" onclick="const fb=document.getElementById('feedback'); if(fb) fb.value += (fb.value ? '\\n\\n' : '') + 'AI Insight: ' + \`${insight.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`; this.closest('.modal-backdrop').remove();">Apply to Feedback</button>
+                <div class="flex gap-10 mt-15">
+                    <button class="button success small w-auto" onclick="window.applyAIGradingFeedbackFromCache(); this.closest('.modal-backdrop').remove();">Apply Feedback</button>
+                    <button class="button secondary small w-auto" onclick="this.closest('.modal-backdrop').remove();">Cancel</button>
+                </div>
             </div>
-        `, { maxWidth: '700px' });
+        `;
+
+        UI.showModal('AI Grading Insights', modalBody, { maxWidth: '700px' });
 
     } catch (e) {
         console.error(e);
@@ -3994,23 +4213,61 @@ async function openAIGradingAssistant(assignmentId, studentEmail) {
 }
 
 async function openAIAssignmentGenerator(courseId = null) {
+    let topics = [];
+    let lessons = [];
+    if (courseId) {
+        UI.showNotification('Loading course topics and lessons...', 'info');
+        try {
+            const [topicRes, lessonRes] = await Promise.all([
+                SupabaseDB.getTopics(courseId),
+                SupabaseDB.getLessons(courseId)
+            ]);
+            topics = topicRes.data || [];
+            lessons = lessonRes.data || [];
+        } catch (e) {
+            console.error('Failed to load topics or lessons:', e);
+            UI.showNotification('Failed to load topics/lessons for filtering.', 'warn');
+        }
+    }
+
+    const defaultAssignRubric = `1. Depth of Inquiry: Prompt critical thinking, analytical reasoning, and practical application.
+2. Structure & Formatting: Instruct the student to format with headings, introductions, and clear sections.
+3. Technical Rigor: Ensure the response addresses the technical principles and vocabulary of the topic.
+4. Supporting Evidence: Instruct the student to support arguments with logical reasoning or citations.`;
+
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.style.display = 'flex';
     backdrop.innerHTML = `
-        <div class="modal" style="max-width: 500px">
+        <div class="modal" style="max-width: 550px">
             <div class="flex-between mb-20">
                 <h3 class="m-0">AI Assignment Generator</h3>
                 <button class="button secondary tiny w-auto" onclick="this.closest('.modal-backdrop').remove()">✕</button>
             </div>
             <div class="flex-column gap-15">
+                ${courseId ? `
+                <div>
+                    <label class="small bold">Select Course Topic (Optional)</label>
+                    <select id="aiAssignTopicSelect" class="m-0">
+                        <option value="">-- All Topics --</option>
+                        ${topics.map(t => `<option value="${_safeEscapeAttr(t.id)}" data-title="${_safeEscapeAttr(t.title)}">${_safeEscapeHtml(t.title)}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label class="small bold">Select Lesson for Context (Optional)</label>
+                    <select id="aiAssignLessonSelect" class="m-0">
+                        <option value="">-- No Specific Lesson (Full Topic/Course) --</option>
+                        ${lessons.map(l => `<option value="${_safeEscapeAttr(l.id)}" data-topic="${_safeEscapeAttr(l.topic_id || '')}" data-title="${_safeEscapeAttr(l.title)}">${_safeEscapeHtml(l.title)}</option>`).join('')}
+                    </select>
+                </div>
+                ` : ''}
                 <div>
                     <label class="small bold">Topic / Learning Objective</label>
                     <input type="text" id="aiAssignTopic" placeholder="e.g. Critical Analysis of Macbeth" class="m-0">
                 </div>
                 <div>
-                    <label class="small bold">Specific Rubrics / Instructions</label>
-                    <textarea id="aiAssignRubrics" placeholder="e.g. Focus on character development, minimum 500 words" rows="3" class="m-0"></textarea>
+                    <label class="small bold">Specific Rubrics / Instructions (Teacher Editable)</label>
+                    <textarea id="aiAssignRubrics" placeholder="e.g. Focus on character development, minimum 500 words" rows="4" class="m-0">${_safeEscapeHtml(defaultAssignRubric)}</textarea>
                 </div>
                 <div class="grid-2 gap-10">
                     <div>
@@ -4032,6 +4289,42 @@ async function openAIAssignmentGenerator(courseId = null) {
     `;
     document.body.appendChild(backdrop);
 
+    const topicSelect = backdrop.querySelector('#aiAssignTopicSelect');
+    const lessonSelect = backdrop.querySelector('#aiAssignLessonSelect');
+    const topicInput = backdrop.querySelector('#aiAssignTopic');
+
+    if (topicSelect && lessonSelect) {
+        topicSelect.addEventListener('change', () => {
+            const selectedTopicId = topicSelect.value;
+            const selectedTopicTitle = topicSelect.options[topicSelect.selectedIndex]?.dataset.title || '';
+            if (selectedTopicTitle) {
+                topicInput.value = selectedTopicTitle;
+            }
+
+            const options = lessonSelect.querySelectorAll('option');
+            options.forEach(opt => {
+                const optVal = opt.value;
+                if (!optVal) return; // Keep "No Specific Lesson" option
+                const optTopic = opt.dataset.topic;
+                if (!selectedTopicId || optTopic === selectedTopicId) {
+                    opt.style.display = '';
+                } else {
+                    opt.style.display = 'none';
+                }
+            });
+            lessonSelect.value = '';
+        });
+    }
+
+    if (lessonSelect) {
+        lessonSelect.addEventListener('change', () => {
+            const selectedLessonTitle = lessonSelect.options[lessonSelect.selectedIndex]?.dataset.title || '';
+            if (selectedLessonTitle && !topicInput.value) {
+                topicInput.value = selectedLessonTitle;
+            }
+        });
+    }
+
     document.getElementById('generateAIAssignBtn').onclick = async () => {
         const topic = document.getElementById('aiAssignTopic').value.trim();
         const rubrics = document.getElementById('aiAssignRubrics').value.trim();
@@ -4043,8 +4336,28 @@ async function openAIAssignmentGenerator(courseId = null) {
         const btn = document.getElementById('generateAIAssignBtn');
         btn.disabled = true; btn.textContent = 'Generating...';
 
+        const selectedLessonId = lessonSelect?.value;
+        let lessonTitle = '';
+        let lessonContent = '';
+        if (selectedLessonId) {
+            const selectedLesson = lessons.find(l => l.id === selectedLessonId);
+            if (selectedLesson) {
+                lessonTitle = selectedLesson.title;
+                lessonContent = selectedLesson.content || '';
+            }
+        }
+
         try {
-            const questions = await AIManager.generateAssessment({ topic, rubrics, count, difficulty, type: 'assignment', course_id: courseId });
+            const questions = await AIManager.generateAssessment({
+                topic,
+                rubrics,
+                count,
+                difficulty,
+                type: 'assignment',
+                course_id: courseId,
+                lesson_title: lessonTitle,
+                lesson_content: lessonContent
+            });
             questions.forEach(q => addQuestionField(q));
             UI.showNotification(`Generated ${questions.length} assignment questions!`, 'success');
             backdrop.remove();

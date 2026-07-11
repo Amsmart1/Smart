@@ -106,8 +106,7 @@ function isAuthorizedOrigin(req) {
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
     method: req.method,
-    headers: req.headers,
-    body: req.body
+    headers: req.headers
   });
 
   // Handle CORS preflight
@@ -175,6 +174,23 @@ module.exports = async function handler(req, res) {
       }));
 
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
+    let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
+    if (platformModel) {
+      const norm = platformModel.trim().toLowerCase();
+      if (
+        norm === 'gemma 4 31b' ||
+        norm === 'gemma-4-31b' ||
+        norm === 'gemma_4_31b' ||
+        norm === 'gemma4:31b' ||
+        norm === 'gemma-4-31b-it' ||
+        norm === 'gemma 4 31b it' ||
+        norm === 'gemma_4_31b_it' ||
+        norm === 'gemma 4-31b' ||
+        norm === 'models/gemma-4-31b'
+      ) {
+        platformModel = "gemma-4-31b";
+      }
+    }
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
   Your mission is to help visitors and users understand and navigate the platform's features.
@@ -192,7 +208,13 @@ module.exports = async function handler(req, res) {
   - You cannot perform any administrative or transactional actions like enrollment, course creation, account deletion, password resets, or changing grades.
   - For technical support, account billing, or official issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
   - Keep responses professional, friendly, and concise.
-  - Use markdown for formatting (bullet points for features, bold for emphasis).`;
+  - Use markdown for formatting (bullet points for features, bold for emphasis).
+  - Strict Conversational Quality Check:
+    * Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
+    * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
+    * Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
+    * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
+    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
     // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma2-27b-it)
     const kofiModel = 'gemma2-27b-it';
@@ -201,22 +223,28 @@ module.exports = async function handler(req, res) {
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error('Kofi AI Gateway Error:', errorMsg);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      error: errorMsg,
-      timestamp: new Date().toISOString(),
-      type: 'kofi_gateway_error'
-    }));
+    // If headers already sent, do not attempt writeHead
+    if (!res.headersSent) {
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: errorMsg,
+        timestamp: new Date().toISOString(),
+        type: 'kofi_gateway_error'
+      }));
+    } else {
+      res.write(`data: ${JSON.stringify({ error: errorMsg })}\n\n`);
+      res.end();
+    }
   }
 };
 
 /**
- * Generic Gemini API Caller
+ * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
 async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma2-27b-it', res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
@@ -234,6 +262,120 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
 
   try {
     response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+  } catch (fetchErr) {
+    console.error('Failed to contact Gemini API:', fetchErr);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
+    return;
+  }
+
+  let buffer = "";
+  let accumulatedText = "";
+
+  try {
+    const reader = response.body;
+    for await (const chunk of reader) {
+      buffer += chunk.toString();
+
+      let inString = false;
+      let escaped = false;
+      let braceCount = 0;
+      let startIdx = -1;
+      let i = 0;
+
+      while (i < buffer.length) {
+        const char = buffer[i];
+        if (escaped) {
+          escaped = false;
+          i++;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          i++;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          i++;
+          continue;
+        }
+        if (!inString) {
+          if (char === '{') {
+            if (braceCount === 0) {
+              startIdx = i;
+            }
+            braceCount++;
+          } else if (char === '}') {
+            braceCount--;
+            if (braceCount === 0 && startIdx !== -1) {
+              const jsonStr = buffer.substring(startIdx, i + 1);
+              try {
+                const obj = JSON.parse(jsonStr);
+                const rawText = obj.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (rawText) {
+                  accumulatedText += rawText;
+                  res.write(`data: ${JSON.stringify({ chunk: rawText })}\n\n`);
+                }
+              } catch (e) {
+                // Ignore partial/non-matching JSON structures
+              }
+              buffer = buffer.substring(i + 1);
+              i = -1;
+              startIdx = -1;
+            }
+          }
+        }
+        i++;
+      }
+    }
+
+    // Process final polished output
+    const polishedText = runResponseQualityGuard(accumulatedText);
+    res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
+    res.end();
+
+  } catch (streamErr) {
+    console.error("Stream reader error:", streamErr);
+    res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
+    res.end();
+  }
+}
+
+/**
+ * Generic Gemini API Caller
+ */
+async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
+    return;
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: prompt }] }
+  ];
+
+  let response;
+  try {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -273,7 +415,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
   }
 
   const aiResponse = {
-    content: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.',
+    content: guardedText,
     raw: data
   };
 
