@@ -422,7 +422,13 @@ module.exports = async function handler(req, res) {
     }
 
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
-    const platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
+    let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
+    if (platformModel) {
+      const norm = platformModel.trim().toLowerCase();
+      if (norm === 'gemma 4 31b' || norm === 'gemma-4-31b' || norm === 'gemma_4_31b' || norm === 'gemma4:31b' || norm === 'gemma-4-31b-it') {
+        platformModel = "gemma-4-31b";
+      }
+    }
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
   Your mission is to help visitors and users understand and navigate the platform's features.

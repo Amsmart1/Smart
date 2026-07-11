@@ -306,8 +306,11 @@ module.exports = async function handler(req, res) {
       // 1. Generate embedding for user message using configured embedding model
       const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
       let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-      if (embeddingModel === 'gemini-embedding') {
-        embeddingModel = 'text-embedding-004';
+      if (embeddingModel) {
+        const norm = embeddingModel.trim().toLowerCase();
+        if (norm === 'gemini-embedding' || norm === 'gemini_embedding' || norm === 'gemini embedding' || norm === 'gemini-embedding-004' || norm === 'text-embedding-004') {
+          embeddingModel = 'text-embedding-004';
+        }
       }
       const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
       let context = '';
@@ -478,7 +481,13 @@ async function handleCourseTutor(payload, res) {
   }
 
   const apiKey = process.env.GEMINI_COURSE_TUTOR_API_KEY;
-  const tutorModel = process.env.GEMINI_TUTOR_MODEL || "gemini-3.1-flash-lite";
+  let tutorModel = process.env.GEMINI_TUTOR_MODEL || "gemini-3.1-flash-lite";
+  if (tutorModel) {
+    const norm = tutorModel.trim().toLowerCase();
+    if (norm === 'gemini 3.1 flash lite' || norm === 'gemini-3.1-flash-lite' || norm === 'gemini_3.1_flash_lite' || norm === 'gemini-3.1-flash-lite-preview') {
+      tutorModel = "gemini-3.1-flash-lite";
+    }
+  }
 
   const systemPrompt = `You are a professional academic tutor for this course.
   Your goal is to provide high-quality, conversational tutoring.
@@ -513,7 +522,13 @@ async function handleCourseTutor(payload, res) {
 async function handleAssessmentGenerator(payload, res) {
   const { topic, type, count, difficulty, rubrics, email, role, lesson_title, lesson_content } = payload;
   const apiKey = process.env.GEMINI_ASSESSMENT_API_KEY;
-  const assessmentModel = process.env.GEMINI_ASSESSMENT_MODEL || "gemini-2.5-flash";
+  let assessmentModel = process.env.GEMINI_ASSESSMENT_MODEL || "gemini-2.5-flash";
+  if (assessmentModel) {
+    const norm = assessmentModel.trim().toLowerCase();
+    if (norm === 'gemini 2.5 flash' || norm === 'gemini-2.5-flash' || norm === 'gemini_2.5_flash') {
+      assessmentModel = "gemini-2.5-flash";
+    }
+  }
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -683,7 +698,13 @@ async function handleAssessmentGenerator(payload, res) {
 async function handleGradingAssistant(payload, res) {
   const { assignment_title, student_submission, rubric, questions, email, role } = payload;
   const apiKey = process.env.GEMINI_GRADING_API_KEY;
-  const gradingModel = process.env.GEMINI_GRADING_MODEL || "gemini-3.5-flash";
+  let gradingModel = process.env.GEMINI_GRADING_MODEL || "gemini-3.5-flash";
+  if (gradingModel) {
+    const norm = gradingModel.trim().toLowerCase();
+    if (norm === 'gemini 3.5 flash' || norm === 'gemini-3.5-flash' || norm === 'gemini_3.5_flash') {
+      gradingModel = "gemini-3.5-flash";
+    }
+  }
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -875,7 +896,13 @@ async function callAnalyticsGemini(apiKey, model, prompt, systemInstruction, his
 async function handleAnalyticsAI(payload, res) {
   const { analytics_data, question, email, role } = payload;
   const apiKey = process.env.GEMINI_ANALYTICS_API_KEY;
-  const analyticsModel = process.env.GEMINI_ANALYTICS_MODEL || "gemini-3-flash";
+  let analyticsModel = process.env.GEMINI_ANALYTICS_MODEL || "gemini-3-flash";
+  if (analyticsModel) {
+    const norm = analyticsModel.trim().toLowerCase();
+    if (norm === 'gemini 3 flash' || norm === 'gemini-3-flash' || norm === 'gemini_3_flash') {
+      analyticsModel = "gemini-3-flash";
+    }
+  }
 
   const prompt = `My Role: ${role}
   My Identity: ${email}
@@ -919,8 +946,11 @@ async function handleGenerateEmbedding(payload, res) {
   const { text } = payload;
   const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
   let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-  if (embeddingModel === 'gemini-embedding') {
-    embeddingModel = 'text-embedding-004';
+  if (embeddingModel) {
+    const norm = embeddingModel.trim().toLowerCase();
+    if (norm === 'gemini-embedding' || norm === 'gemini_embedding' || norm === 'gemini embedding' || norm === 'gemini-embedding-004' || norm === 'text-embedding-004') {
+      embeddingModel = 'text-embedding-004';
+    }
   }
   const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
@@ -955,8 +985,11 @@ async function handleGenerateBatchEmbeddings(payload, res) {
   const { texts } = payload;
   const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
   let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-  if (embeddingModel === 'gemini-embedding') {
-    embeddingModel = 'text-embedding-004';
+  if (embeddingModel) {
+    const norm = embeddingModel.trim().toLowerCase();
+    if (norm === 'gemini-embedding' || norm === 'gemini_embedding' || norm === 'gemini embedding' || norm === 'gemini-embedding-004' || norm === 'text-embedding-004') {
+      embeddingModel = 'text-embedding-004';
+    }
   }
   const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
@@ -995,7 +1028,13 @@ async function handleGenerateBatchEmbeddings(payload, res) {
 async function handleVoiceAI(payload, res) {
   const { message, audio, history = [] } = payload;
   const apiKey = process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY; // Fallback to tutor key
-  const voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
+  let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
+  if (voiceModel) {
+    const norm = voiceModel.trim().toLowerCase();
+    if (norm === 'gemini 2.5 flash native audio' || norm === 'gemini-2.5-flash-native-audio' || norm === 'gemini_2.5_flash_native_audio') {
+      voiceModel = "gemini-2.5-flash-native-audio";
+    }
+  }
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
