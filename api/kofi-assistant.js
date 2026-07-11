@@ -425,7 +425,17 @@ module.exports = async function handler(req, res) {
     let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
     if (platformModel) {
       const norm = platformModel.trim().toLowerCase();
-      if (norm === 'gemma 4 31b' || norm === 'gemma-4-31b' || norm === 'gemma_4_31b' || norm === 'gemma4:31b' || norm === 'gemma-4-31b-it') {
+      if (
+        norm === 'gemma 4 31b' ||
+        norm === 'gemma-4-31b' ||
+        norm === 'gemma_4_31b' ||
+        norm === 'gemma4:31b' ||
+        norm === 'gemma-4-31b-it' ||
+        norm === 'gemma 4 31b it' ||
+        norm === 'gemma_4_31b_it' ||
+        norm === 'gemma 4-31b' ||
+        norm === 'models/gemma-4-31b'
+      ) {
         platformModel = "gemma-4-31b";
       }
     }
