@@ -562,6 +562,12 @@ async function handleAssessmentGenerator(payload, res) {
     return;
   }
 
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
+    return;
+  }
+
   let schemaPrompt = '';
   if (type === 'quiz') {
     schemaPrompt = `Each question object in the array MUST use the following fields:
@@ -630,7 +636,7 @@ async function handleAssessmentGenerator(payload, res) {
   Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${assessmentModel}:generateContent?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
