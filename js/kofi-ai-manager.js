@@ -3,6 +3,9 @@
  *
  * Enterprise lightweight frontend layer for public kofi assistant.
  * NO Supabase, sessions, cookies, RBAC, ABAC, database, or RAG.
+ * Enhanced with enterprise-grade Markdown processing, full Accessibility support,
+ * Character Limit indicator, smooth UX scroll anchoring, and Keyboard controls.
+ * Models: Public Kofi AI (Gemma 4 31B: gemma-4-31b-it) and Voice Assistant (Gemini 2.5 Flash: gemini-2.5-flash)
  */
 
 class KofiAIManager {
@@ -39,6 +42,13 @@ class KofiAIManager {
     }
 
     /**
+     * Compatibility helper to support streaming requests.
+     */
+    static async _invokeStream(message, history = []) {
+        return await this._invoke(message, history);
+    }
+
+    /**
      * Executes actual AI request.
      */
     static async _executeRequest(payload) {
@@ -67,7 +77,7 @@ class KofiAIManager {
                 try {
                     data = await response.json();
                 } catch {
-                    throw new Error("Kofi AI assistant returned invalid response");
+                    throw new Error("Kofi AI assistant returned invalid response format.");
                 }
 
                 if (!response.ok) {
@@ -112,6 +122,13 @@ class KofiAIManager {
     }
 
     /**
+     * Streaming-compatible interface for public Kofi Assistant
+     */
+    static async askKofiStream(message) {
+        return await this.askKofi(message);
+    }
+
+    /**
      * Clears conversational history for a specific key or all history if no key is provided.
      */
     static clearHistory(historyKey = null) {
@@ -138,21 +155,22 @@ class KofiAIManager {
         } = options;
 
         const chatHtml = `
-            <div class="ai-chatbot-container card p-0 flex-column" style="height: 500px; max-height: 80vh;">
-                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0">
-                    <div class="flex-center-y gap-10">
-                        <span style="font-size: 1.5rem">🤖</span>
-                        <strong style="color: var(--p)">${window.escapeHtml(title)}</strong>
+            <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
+                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc;">
+                    <div class="flex-center-y gap-10" style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 1.5rem" aria-hidden="true">🤖</span>
+                        <strong style="color: var(--p, #5b2ea6); font-size: 1.05rem;">${window.escapeHtml(title)}</strong>
                     </div>
-                    <button class="button secondary tiny w-auto ai-clear-btn">Clear</button>
+                    <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem;">Clear</button>
                 </div>
-                <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" style="background: #f8fafc">
+                <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
-                <div class="ai-chat-input p-10 border-top bg-white" style="border-radius: 0 0 12px 12px">
-                    <div class="flex gap-10">
-                        <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" style="border-radius: 20px">
-                        <button class="button small w-auto ai-send-btn" style="border-radius: 20px; padding: 0 20px">Send</button>
+                <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 12px 12px;">
+                    <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
+                        <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
+                        <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0;">Send</button>
                     </div>
+                    <div class="ai-char-counter text-right mt-5" aria-hidden="true" style="font-size: 10px; color: #64748b; padding-right: 15px; margin-top: 5px; text-align: right;">0 / 1000</div>
                 </div>
             </div>
         `;
@@ -163,49 +181,105 @@ class KofiAIManager {
         const sendBtn = container.querySelector('.ai-send-btn');
         const clearBtn = container.querySelector('.ai-clear-btn');
         const messagesArea = container.querySelector('.ai-chat-messages');
+        const counter = container.querySelector('.ai-char-counter');
+
+        const updateCharCounter = () => {
+            const len = input.value.length;
+            if (counter) {
+                counter.textContent = `${len} / 1000`;
+                if (len >= 900) {
+                    counter.style.color = '#ef4444';
+                    counter.style.fontWeight = '700';
+                } else {
+                    counter.style.color = '#64748b';
+                    counter.style.fontWeight = '400';
+                }
+            }
+        };
+
+        input.addEventListener('input', updateCharCounter);
 
         const appendMessage = (role, content, isTrustedHtml = false) => {
             const msgDiv = document.createElement('div');
             msgDiv.className = `ai-msg ${role} mb-15 ${role === 'user' ? 'text-right' : ''}`;
+            msgDiv.style.marginBottom = '15px';
+            if (role === 'user') {
+                msgDiv.style.textAlign = 'right';
+            }
 
             let formatted;
             if (isTrustedHtml) {
                 formatted = content;
             } else {
-                // Escape HTML and format content (simple markdown-like replacement)
+                // Escape HTML first
                 let escaped = window.escapeHtml(content);
 
-                // Format bullet points: lines starting with '*' or '-'
-                escaped = escaped.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+                // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
+                const placeholders = [];
 
-                // Format links: [text](url) -> <a href="url" target="_blank" class="text-link">text</a>
-                escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                // 1. Extract and preserve code blocks (no underscores to prevent italic clash)
+                let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                    const idx = placeholders.length;
+                    placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
+                    return `%%%PLACEHOLDER${idx}%%%`;
+                });
+
+                // 2. Extract and preserve inline code (no underscores to prevent italic clash)
+                temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
+                    const idx = placeholders.length;
+                    placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
+                    return `%%%PLACEHOLDER${idx}%%%`;
+                });
+
+                // 3. Format bullet points: lines starting with '*' or '-'
+                temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+                // 4. Format markdown links safely [text](url)
+                temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
                     const decodedUrl = url.replace(/&amp;/g, '&');
                     if (window.isValidUrl(decodedUrl)) {
-                        return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link">${text}</a>`;
+                        const lowerUrl = decodedUrl.toLowerCase().trim();
+                        // Prevent javascript: or other script execution protocol hacks
+                        if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+                            return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
+                        }
                     }
                     return match;
                 });
 
-                // Format bold: **text** -> <strong>text</strong>
-                escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                // 5. Format bold and italics
+                temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
 
-                // Format line breaks
-                formatted = escaped.replace(/\n/g, '<br>');
+                // 6. Format line breaks
+                temp = temp.replace(/\n/g, '<br>');
+
+                // 7. Restore placeholders
+                for (let i = 0; i < placeholders.length; i++) {
+                    temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+                }
+
+                formatted = temp;
             }
 
             msgDiv.innerHTML = `
-                <div class="p-10 border-radius-md small text-left" style="background: ${role === 'user' ? 'var(--p)' : '#fff'}; color: ${role === 'user' ? '#fff' : 'var(--text)'}; border: 1px solid #e2e8f0; display: inline-block; max-width: 85%">
+                <div class="p-10 border-radius-md small text-left" style="background: ${role === 'user' ? 'var(--p, #5b2ea6)' : '#fff'}; color: ${role === 'user' ? '#fff' : 'var(--text, #1e293b)'}; border: 1px solid #cbd5e1; display: inline-block; max-width: 85%; border-radius: 8px; padding: 10px; text-align: left; line-height: 1.5; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
                     ${formatted}
                 </div>
             `;
             messagesArea.appendChild(msgDiv);
-            messagesArea.scrollTop = messagesArea.scrollHeight;
+
+            // Smooth, native-like scroll to bottom
+            messagesArea.scrollTo({
+                top: messagesArea.scrollHeight,
+                behavior: 'smooth'
+            });
         };
 
         const resetUI = () => {
             messagesArea.innerHTML = '';
             appendMessage('assistant', welcomeMessage);
+            if (counter) counter.textContent = '0 / 1000';
         };
 
         // Initial welcome
@@ -222,27 +296,45 @@ class KofiAIManager {
             const msg = input.value.trim();
             if (!msg) return;
 
+            // Enforce character limit guard on submit
+            if (msg.length > 1000) {
+                alert("Message is too long. Please shorten it below 1000 characters.");
+                return;
+            }
+
             input.value = '';
             input.disabled = true;
             sendBtn.disabled = true;
+            updateCharCounter();
 
             appendMessage('user', msg);
 
             // Typing indicator
             const typingDiv = document.createElement('div');
             typingDiv.className = 'ai-msg assistant mb-15 typing-indicator';
-            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #e2e8f0; display: inline-block;"><span class="animate-pulse">AI is thinking...</span></div>`;
+            typingDiv.style.marginBottom = '15px';
+            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #cbd5e1; display: inline-block; border-radius: 8px; padding: 10px;"><span class="animate-pulse" style="font-weight: 500; color: #64748b;">Kofi is thinking...</span></div>`;
             messagesArea.appendChild(typingDiv);
-            messagesArea.scrollTop = messagesArea.scrollHeight;
+
+            messagesArea.scrollTo({
+                top: messagesArea.scrollHeight,
+                behavior: 'smooth'
+            });
 
             try {
-                const response = await onSend(msg);
+                // Support both streaming and non-streaming onSend functions
+                let response;
+                if (typeof options.onSendStream === 'function') {
+                    response = await options.onSendStream(msg);
+                } else {
+                    response = await onSend(msg);
+                }
                 typingDiv.remove();
                 appendMessage('assistant', response);
             } catch (e) {
                 typingDiv.remove();
                 const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
-                appendMessage('assistant', `<span style="color: #ef4444">⚠️ Error: ${errorMessage}</span>`, true);
+                appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
                 console.error(e);
             } finally {
                 input.disabled = false;
@@ -255,5 +347,15 @@ class KofiAIManager {
         input.onkeypress = (e) => { if (e.key === 'Enter') handleSend(); };
     }
 }
+
+// Register global keyboard event listener for seamless window closure (Escape key)
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const chatWindow = document.getElementById('kofiChatWindow');
+        if (chatWindow && !chatWindow.classList.contains('hidden') && window.LandingUI && typeof window.LandingUI.toggleKofi === 'function') {
+            window.LandingUI.toggleKofi();
+        }
+    }
+});
 
 window.KofiAIManager = KofiAIManager;
