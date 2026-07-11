@@ -422,6 +422,23 @@ module.exports = async function handler(req, res) {
     }
 
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
+    let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
+    if (platformModel) {
+      const norm = platformModel.trim().toLowerCase();
+      if (
+        norm === 'gemma 4 31b' ||
+        norm === 'gemma-4-31b' ||
+        norm === 'gemma_4_31b' ||
+        norm === 'gemma4:31b' ||
+        norm === 'gemma-4-31b-it' ||
+        norm === 'gemma 4 31b it' ||
+        norm === 'gemma_4_31b_it' ||
+        norm === 'gemma 4-31b' ||
+        norm === 'models/gemma-4-31b'
+      ) {
+        platformModel = "gemma-4-31b";
+      }
+    }
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
   Your mission is to help visitors and users understand and navigate the platform's features.
@@ -448,9 +465,9 @@ module.exports = async function handler(req, res) {
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
     if (isStream) {
-      await callGeminiStream(apiKey, message, systemPrompt, sanitizedHistory, res);
+      await callGeminiStream(apiKey, platformModel, message, systemPrompt, sanitizedHistory, res);
     } else {
-      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
+      await callGemini(apiKey, platformModel, message, systemPrompt, sanitizedHistory, res);
     }
 
   } catch (error) {
@@ -474,10 +491,10 @@ module.exports = async function handler(req, res) {
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
-async function callGeminiStream(apiKey, prompt, systemInstruction, history = [], res) {
+async function callGeminiStream(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
@@ -491,7 +508,7 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -603,10 +620,10 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
 /**
  * Generic Gemini API Caller
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], res) {
+async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
@@ -620,7 +637,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

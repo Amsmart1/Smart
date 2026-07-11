@@ -303,17 +303,34 @@ module.exports = async function handler(req, res) {
       const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
       const { course_id, message } = payload;
 
-      // 1. Generate embedding for user message
+      // 1. Generate embedding for user message using configured embedding model
       const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
+      let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
+      if (embeddingModel) {
+        const norm = embeddingModel.trim().toLowerCase();
+        if (
+          norm === 'gemini-embedding' ||
+          norm === 'gemini_embedding' ||
+          norm === 'gemini embedding' ||
+          norm === 'gemini-embedding-004' ||
+          norm === 'text-embedding-004' ||
+          norm === 'gemini embedding 004' ||
+          norm === 'gemini_embedding_004' ||
+          norm === 'models/text-embedding-004'
+        ) {
+          embeddingModel = 'text-embedding-004';
+        }
+      }
+      const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
       let context = '';
 
       if (apiKey) {
         try {
-          const embedRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`, {
+          const embedRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:embedContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: "models/text-embedding-004",
+              model: `models/${cleanEmbeddingModel}`,
               content: { parts: [{ text: message }] }
             })
           });
@@ -397,6 +414,9 @@ module.exports = async function handler(req, res) {
       case 'generate_batch_embeddings':
         return await handleGenerateBatchEmbeddings(payload, res);
 
+      case 'voice':
+        return await handleVoiceAI(payload, res);
+
       default:
         res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Unsupported AI operation: ${type}` }));
@@ -470,6 +490,22 @@ async function handleCourseTutor(payload, res) {
   }
 
   const apiKey = process.env.GEMINI_COURSE_TUTOR_API_KEY;
+  let tutorModel = process.env.GEMINI_TUTOR_MODEL || "gemini-3.1-flash-lite";
+  if (tutorModel) {
+    const norm = tutorModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 3.1 flash lite' ||
+      norm === 'gemini-3.1-flash-lite' ||
+      norm === 'gemini_3.1_flash_lite' ||
+      norm === 'gemini-3.1-flash-lite-preview' ||
+      norm === 'gemini 31 flash lite' ||
+      norm === 'gemini-31-flash-lite' ||
+      norm === 'gemini 3.1 flash lite preview' ||
+      norm === 'models/gemini-3.1-flash-lite'
+    ) {
+      tutorModel = "gemini-3.1-flash-lite";
+    }
+  }
 
   const systemPrompt = `You are a professional academic tutor for this course.
   Your goal is to provide high-quality, conversational tutoring.
@@ -495,7 +531,7 @@ async function handleCourseTutor(payload, res) {
   Course Context:
   ${context.substring(0, 15000)}`;
 
-  return callTutorGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
+  return callTutorGemini(apiKey, tutorModel, message, systemPrompt, sanitizedHistory, res);
 }
 
 /**
@@ -504,6 +540,27 @@ async function handleCourseTutor(payload, res) {
 async function handleAssessmentGenerator(payload, res) {
   const { topic, type, count, difficulty, rubrics, email, role, lesson_title, lesson_content } = payload;
   const apiKey = process.env.GEMINI_ASSESSMENT_API_KEY;
+  let assessmentModel = process.env.GEMINI_ASSESSMENT_MODEL || "gemini-2.5-flash";
+  if (assessmentModel) {
+    const norm = assessmentModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 2.5 flash' ||
+      norm === 'gemini-2.5-flash' ||
+      norm === 'gemini_2.5_flash' ||
+      norm === 'gemini 25 flash' ||
+      norm === 'gemini-25-flash' ||
+      norm === 'gemini-2.5-flash-preview' ||
+      norm === 'models/gemini-2.5-flash'
+    ) {
+      assessmentModel = "gemini-2.5-flash";
+    }
+  }
+
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
+    return;
+  }
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -673,10 +730,25 @@ async function handleAssessmentGenerator(payload, res) {
 async function handleGradingAssistant(payload, res) {
   const { assignment_title, student_submission, rubric, questions, email, role } = payload;
   const apiKey = process.env.GEMINI_GRADING_API_KEY;
+  let gradingModel = process.env.GEMINI_GRADING_MODEL || "gemini-3.5-flash";
+  if (gradingModel) {
+    const norm = gradingModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 3.5 flash' ||
+      norm === 'gemini-3.5-flash' ||
+      norm === 'gemini_3.5_flash' ||
+      norm === 'gemini 35 flash' ||
+      norm === 'gemini-35-flash' ||
+      norm === 'gemini-3.5-flash-preview' ||
+      norm === 'models/gemini-3.5-flash'
+    ) {
+      gradingModel = "gemini-3.5-flash";
+    }
+  }
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_GRADING_API_KEY not configured in environment' }));
     return;
   }
 
@@ -716,7 +788,7 @@ async function handleGradingAssistant(payload, res) {
   Help the teacher grade by providing insights based on the rubric. Output ONLY valid JSON containing report, overall_feedback, and questions keys.`;
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gradingModel}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -805,10 +877,10 @@ async function handleGradingAssistant(payload, res) {
 /**
  * Dedicated Gemini API Caller for Role-based Analytics with RunTutorResponseQualityGuard
  */
-async function callAnalyticsGemini(apiKey, prompt, systemInstruction, history = [], res) {
+async function callAnalyticsGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_ANALYTICS_API_KEY not configured in environment' }));
     return;
   }
 
@@ -820,7 +892,7 @@ async function callAnalyticsGemini(apiKey, prompt, systemInstruction, history = 
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -864,6 +936,20 @@ async function callAnalyticsGemini(apiKey, prompt, systemInstruction, history = 
 async function handleAnalyticsAI(payload, res) {
   const { analytics_data, question, email, role } = payload;
   const apiKey = process.env.GEMINI_ANALYTICS_API_KEY;
+  let analyticsModel = process.env.GEMINI_ANALYTICS_MODEL || "gemini-3-flash";
+  if (analyticsModel) {
+    const norm = analyticsModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 3 flash' ||
+      norm === 'gemini-3-flash' ||
+      norm === 'gemini_3_flash' ||
+      norm === 'gemini3 flash' ||
+      norm === 'gemini-3-flash-preview' ||
+      norm === 'models/gemini-3-flash'
+    ) {
+      analyticsModel = "gemini-3-flash";
+    }
+  }
 
   const prompt = `My Role: ${role}
   My Identity: ${email}
@@ -896,7 +982,7 @@ async function handleAnalyticsAI(payload, res) {
   - Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
   - Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-  return callAnalyticsGemini(apiKey, prompt, systemPrompt, [], res);
+  return callAnalyticsGemini(apiKey, analyticsModel, prompt, systemPrompt, [], res);
 }
 
 
@@ -906,17 +992,35 @@ async function handleAnalyticsAI(payload, res) {
 async function handleGenerateEmbedding(payload, res) {
   const { text } = payload;
   const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
+  let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
+  if (embeddingModel) {
+    const norm = embeddingModel.trim().toLowerCase();
+    if (
+      norm === 'gemini-embedding' ||
+      norm === 'gemini_embedding' ||
+      norm === 'gemini embedding' ||
+      norm === 'gemini-embedding-004' ||
+      norm === 'text-embedding-004' ||
+      norm === 'gemini embedding 004' ||
+      norm === 'gemini_embedding_004' ||
+      norm === 'models/text-embedding-004'
+    ) {
+      embeddingModel = 'text-embedding-004';
+    }
+  }
+  const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
+
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_EMBEDDING_API_KEY not configured' }));
     return;
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:embedContent?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: "models/text-embedding-004",
+      model: `models/${cleanEmbeddingModel}`,
       content: { parts: [{ text }] }
     })
   });
@@ -936,18 +1040,36 @@ async function handleGenerateEmbedding(payload, res) {
 async function handleGenerateBatchEmbeddings(payload, res) {
   const { texts } = payload;
   const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
+  let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
+  if (embeddingModel) {
+    const norm = embeddingModel.trim().toLowerCase();
+    if (
+      norm === 'gemini-embedding' ||
+      norm === 'gemini_embedding' ||
+      norm === 'gemini embedding' ||
+      norm === 'gemini-embedding-004' ||
+      norm === 'text-embedding-004' ||
+      norm === 'gemini embedding 004' ||
+      norm === 'gemini_embedding_004' ||
+      norm === 'models/text-embedding-004'
+    ) {
+      embeddingModel = 'text-embedding-004';
+    }
+  }
+  const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
+
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_EMBEDDING_API_KEY not configured' }));
     return;
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       requests: texts.map(text => ({
-        model: "models/text-embedding-004",
+        model: `models/${cleanEmbeddingModel}`,
         content: { parts: [{ text }] }
       }))
     })
@@ -966,12 +1088,92 @@ async function handleGenerateBatchEmbeddings(payload, res) {
 }
 
 /**
- * Generic Gemini API Caller for Course-aware Tutor (with runTutorResponseQualityGuard)
+ * Feature 7: Voice / Native Audio processing
  */
-async function callTutorGemini(apiKey, prompt, systemInstruction, history = [], res) {
+async function handleVoiceAI(payload, res) {
+  const { message, audio, history = [] } = payload;
+  const apiKey = process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY; // Fallback to tutor key
+  let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
+  if (voiceModel) {
+    const norm = voiceModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 2.5 flash native audio' ||
+      norm === 'gemini-2.5-flash-native-audio' ||
+      norm === 'gemini_2.5_flash_native_audio' ||
+      norm === 'gemini 25 flash native audio' ||
+      norm === 'gemini-25-flash-native-audio' ||
+      norm === 'models/gemini-2.5-flash-native-audio'
+    ) {
+      voiceModel = "gemini-2.5-flash-native-audio";
+    }
+  }
+
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_VOICE_API_KEY not configured' }));
+    return;
+  }
+
+  // Build content parts
+  const parts = [];
+  if (message) {
+    parts.push({ text: message });
+  }
+  if (audio) {
+    // If client sent audio base64
+    parts.push({
+      inline_data: {
+        mime_type: "audio/mp3", // default
+        data: audio
+      }
+    });
+  }
+
+  const systemPrompt = `You are a professional voice assistant. Respond concisely and professionally.`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${voiceModel}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1024,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Voice API error: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const guardedText = runTutorResponseQualityGuard(rawText);
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: guardedText,
+      raw: data
+    }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
+ * Generic Gemini API Caller for Course-aware Tutor (with runTutorResponseQualityGuard)
+ */
+async function callTutorGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_COURSE_TUTOR_API_KEY not configured in environment' }));
     return;
   }
 
@@ -983,7 +1185,7 @@ async function callTutorGemini(apiKey, prompt, systemInstruction, history = [], 
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1022,7 +1224,7 @@ async function callTutorGemini(apiKey, prompt, systemInstruction, history = [], 
 /**
  * Generic Gemini API Caller
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], res) {
+async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
@@ -1037,7 +1239,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
