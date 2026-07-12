@@ -568,6 +568,12 @@ async function handleAssessmentGenerator(payload, res) {
     return;
   }
 
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
+    return;
+  }
+
   let schemaPrompt = '';
   if (type === 'quiz') {
     schemaPrompt = `Each question object in the array MUST use the following fields:
@@ -708,6 +714,11 @@ async function handleAssessmentGenerator(payload, res) {
         q.points = 5;
       }
       q.points = Math.max(1, q.points);
+
+      // Strictly remove any generated 'difficulty' field to ensure it is not saved to the unsupported database field
+      if ('difficulty' in q) {
+        delete q.difficulty;
+      }
     });
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
