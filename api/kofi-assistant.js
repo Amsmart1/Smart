@@ -347,37 +347,9 @@ function resolveApiKey(type, payload = {}) {
 }
 
 /**
- * Resolves dynamic model ID, defaulting non-excluded project models to "gemini-3.1-flash-lite".
+ * Resolves dynamic model ID, strictly mapping core project models to "gemini-3.1-flash-lite".
  */
 function resolveModelId(type, payload = {}) {
-  let modelOverride = null;
-  if (type === 'tutor') modelOverride = process.env.GEMINI_TUTOR_MODEL;
-  else if (type === 'generate_assessment') modelOverride = process.env.GEMINI_ASSESSMENT_MODEL;
-  else if (type === 'grading') modelOverride = process.env.GEMINI_GRADING_MODEL;
-  else if (type === 'analytics') modelOverride = process.env.GEMINI_ANALYTICS_MODEL;
-  else if (type === 'kofi') modelOverride = process.env.GEMINI_PLATFORM_MODEL;
-
-  if (modelOverride) {
-    const norm = modelOverride.trim().toLowerCase();
-    if (
-      norm === 'gemini 3.1 flash lite' ||
-      norm === 'gemini-3.1-flash-lite' ||
-      norm === 'gemini_3.1_flash_lite' ||
-      norm === 'gemini-3.1-flash-lite-preview' ||
-      norm === 'gemini 31 flash lite' ||
-      norm === 'gemini-31-flash-lite' ||
-      norm === 'gemini 3.1 flash lite preview' ||
-      norm === 'models/gemini-3.1-flash-lite' ||
-      norm === 'gemma-4-31b' ||
-      norm === 'gemma-4-31b-it' ||
-      norm === 'gemma-4' ||
-      norm === 'gemma2-27b-it'
-    ) {
-      return "gemini-3.1-flash-lite";
-    }
-    return modelOverride;
-  }
-
   return "gemini-3.1-flash-lite";
 }
 
@@ -550,7 +522,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -648,80 +620,3 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
   }
 }
 
-/**
- * Generic Gemini API Caller (Non-Streaming)
- */
-async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, history = [], res, classification = null) {
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
-    return;
-  }
-
-  const contents = [
-    ...history.map(h => ({
-      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    })),
-    { role: 'user', parts: [{ text: prompt }] }
-  ];
-
-  let response;
-  try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents,
-        system_instruction: { parts: [{ text: systemInstruction }] },
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.8,
-          topK: 40,
-          maxOutputTokens: 2048,
-        }
-      })
-    });
-  } catch (fetchErr) {
-    console.error('Failed to contact Gemini API:', fetchErr);
-    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
-    return;
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error:', errorText);
-    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-    return;
-  }
-
-  let data;
-  try {
-    data = await response.json();
-  } catch (jsonErr) {
-    console.error('Malformed JSON from Gemini API:', jsonErr);
-    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Bad Gateway: Upstream AI model returned invalid JSON response.' }));
-    return;
-  }
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  const guardedText = runResponseQualityGuard(rawText);
-
-  const aiResponse = {
-    content: guardedText,
-    raw: data,
-    ...(classification ? {
-      intent: classification.intent,
-      category: classification.category,
-      confidence: classification.confidence,
-      entities: classification.entities,
-      action: 'fallback_gemini'
-    } : {})
-  };
-
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(aiResponse));
-}

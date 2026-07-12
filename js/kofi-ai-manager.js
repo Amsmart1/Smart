@@ -5,7 +5,7 @@
  * NO Supabase, sessions, cookies, RBAC, ABAC, database, or RAG.
  * Enhanced with enterprise-grade Markdown processing, full Accessibility support,
  * Character Limit indicator, smooth UX scroll anchoring, and Keyboard controls.
- * Models: Public Kofi AI (Gemma 4 31B: gemma-4-31b-it) and Voice Assistant (Gemini 2.5 Flash: gemini-2.5-flash)
+ * Models: Public Kofi AI (Gemini 3.1 Flash Lite: gemini-3.1-flash-lite) and Voice Assistant (Gemini 2.5 Flash: gemini-2.5-flash)
  */
 
 class KofiAIManager {
