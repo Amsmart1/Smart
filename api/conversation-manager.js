@@ -73,34 +73,27 @@ function classifyIntent(message) {
   let confidence = 0.0;
   let entities = [];
 
-  // Conversation Management Keyword Groups
-  const appreciationWords = ["thank", "thanks", "appreciate", "thankful", "grateful", "awesome", "perfect", "helpful"];
-  const greetingWords = ["hi", "hello", "hey", "greetings", "morning", "afternoon", "evening", "howdy", "yo", "wassup", "sup"];
-  const byeWords = ["bye", "goodbye", "farewell", "adios", "exit", "quit", "later"];
-  const introWords = ["who", "name", "introduce", "kofi", "identity", "what"];
-  const casualWords = ["how", "going", "doing", "life", "ok", "things"];
-  const jokeWords = ["joke", "jokes", "funny", "laugh", "amuse", "comedy"];
-  const confirmWords = ["yes", "correct", "indeed", "sure", "definitely", "absolutely", "exactly", "ok", "okay", "yup", "yeah", "agree"];
-  const rejectWords = ["no", "incorrect", "nope", "nah", "stop", "cancel", "disagree", "refuse"];
+  // 1. Operational / Task-oriented detection
+  // If the query contains any of these task-oriented terms, it is treated as task-oriented.
+  const taskKeywords = [
+    "dashboard", "update", "account", "profile", "grade", "score", "course", "lesson", "quiz",
+    "test", "exam", "assignment", "materials", "enroll", "register", "setting", "settings",
+    "change", "upload", "submit", "how to", "how do", "how can", "where is", "where are",
+    "navigate", "help", "contact", "support", "ticket", "service", "class", "classes",
+    "meeting", "video", "certification", "qr", "analytics", "discussion", "forum"
+  ];
 
-  // Task-Oriented Keyword Groups
-  const proctorWords = ["proctor", "proctored", "anti-cheat", "webcam", "eye", "snapshot", "tab", "switch", "lockdown", "violation", "integrity", "cheating"];
-  const classWords = ["live", "class", "virtual", "meeting", "zoom", "teams", "video", "lecture", "heatmap", "attendance"];
-  const certWords = ["certificate", "completion", "diploma", "verified", "certification", "qr", "gold"];
-  const analyticsWords = ["analytics", "chart", "radar", "profiling", "metrics", "data", "analysis", "insights", "progress", "risk"];
-  const discussionWords = ["discussion", "board", "reply", "forum", "thread", "badge", "nested"];
-  const helpWords = ["help", "contact", "support", "ticket", "service"];
-  const tutorWords = ["lesson", "explain", "concept", "homework", "study", "tips", "curriculum", "syllabus"];
-  const gradingWords = ["grade", "score", "evaluation", "rubric", "feedback", "gradebook"];
-  const enrollWords = ["enroll", "register", "join", "add", "admission"];
-  const courseMgmtWords = ["create", "delete", "reset", "admin", "database", "sql", "config"];
+  const hasTaskKeyword = taskKeywords.some(keyword => {
+    const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+    return regex.test(text);
+  });
 
-  // 1. High-fidelity exact phrase matching (Confidence 1.00)
+  // 2. High-precision exact phrase matching (Confidence 1.00)
   if (/^(hi|hello|hey|howdy|greetings|yo)$/i.test(text)) {
     intent = "greeting";
     category = "conversation_management";
     confidence = 1.00;
-  } else if (/^(thanks|thank you|thank you very much|much appreciated|appreciate it)$/i.test(text)) {
+  } else if (/^(thanks|thank you|thank you very much|much appreciated|appreciate it|grateful)$/i.test(text)) {
     intent = "appreciation";
     category = "conversation_management";
     confidence = 1.00;
@@ -108,7 +101,7 @@ function classifyIntent(message) {
     intent = "farewell";
     category = "conversation_management";
     confidence = 1.00;
-  } else if (/^(who are you|what is your name|who is kofi|what do you do)$/i.test(text)) {
+  } else if (/^(who are you|what is your name|who is kofi|what do you do|introduce yourself|introduce kofi|tell me about yourself)$/i.test(text)) {
     intent = "self_introduction";
     category = "conversation_management";
     confidence = 1.00;
@@ -130,7 +123,7 @@ function classifyIntent(message) {
     confidence = 1.00;
   }
 
-  // 2. Keyword density classification if no exact match found
+  // 3. Keyword density classification if no exact match found
   if (confidence === 0.0) {
     const wordList = text.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
 
@@ -142,6 +135,28 @@ function classifyIntent(message) {
         entities: []
       };
     }
+
+    // Converational word groups (narrowed down to prevent false positives)
+    const greetingWords = ["hi", "hello", "hey", "greetings", "morning", "afternoon", "evening", "howdy", "yo", "wassup", "sup"];
+    const appreciationWords = ["thank", "thanks", "appreciate", "thankful", "grateful"];
+    const byeWords = ["bye", "goodbye", "farewell", "adios", "exit", "quit", "later"];
+    const introWords = ["introduce", "kofi", "identity"]; // Removed "who", "name", "what" to prevent clashing with questions
+    const casualWords = ["going", "doing", "life", "ok", "things"]; // Removed "how"
+    const jokeWords = ["joke", "jokes", "funny", "laugh", "amuse", "comedy"];
+    const confirmWords = ["yes", "correct", "indeed", "sure", "definitely", "absolutely", "exactly", "ok", "okay", "yup", "yeah", "agree"];
+    const rejectWords = ["no", "incorrect", "nope", "nah", "stop", "cancel", "disagree", "refuse"];
+
+    // Task-oriented word groups
+    const proctorWords = ["proctor", "proctored", "anti-cheat", "webcam", "eye", "snapshot", "tab", "switch", "lockdown", "violation", "integrity", "cheating"];
+    const classWords = ["live", "class", "virtual", "meeting", "zoom", "teams", "video", "lecture", "heatmap", "attendance"];
+    const certWords = ["certificate", "completion", "diploma", "verified", "certification", "qr", "gold"];
+    const analyticsWords = ["analytics", "chart", "radar", "profiling", "metrics", "data", "analysis", "insights", "progress", "risk"];
+    const discussionWords = ["discussion", "board", "reply", "forum", "thread", "badge", "nested"];
+    const helpWords = ["help", "contact", "support", "ticket", "service"];
+    const tutorWords = ["lesson", "explain", "concept", "homework", "study", "tips", "curriculum", "syllabus"];
+    const gradingWords = ["grade", "score", "evaluation", "rubric", "feedback", "gradebook"];
+    const enrollWords = ["enroll", "register", "join", "add", "admission"];
+    const courseMgmtWords = ["create", "delete", "reset", "admin", "database", "sql", "config"];
 
     const matches = {
       greeting: countMatches(wordList, greetingWords),
@@ -187,21 +202,22 @@ function classifyIntent(message) {
         confidence = 0.85;
       } else {
         // Single keyword match
-        confidence = matchRatio >= 0.5 ? 0.75 : 0.60;
+        // If the match ratio is low, lower the confidence score significantly to trigger fallback.
+        confidence = matchRatio >= 0.40 ? 0.75 : 0.40;
       }
 
       const convManagementIntents = [
         "greeting", "confirmation", "rejection", "fun_request", "farewell", "self_introduction", "appreciation", "casual_conversation"
       ];
 
-      if (convManagementIntents.includes(intent)) {
+      if (convManagementIntents.includes(intent) && !hasTaskKeyword) {
         category = "conversation_management";
       } else {
         category = "task_oriented";
       }
     } else {
       // No recognized keywords matched
-      if (wordList.length <= 2) {
+      if (wordList.length <= 2 && !hasTaskKeyword) {
         intent = "unknown";
         category = "conversation_management";
         confidence = 0.40;
@@ -213,7 +229,15 @@ function classifyIntent(message) {
     }
   }
 
-  // 3. Entity Extraction
+  // Overrule category and confidence if task keyword is found (Safeguard)
+  if (hasTaskKeyword) {
+    category = "task_oriented";
+    if (confidence >= 0.50) {
+      confidence = 0.45; // Force fallback to Gemini / local search
+    }
+  }
+
+  // 4. Entity Extraction
   // PlatformFeature
   const featureEntities = [
     { value: "proctor", syns: ["proctor", "anti-cheat", "anti cheat", "webcam"] },
@@ -230,7 +254,7 @@ function classifyIntent(message) {
   });
 
   // LMSAction
-  const actionEntities = ["enroll", "register", "grade", "create", "delete", "reset", "join", "submit", "check", "view"];
+  const actionEntities = ["enroll", "register", "grade", "create", "delete", "reset", "join", "submit", "check", "view", "update", "change"];
   actionEntities.forEach(ent => {
     if (text.includes(ent)) {
       entities.push({ value: ent, type: "LMSAction" });
@@ -246,7 +270,7 @@ function classifyIntent(message) {
   });
 
   // CourseConcept
-  const conceptEntities = ["lesson", "homework", "quiz", "assignment", "exam", "gradebook", "feedback", "materials", "syllabus"];
+  const conceptEntities = ["lesson", "homework", "quiz", "assignment", "exam", "gradebook", "feedback", "materials", "syllabus", "dashboard", "account", "profile"];
   conceptEntities.forEach(ent => {
     if (text.includes(ent)) {
       entities.push({ value: ent, type: "CourseConcept" });
