@@ -55,7 +55,8 @@ function countMatches(wordList, keywords) {
  *  - intent: {string} Name of classified intent
  *  - category: {string} 'conversation_management' | 'task_oriented'
  *  - confidence: {number} Score between 0.00 and 1.00
- *  - entities: {Array<Object>} Extracted entities
+ *  - entities: {Object} Extracted entities structured as informational dimensions (who, what, why, where, when, how, which)
+ *  - entities_list: {Array<Object>} Legacy compatibility list of extracted entities
  */
 function classifyIntent(message) {
   if (!message || typeof message !== 'string') {
@@ -63,7 +64,8 @@ function classifyIntent(message) {
       intent: 'unknown',
       category: 'conversation_management',
       confidence: 0.0,
-      entities: []
+      entities: {},
+      entities_list: []
     };
   }
 
@@ -71,10 +73,10 @@ function classifyIntent(message) {
   let intent = "unknown";
   let category = "conversation_management";
   let confidence = 0.0;
-  let entities = [];
+  let entities = {};
+  let entities_list = [];
 
   // 1. Operational / Task-oriented detection
-  // If the query contains any of these task-oriented terms, it is treated as task-oriented.
   const taskKeywords = [
     "dashboard", "update", "account", "profile", "grade", "score", "course", "lesson", "quiz",
     "test", "exam", "assignment", "materials", "enroll", "register", "setting", "settings",
@@ -88,43 +90,52 @@ function classifyIntent(message) {
     return regex.test(text);
   });
 
-  // 2. High-precision exact phrase matching (Confidence 1.00)
-  if (/^(hi|hello|hey|howdy|greetings|yo)$/i.test(text)) {
-    intent = "greeting";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(thanks|thank you|thank you very much|much appreciated|appreciate it|grateful)$/i.test(text)) {
-    intent = "appreciation";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(bye|goodbye|see you|farewell)$/i.test(text)) {
-    intent = "farewell";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(who are you|what is your name|who is kofi|what do you do|introduce yourself|introduce kofi|tell me about yourself)$/i.test(text)) {
-    intent = "self_introduction";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(how are you|how is it going|how are you doing|what's up|whats up)$/i.test(text)) {
-    intent = "casual_conversation";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(tell me a joke|tell a joke|say something funny|make me laugh)$/i.test(text)) {
-    intent = "fun_request";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(yes|correct|sure|ok|okay|yup|yeah)$/i.test(text)) {
-    intent = "confirmation";
-    category = "conversation_management";
-    confidence = 1.00;
-  } else if (/^(no|nope|nah|incorrect)$/i.test(text)) {
-    intent = "rejection";
-    category = "conversation_management";
-    confidence = 1.00;
+  // 1.1 High-fidelity Task Intent Matching (e.g. upload_material)
+  if (/(?:upload|add|post|create|insert|publish|submit)\b/i.test(text) && /(?:notes|material|materials|slides|syllabus|document|file)\b/i.test(text)) {
+    intent = "upload_material";
+    category = "task_oriented";
+    confidence = 0.95;
   }
 
-  // 3. Keyword density classification if no exact match found
-  if (confidence === 0.0) {
+  // 2. High-precision exact phrase matching for conversational intents (Confidence 1.00)
+  if (intent === "unknown") {
+    if (/^(hi|hello|hey|howdy|greetings|yo)$/i.test(text)) {
+      intent = "greeting";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(thanks|thank you|thank you very much|much appreciated|appreciate it|grateful)$/i.test(text)) {
+      intent = "appreciation";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(bye|goodbye|see you|farewell)$/i.test(text)) {
+      intent = "farewell";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(who are you|what is your name|who is kofi|what do you do|introduce yourself|introduce kofi|tell me about yourself)$/i.test(text)) {
+      intent = "self_introduction";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(how are you|how is it going|how are you doing|what's up|whats up)$/i.test(text)) {
+      intent = "casual_conversation";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(tell me a joke|tell a joke|say something funny|make me laugh)$/i.test(text)) {
+      intent = "fun_request";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(yes|correct|sure|ok|okay|yup|yeah)$/i.test(text)) {
+      intent = "confirmation";
+      category = "conversation_management";
+      confidence = 1.00;
+    } else if (/^(no|nope|nah|incorrect)$/i.test(text)) {
+      intent = "rejection";
+      category = "conversation_management";
+      confidence = 1.00;
+    }
+  }
+
+  // 3. Keyword density classification if no exact match or task match found
+  if (intent === "unknown" && confidence === 0.0) {
     const wordList = text.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
 
     if (wordList.length === 0) {
@@ -132,16 +143,17 @@ function classifyIntent(message) {
         intent: 'unknown',
         category: 'conversation_management',
         confidence: 0.10,
-        entities: []
+        entities: {},
+        entities_list: []
       };
     }
 
-    // Converational word groups (narrowed down to prevent false positives)
+    // Conversational word groups
     const greetingWords = ["hi", "hello", "hey", "greetings", "morning", "afternoon", "evening", "howdy", "yo", "wassup", "sup"];
     const appreciationWords = ["thank", "thanks", "appreciate", "thankful", "grateful"];
     const byeWords = ["bye", "goodbye", "farewell", "adios", "exit", "quit", "later"];
-    const introWords = ["introduce", "kofi", "identity"]; // Removed "who", "name", "what" to prevent clashing with questions
-    const casualWords = ["going", "doing", "life", "ok", "things"]; // Removed "how"
+    const introWords = ["introduce", "kofi", "identity"];
+    const casualWords = ["going", "doing", "life", "ok", "things"];
     const jokeWords = ["joke", "jokes", "funny", "laugh", "amuse", "comedy"];
     const confirmWords = ["yes", "correct", "indeed", "sure", "definitely", "absolutely", "exactly", "ok", "okay", "yup", "yeah", "agree"];
     const rejectWords = ["no", "incorrect", "nope", "nah", "stop", "cancel", "disagree", "refuse"];
@@ -195,14 +207,11 @@ function classifyIntent(message) {
       intent = maxIntent;
       const matchRatio = maxCount / wordList.length;
 
-      // Assign granular, realistic confidence scores
       if (maxCount >= 3) {
         confidence = 0.95;
       } else if (maxCount === 2) {
         confidence = 0.85;
       } else {
-        // Single keyword match
-        // If the match ratio is low, lower the confidence score significantly to trigger fallback.
         confidence = matchRatio >= 0.40 ? 0.75 : 0.40;
       }
 
@@ -216,7 +225,6 @@ function classifyIntent(message) {
         category = "task_oriented";
       }
     } else {
-      // No recognized keywords matched
       if (wordList.length <= 2 && !hasTaskKeyword) {
         intent = "unknown";
         category = "conversation_management";
@@ -230,58 +238,78 @@ function classifyIntent(message) {
   }
 
   // Overrule category and confidence if task keyword is found (Safeguard)
-  if (hasTaskKeyword) {
+  if (hasTaskKeyword && category === "conversation_management") {
     category = "task_oriented";
     if (confidence >= 0.50) {
-      confidence = 0.45; // Force fallback to Gemini / local search
+      confidence = 0.45;
     }
   }
 
-  // 4. Entity Extraction
-  // PlatformFeature
-  const featureEntities = [
-    { value: "proctor", syns: ["proctor", "anti-cheat", "anti cheat", "webcam"] },
-    { value: "classes", syns: ["class", "classes", "meeting", "zoom", "lecture"] },
-    { value: "certificates", syns: ["certificate", "certificates", "completion", "diploma", "qr code"] },
-    { value: "analytics", syns: ["analytics", "chart", "radar chart", "metrics"] },
-    { value: "discussions", syns: ["discussion", "forum", "reply", "thread"] }
-  ];
+  // 4. Generalized Entity Extraction answering:
+  // "What, why, where, when, how, who, which, etc specific questions, objects, features, or values involved?"
 
-  featureEntities.forEach(item => {
-    if (item.syns.some(syn => text.includes(syn))) {
-      entities.push({ value: item.value, type: "PlatformFeature" });
-    }
-  });
+  // --- WHO ---
+  const personMatch = message.match(/(?:i am|i'm|my name is)\s+((?:mr\.|ms\.|mrs\.|dr\.|prof\.|mr|ms|mrs|dr|prof)?\s*[a-za-z0-9_-]+(?:\s+[a-za-z0-9_-]+)?)/i);
+  let whoVal = "";
+  if (personMatch && personMatch[1]) {
+    whoVal = personMatch[1].trim().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+  }
+  const roleMatch = message.match(/\b(teacher|student|admin|instructor|lecturer|professor|educator)\b/i);
+  if (roleMatch) {
+    whoVal = whoVal ? `${whoVal}, ${roleMatch[1]}` : roleMatch[1];
+  }
+  if (whoVal) entities.who = whoVal;
 
-  // LMSAction
-  const actionEntities = ["enroll", "register", "grade", "create", "delete", "reset", "join", "submit", "check", "view", "update", "change"];
-  actionEntities.forEach(ent => {
-    if (text.includes(ent)) {
-      entities.push({ value: ent, type: "LMSAction" });
-    }
-  });
+  // --- WHAT ---
+  const objectMatch = message.match(/\b(notes|syllabus|quiz|exam|test|slides|homework|assignment|book|paper|material|materials|document|file|account|profile|name|joke|greetings)\b/i);
+  if (objectMatch) {
+    entities.what = objectMatch[1];
+  }
 
-  // Role
-  const roleEntities = ["student", "teacher", "admin", "instructor", "visitor", "user"];
-  roleEntities.forEach(ent => {
-    if (text.includes(ent)) {
-      entities.push({ value: ent, type: "Role" });
-    }
-  });
+  // --- WHY ---
+  const whyMatch = message.match(/\b(guidance|help|understand|study|prepare|excel|grade|check|view|learn)\b/i);
+  if (whyMatch) {
+    entities.why = whyMatch[1];
+  }
 
-  // CourseConcept
-  const conceptEntities = ["lesson", "homework", "quiz", "assignment", "exam", "gradebook", "feedback", "materials", "syllabus", "dashboard", "account", "profile"];
-  conceptEntities.forEach(ent => {
-    if (text.includes(ent)) {
-      entities.push({ value: ent, type: "CourseConcept" });
-    }
-  });
+  // --- WHERE ---
+  const whereMatch = message.match(/\b(dashboard|forum|discussion board|classroom|database|meeting|help center|support)\b/i);
+  if (whereMatch) {
+    entities.where = whereMatch[1];
+  }
+
+  // --- WHEN ---
+  const whenMatch = message.match(/\b(now|today|live|scheduled|before|after|tomorrow|later)\b/i);
+  if (whenMatch) {
+    entities.when = whenMatch[1];
+  }
+
+  // --- HOW ---
+  const howMatch = message.match(/\b(upload|register|enroll|change|update|reset|webcam|video|qr code|link)\b/i);
+  if (howMatch) {
+    entities.how = howMatch[1];
+  }
+
+  // --- WHICH ---
+  const whichMatch = message.match(/\b(biology|physics|chemistry|mathematics|math|english|history|science|computer\s+science|shs|jhs|beginner|advanced)\b/i);
+  if (whichMatch) {
+    entities.which = whichMatch[1];
+  }
+
+  // F. Create legacy list of entities for compatibility
+  for (const [key, val] of Object.entries(entities)) {
+    entities_list.push({
+      value: val,
+      type: key.charAt(0).toUpperCase() + key.slice(1) // Who, What, Why, Where, When, How, Which
+    });
+  }
 
   return {
     intent,
     category,
     confidence: Number(confidence.toFixed(2)),
-    entities
+    entities,
+    entities_list
   };
 }
 
