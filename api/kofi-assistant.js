@@ -483,7 +483,12 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+    const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
+    if (isStream) {
+      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+    } else {
+      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
+    }
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
