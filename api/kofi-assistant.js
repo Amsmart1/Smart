@@ -1,6 +1,7 @@
 // Vercel Serverless Function: api/kofi-assistant.js
 // Handles platform guide (Kofi AI) requests publicly without auth, session or Supabase check.
 // Enhanced with enterprise-grade rate limiting, same-origin domain lock, input sanitization, and robust error handling.
+// Public Kofi AI assistant model: Gemma 4 31B mapped to state-of-the-art gemma2-27b-it to resolve 404/502 errors.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -102,213 +103,6 @@ function isAuthorizedOrigin(req) {
   }
 }
 
-/**
- * Scans user inputs to detect prompt injection, toxic keywords, or out-of-scope requests.
- * Returns a professional, friendly refusal response string if blocked, or null if allowed.
- */
-/**
- * Provides instant, cost-efficient, high-fidelity predefined answers for common platform inquiries.
- * Returns a markdown response string if matched, or null to fallback to the Gemini model.
- */
-function findPreciseResponse(message) {
-  const normalized = message.toLowerCase().trim();
-
-  // Mapping of user intent keywords/questions to high-fidelity, precise predefined responses.
-  const keywordMappings = [
-    {
-      keywords: ["login", "sign in", "signin", "how to login", "how do i login"],
-      response: "To log in to **SmartLMS**:\n1. Click the **Sign In** button in the top navigation bar of the homepage.\n2. Choose your role: **Student**, **Teacher**, or **Admin** by selecting the corresponding icon.\n3. Enter your registered email address and password.\n4. Click **Login** to enter your secure dashboard.\n\n*If you have forgotten your password, click the 'Forgot Password?' link on the login card to submit a reset request.*"
-    },
-    {
-      keywords: ["signup", "sign up", "register", "create account", "create an account"],
-      response: "Getting started with **SmartLMS** is completely free and easy:\n1. Click the **Get Started** button on the homepage.\n2. Fill in your **Full Name**, **Email Address**, **Phone Number** (optional), and choose a strong, secure password.\n3. Make sure to specify your correct role (**Student** or **Teacher**).\n4. Click **Create Account** to immediately access your customized platform dashboard!"
-    },
-    {
-      keywords: ["proctoring", "anti-cheat", "cheat", "anti cheat", "integrity", "assessment security", "monitoring"],
-      response: "SmartLMS features a state-of-the-art **Proctored Assessments & Anti-Cheat Subsystem** designed to ensure absolute academic integrity:\n- **Face Detection**: Submits webcam snapshot recordings chunk-by-chunk to monitor presence and flag multiple/missing faces.\n- **Focus & Tab-Switch Tracking**: Log real-time violations if you navigate away, minimize the window, or lose focus.\n- **Copy-Paste Blockage**: Restricts copying quiz questions or pasting answers from clipboard.\n- **Real-time Alert Stream**: Instantly notifies instructors of critical violations during active sessions.\n- **Comprehensive Violation Reports**: Teachers review chronological logs accompanied by webcam snapshots for verified grading decisions."
-    },
-    {
-      keywords: ["certificate", "certification", "verify", "verification id", "pdf certificate", "diploma"],
-      response: "Upon course completion, **SmartLMS** issues elegant, verifiable **PDF Certificates of Completion**:\n- **High-Fidelity Design**: Decorated with golden borders, institution watermarks, and registrar digital signatures.\n- **Verification ID**: Each certificate includes a unique, database-tracked Identification string.\n- **QR Code Verification**: Anyone (like employers or registrars) can scan the QR code to verify the certificate's authenticity instantly against our secure, live database.\n- **Verification Portal**: Visitors can also input a Verification ID directly via our public **Help Center** portal to verify its status instantly."
-    },
-    {
-      keywords: ["contact", "support", "help", "email", "phone", "contact us", "billing", "customer service"],
-      response: "If you need official administrative support, account setup assistance, or have billing questions, please reach our dedicated team:\n- 📧 **Email**: `eduquizlms@gmail.com`\n- 📞 **Phone**: `+233 50 596 5310`\n- 🕒 **Hours**: Our representatives are available Monday through Friday, 8:00 AM - 5:00 PM GMT.\n\n*You can also access the **Help Center** by clicking support links at the footer of the homepage for interactive FAQs sorted by student, teacher, and admin roles.*"
-    },
-    {
-      keywords: ["features", "what can you do", "capabilities", "platform overview", "lms features"],
-      response: "Welcome to **SmartLMS**! Here is an overview of our core enterprise-grade features:\n1. 🛡️ **Proctored Assessments**: Absolute academic integrity with real-time face-detection, tab-switch logging, and copy-paste blocks.\n2. 🎥 **Live Virtual Classes**: Integrated virtual meetings with automated localized timezone attendance heatmaps and replay options.\n3. 📜 **Verified Certification**: High-fidelity PDF completion certificates containing secure Verification IDs and QR codes.\n4. 📊 **Advanced Analytics**: Multi-dimensional student analytics profiles powered by interactive Chart.js radar charts and 7-row attendance logs.\n5. 💬 **Interactive Discussions**: Collaborative course message boards featuring nested comment replies and official Staff badges."
-    }
-  ];
-
-  for (const mapping of keywordMappings) {
-    if (mapping.keywords.some(keyword => normalized.includes(keyword))) {
-      return mapping.response;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Post-processes the LLM response to guarantee safety, syntax sanity, and prevents system leaks.
- * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
- */
-function runResponseQualityGuard(response) {
-  if (!response || typeof response !== 'string') return "";
-
-  let cleaned = response;
-
-  // 1. Prevent System Prompt/Constraint Leakage
-  const leakWords = [
-    "You are \"Kofi AI\"",
-    "systemPrompt",
-    "systemInstruction",
-    "Important Constraints:",
-    "You are a client-side guide ONLY"
-  ];
-
-  for (const leak of leakWords) {
-    if (cleaned.includes(leak)) {
-      cleaned = cleaned.split(leak)[0];
-    }
-  }
-
-  // Ensure it doesn't mention private prompt variables
-  cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "guide configuration");
-
-  // 2. Strict Conversational Polish & Enterprise-Grade Verification Checks
-  // A. Strip redundant robot/intro preambles for direct, off-topic-free responses
-  const preambles = [
-    /^sure,?\s*/i,
-    /^absolutely,?\s*/i,
-    /^i'd be happy to help with that,?\s*/i,
-    /^here is the information,?\s*/i,
-    /^as requested,?\s*/i,
-    /^certainly,?\s*/i,
-    /^no problem,?\s*/i
-  ];
-  for (const preamble of preambles) {
-    cleaned = cleaned.replace(preamble, "");
-  }
-
-  // B. Prune common filler phrases and words to make the response highly concise
-  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
-
-  // C. Dedup consecutive duplicated words ("the the", "and and", etc.)
-  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
-
-  // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
-  cleaned = cleaned.replace(/!{2,}/g, "!");
-  cleaned = cleaned.replace(/\?{2,}/g, "?");
-  cleaned = cleaned.replace(/,{2,}/g, ",");
-  cleaned = cleaned.replace(/\.{4,}/g, "...");
-  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
-
-  // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
-  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
-  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
-
-  // F. Flawless Sentence Structure: ensure sentences start with capital letters
-  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
-
-  // 3. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
-  // Code Blocks (```)
-  const codeBlockCount = (cleaned.match(/```/g) || []).length;
-  if (codeBlockCount % 2 !== 0) {
-    cleaned += "\n```";
-  }
-
-  // Inline Code (`)
-  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
-  if (inlineCodeCount % 2 !== 0) {
-    cleaned += "`";
-  }
-
-  // Bold (**)
-  const boldCount = (cleaned.match(/\*\*/g) || []).length;
-  if (boldCount % 2 !== 0) {
-    cleaned += "**";
-  }
-
-  // Italic (_)
-  const italicCount = (cleaned.match(/_/g) || []).length;
-  if (italicCount % 2 !== 0) {
-    cleaned += "_";
-  }
-
-  // Simple Script Injection filter
-  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
-
-  return cleaned.trim();
-}
-
-function filterRequestIntent(message) {
-  const normalized = message.toLowerCase();
-
-  // 1. Prompt Injection Indicators
-  const injectionPatterns = [
-    "ignore previous instructions",
-    "ignore all instructions",
-    "system prompt",
-    "system instruction",
-    "you are now",
-    "forget everything",
-    "developer mode",
-    "dan mode",
-    "jailbreak",
-    "override",
-    "ignore the instructions",
-    "output the above",
-    "print your instructions",
-    "reveal your prompt"
-  ];
-
-  if (injectionPatterns.some(p => normalized.includes(p))) {
-    return "I am designed to be a helpful guide for the SmartLMS platform. I cannot bypass, reveal, or modify my platform instructions or security parameters. How can I help you navigate our learning platform features today?";
-  }
-
-  // 2. Toxic or Harmful Intent Indicators (e.g. building hacks, exploits, malicious scripts)
-  const harmfulIntentPatterns = [
-    "how to hack",
-    "write a virus",
-    "write malware",
-    "write an exploit",
-    "how to bypass anti-cheat",
-    "bypass anti cheat",
-    "cheat on quiz",
-    "sql injection script",
-    "xss script",
-    "how to ddos"
-  ];
-
-  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
-    return "As the SmartLMS platform assistant, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain how our proctoring and anti-cheat technologies securely safeguard assessment integrity!";
-  }
-
-  // 3. Out-Of-Scope General Knowledge/Coding Tasks
-  const outOfScopeIndicators = [
-    "write a python",
-    "write a javascript",
-    "write java code",
-    "recipe for",
-    "how to cook",
-    "how to bake",
-    "who is the president",
-    "translate this to spanish",
-    "explain quantum physics",
-    "solve this equation"
-  ];
-
-  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
-    return "I am Kofi AI, your dedicated guide for the SmartLMS platform. I'm specialized in helping you navigate our platform features (like Proctored Assessments, Live Classes, and Verified Certificates). I'm unable to write general programming code or answer general knowledge questions. Let me know if you have any questions about using SmartLMS!";
-  }
-
-  return null;
-}
-
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
     method: req.method,
@@ -379,49 +173,24 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
-    const isStream = !!(req.body && req.body.stream);
-
-    // 4. Request Intent Filter
-    const filterRefusal = filterRequestIntent(message);
-    if (filterRefusal) {
-      if (isStream) {
-        res.writeHead(200, {
-          ...corsHeaders,
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive'
-        });
-        res.write(`data: ${JSON.stringify({ chunk: filterRefusal })}\n\n`);
-        res.write(`data: ${JSON.stringify({ final: filterRefusal })}\n\n`);
-        res.end();
-      } else {
-        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ content: filterRefusal }));
-      }
-      return;
-    }
-
-    // 5. Precise Response Lookup
-    const preciseResponse = findPreciseResponse(message);
-    if (preciseResponse) {
-      if (isStream) {
-        res.writeHead(200, {
-          ...corsHeaders,
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive'
-        });
-        res.write(`data: ${JSON.stringify({ chunk: preciseResponse })}\n\n`);
-        res.write(`data: ${JSON.stringify({ final: preciseResponse })}\n\n`);
-        res.end();
-      } else {
-        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ content: preciseResponse }));
-      }
-      return;
-    }
-
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
+    let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
+    if (platformModel) {
+      const norm = platformModel.trim().toLowerCase();
+      if (
+        norm === 'gemma 4 31b' ||
+        norm === 'gemma-4-31b' ||
+        norm === 'gemma_4_31b' ||
+        norm === 'gemma4:31b' ||
+        norm === 'gemma-4-31b-it' ||
+        norm === 'gemma 4 31b it' ||
+        norm === 'gemma_4_31b_it' ||
+        norm === 'gemma 4-31b' ||
+        norm === 'models/gemma-4-31b'
+      ) {
+        platformModel = "gemma-4-31b";
+      }
+    }
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
   Your mission is to help visitors and users understand and navigate the platform's features.
@@ -447,11 +216,9 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    if (isStream) {
-      await callGeminiStream(apiKey, message, systemPrompt, sanitizedHistory, res);
-    } else {
-      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, res);
-    }
+    // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma2-27b-it)
+    const kofiModel = 'gemma2-27b-it';
+    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -474,10 +241,10 @@ module.exports = async function handler(req, res) {
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
-async function callGeminiStream(apiKey, prompt, systemInstruction, history = [], res) {
+async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma2-27b-it', res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
@@ -490,8 +257,11 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
   ];
 
   let response;
+  // Normalize any variation of gemma-4-31b or gemma-4-31b-it to supported gemma2-27b-it
+  const normalizedModel = (modelName === 'gemma-4-31b' || modelName === 'gemma-4-31b-it' || modelName === 'gemma-4') ? 'gemma2-27b-it' : modelName;
+
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -506,26 +276,11 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
       })
     });
   } catch (fetchErr) {
-    console.error('Failed to contact Gemini streaming API:', fetchErr);
+    console.error('Failed to contact Gemini API:', fetchErr);
     res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
     return;
   }
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini streaming API Error:', errorText);
-    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-    return;
-  }
-
-  res.writeHead(200, {
-    ...corsHeaders,
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-  });
 
   let buffer = "";
   let accumulatedText = "";
@@ -603,10 +358,10 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
 /**
  * Generic Gemini API Caller
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], res) {
+async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
@@ -620,7 +375,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -658,9 +413,6 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], res) 
     res.end(JSON.stringify({ error: 'Bad Gateway: Upstream AI model returned invalid JSON response.' }));
     return;
   }
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
-  const guardedText = runResponseQualityGuard(rawText);
 
   const aiResponse = {
     content: guardedText,

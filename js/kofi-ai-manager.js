@@ -5,7 +5,7 @@
  * NO Supabase, sessions, cookies, RBAC, ABAC, database, or RAG.
  * Enhanced with enterprise-grade Markdown processing, full Accessibility support,
  * Character Limit indicator, smooth UX scroll anchoring, and Keyboard controls.
- * Integrates flawlessly with SmartLMS Centralized Voice Engine.
+ * Models: Public Kofi AI (Gemma 4 31B: gemma-4-31b-it) and Voice Assistant (Gemini 2.5 Flash: gemini-2.5-flash)
  */
 
 class KofiAIManager {
@@ -39,6 +39,13 @@ class KofiAIManager {
         } finally {
             this._activeRequests.delete(requestKey);
         }
+    }
+
+    /**
+     * Compatibility helper to support streaming requests.
+     */
+    static async _invokeStream(message, history = []) {
+        return await this._invoke(message, history);
     }
 
     /**
@@ -115,109 +122,10 @@ class KofiAIManager {
     }
 
     /**
-     * LMS UI Feature Assistant (Kofi AI) with streaming support
+     * Streaming-compatible interface for public Kofi Assistant
      */
-    static async askKofiStream(message, onChunk, onDone) {
-        const historyKey = 'kofi';
-        const history = this._history.get(historyKey) || [];
-
-        let accumulatedText = "";
-
-        await this._invokeStream(message, history, (chunk) => {
-            accumulatedText += chunk;
-            if (onChunk) {
-                onChunk(chunk, accumulatedText);
-            }
-        });
-
-        const cleanText = accumulatedText;
-
-        history.push({ role: 'user', content: message });
-        history.push({ role: 'assistant', content: cleanText });
-        this._history.set(historyKey, history.slice(-this.CONFIG.maxHistoryMessages));
-
-        if (onDone) {
-            onDone(cleanText);
-        }
-
-        return cleanText;
-    }
-
-    /**
-     * Executes streaming fetch and parses SSE chunks.
-     */
-    static async _invokeStream(message, history, onChunk) {
-        const payload = { message, history, stream: true };
-
-        const response = await fetch(this.CONFIG.endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            let errData;
-            try {
-                errData = await response.json();
-            } catch {
-                throw new Error(`Kofi AI assistant HTTP ${response.status}`);
-            }
-            throw new Error(errData?.error || `Kofi AI assistant HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split("\n");
-            buffer = lines.pop(); // Keep partial line in buffer
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-
-                if (trimmed.startsWith("data: ")) {
-                    const dataStr = trimmed.slice(6).trim();
-                    if (dataStr === "[DONE]") continue;
-
-                    try {
-                        const parsed = JSON.parse(dataStr);
-                        if (parsed.chunk) {
-                            onChunk(parsed.chunk);
-                        } else if (parsed.error) {
-                            throw new Error(parsed.error);
-                        }
-                    } catch (e) {
-                        console.error("Failed to parse SSE line:", trimmed, e);
-                    }
-                }
-            }
-        }
-
-        if (buffer) {
-            const trimmed = buffer.trim();
-            if (trimmed.startsWith("data: ")) {
-                const dataStr = trimmed.slice(6).trim();
-                if (dataStr !== "[DONE]") {
-                    try {
-                        const parsed = JSON.parse(dataStr);
-                        if (parsed.chunk) {
-                            onChunk(parsed.chunk);
-                        }
-                    } catch (e) {
-                        console.error("Failed to parse SSE line end:", trimmed, e);
-                    }
-                }
-            }
-        }
+    static async askKofiStream(message) {
+        return await this.askKofi(message);
     }
 
     /**
@@ -301,22 +209,17 @@ class KofiAIManager {
 
         const chatHtml = `
             <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
-                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc; gap: 10px; flex-wrap: wrap;">
+                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc;">
                     <div class="flex-center-y gap-10" style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 1.5rem" aria-hidden="true">🤖</span>
                         <strong style="color: var(--p, #5b2ea6); font-size: 1.05rem;">${window.escapeHtml(title)}</strong>
                     </div>
-                    <div class="flex-center-y gap-5" style="display: flex; align-items: center; gap: 5px; margin-left: auto;">
-                        <button class="button secondary tiny w-auto ai-handsfree-btn" aria-label="Toggle hands-free conversation mode" style="margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px;">🎙️ Hands-Free: Off</button>
-                        <button class="button secondary tiny w-auto ai-tts-btn" aria-label="Toggle voice output" style="margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px;">🔇 Read Aloud: Off</button>
-                        <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem; border-radius: 4px;">Clear</button>
-                    </div>
+                    <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem;">Clear</button>
                 </div>
                 <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
                 <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 12px 12px;">
                     <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
-                        <button class="button secondary small w-auto ai-mic-btn" aria-label="Start voice input" style="border-radius: 20px; padding: 8px 12px; margin: 0; display: flex; align-items: center; justify-content: center; background: #f1f5f9; border: 1px solid #cbd5e1; font-size: 1.1rem; line-height: 1;" title="Start voice input">🎙️</button>
                         <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
                         <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0;">Send</button>
                     </div>
@@ -332,21 +235,6 @@ class KofiAIManager {
         const clearBtn = container.querySelector('.ai-clear-btn');
         const messagesArea = container.querySelector('.ai-chat-messages');
         const counter = container.querySelector('.ai-char-counter');
-        const micBtn = container.querySelector('.ai-mic-btn');
-        const ttsBtn = container.querySelector('.ai-tts-btn');
-        const handsFreeBtn = container.querySelector('.ai-handsfree-btn');
-
-        // Initial setup for voice elements
-        let ttsEnabled = false;
-        const supported = window.voiceEngine ? window.voiceEngine.isSupported() : { recognition: false, synthesis: false };
-
-        if (!supported.recognition) {
-            if (micBtn) micBtn.style.display = 'none';
-            if (handsFreeBtn) handsFreeBtn.style.display = 'none';
-        }
-        if (!supported.synthesis) {
-            if (ttsBtn) ttsBtn.style.display = 'none';
-        }
 
         const updateCharCounter = () => {
             const len = input.value.length;
@@ -376,7 +264,55 @@ class KofiAIManager {
             if (isTrustedHtml) {
                 formatted = content;
             } else {
-                formatted = formatMarkdown(content);
+                // Escape HTML first
+                let escaped = window.escapeHtml(content);
+
+                // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
+                const placeholders = [];
+
+                // 1. Extract and preserve code blocks (no underscores to prevent italic clash)
+                let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                    const idx = placeholders.length;
+                    placeholders.push(`<pre style="background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; overflow-x: auto; margin: 10px 0; white-space: pre-wrap; word-break: break-all; text-align: left; line-height: 1.4;"><code>${code}</code></pre>`);
+                    return `%%%PLACEHOLDER${idx}%%%`;
+                });
+
+                // 2. Extract and preserve inline code (no underscores to prevent italic clash)
+                temp = temp.replace(/`([^`\n]+)`/g, (match, code) => {
+                    const idx = placeholders.length;
+                    placeholders.push(`<code style="background: #e2e8f0; color: #0f172a; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.9em; font-weight: 600; word-break: break-all;">${code}</code>`);
+                    return `%%%PLACEHOLDER${idx}%%%`;
+                });
+
+                // 3. Format bullet points: lines starting with '*' or '-'
+                temp = temp.replace(/^([ \t]*)[*-][ \t]+(.*)$/gm, '$1• $2');
+
+                // 4. Format markdown links safely [text](url)
+                temp = temp.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+                    const decodedUrl = url.replace(/&amp;/g, '&');
+                    if (window.isValidUrl(decodedUrl)) {
+                        const lowerUrl = decodedUrl.toLowerCase().trim();
+                        // Prevent javascript: or other script execution protocol hacks
+                        if (lowerUrl.startsWith('http://') || lowerUrl.startsWith('https://')) {
+                            return `<a href="${window.escapeAttr(decodedUrl)}" target="_blank" class="text-link" style="color: var(--p, #5b2ea6); font-weight: 700; text-decoration: underline;">${text}</a>`;
+                        }
+                    }
+                    return match;
+                });
+
+                // 5. Format bold and italics
+                temp = temp.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                temp = temp.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+                // 6. Format line breaks
+                temp = temp.replace(/\n/g, '<br>');
+
+                // 7. Restore placeholders
+                for (let i = 0; i < placeholders.length; i++) {
+                    temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+                }
+
+                formatted = temp;
             }
 
             msgDiv.innerHTML = `
@@ -397,11 +333,6 @@ class KofiAIManager {
             messagesArea.innerHTML = '';
             appendMessage('assistant', welcomeMessage);
             if (counter) counter.textContent = '0 / 1000';
-            if (window.voiceEngine) {
-                window.voiceEngine.stop();
-                window.voiceEngine.stopListening();
-                window.voiceEngine.stopConversation();
-            }
         };
 
         // Initial welcome
@@ -435,7 +366,7 @@ class KofiAIManager {
             const typingDiv = document.createElement('div');
             typingDiv.className = 'ai-msg assistant mb-15 typing-indicator';
             typingDiv.style.marginBottom = '15px';
-            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #cbd5e1; display: inline-block;"><span class="animate-pulse" style="font-weight: 500; color: #64748b;">Kofi is thinking...</span></div>`;
+            typingDiv.innerHTML = `<div class="p-10 border-radius-md small" style="background: #fff; border: 1px solid #cbd5e1; display: inline-block; border-radius: 8px; padding: 10px;"><span class="animate-pulse" style="font-weight: 500; color: #64748b;">Kofi is thinking...</span></div>`;
             messagesArea.appendChild(typingDiv);
 
             messagesArea.scrollTo({
@@ -443,91 +374,25 @@ class KofiAIManager {
                 behavior: 'smooth'
             });
 
-            if (onSendStream) {
-                try {
-                    let hasStarted = false;
-                    let msgDiv = null;
-                    let contentInner = null;
-
-                    await onSendStream(msg, (chunk, accumulated) => {
-                        if (!hasStarted) {
-                            hasStarted = true;
-                            typingDiv.remove();
-
-                            // Create the message div for streaming the response
-                            msgDiv = document.createElement('div');
-                            msgDiv.className = `ai-msg assistant mb-15`;
-                            msgDiv.style.marginBottom = '15px';
-                            msgDiv.innerHTML = `
-                                <div class="p-10 border-radius-md small text-left" style="background: #fff; color: var(--text, #1e293b); border: 1px solid #cbd5e1; display: inline-block; max-width: 85%; border-radius: 8px; padding: 10px; text-align: left; line-height: 1.5; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
-                                </div>
-                            `;
-                            messagesArea.appendChild(msgDiv);
-                            contentInner = msgDiv.querySelector('div');
-                        }
-
-                        if (contentInner) {
-                            contentInner.innerHTML = formatMarkdown(accumulated);
-                            messagesArea.scrollTo({
-                                top: messagesArea.scrollHeight,
-                                behavior: 'smooth'
-                            });
-                        }
-                    }, (polishedResponse) => {
-                        if (!hasStarted) {
-                            hasStarted = true;
-                            typingDiv.remove();
-                            appendMessage('assistant', polishedResponse);
-                        } else if (contentInner) {
-                            contentInner.innerHTML = formatMarkdown(polishedResponse);
-                            messagesArea.scrollTo({
-                                top: messagesArea.scrollHeight,
-                                behavior: 'smooth'
-                            });
-                        }
-
-                        // Synthesize/speak response if active
-                        if (ttsEnabled && window.voiceEngine) {
-                            window.voiceEngine.speak(polishedResponse);
-                        }
-                    });
-
-                } catch (e) {
-                    if (typingDiv && typingDiv.parentNode) {
-                        typingDiv.remove();
-                    }
-                    const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
-                    appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
-                    console.error(e);
-                } finally {
-                    input.disabled = false;
-                    sendBtn.disabled = false;
-                    if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
-                        input.focus();
-                    }
+            try {
+                // Support both streaming and non-streaming onSend functions
+                let response;
+                if (typeof options.onSendStream === 'function') {
+                    response = await options.onSendStream(msg);
+                } else {
+                    response = await onSend(msg);
                 }
-            } else {
-                try {
-                    const response = await onSend(msg);
-                    typingDiv.remove();
-                    appendMessage('assistant', response);
-
-                    // Synthesize/speak response if active
-                    if (ttsEnabled && window.voiceEngine) {
-                        window.voiceEngine.speak(response);
-                    }
-                } catch (e) {
-                    typingDiv.remove();
-                    const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
-                    appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
-                    console.error(e);
-                } finally {
-                    input.disabled = false;
-                    sendBtn.disabled = false;
-                    if (window.voiceEngine && !window.voiceEngine.settings.conversationMode) {
-                        input.focus();
-                    }
-                }
+                typingDiv.remove();
+                appendMessage('assistant', response);
+            } catch (e) {
+                typingDiv.remove();
+                const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
+                appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
+                console.error(e);
+            } finally {
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
             }
         };
 
