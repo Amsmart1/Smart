@@ -1,7 +1,7 @@
 // Vercel Serverless Function: api/kofi-assistant.js
 // Handles platform guide (Kofi AI) requests publicly without auth, session or Supabase check.
 // Enhanced with enterprise-grade rate limiting, same-origin domain lock, input sanitization, and robust error handling.
-// Public Kofi AI assistant model: Gemma 4 31B (gemma-4-31b-it) to resolve 404/502 errors.
+// Public Kofi AI assistant model: gemini-3.1-flash-lite by default.
 
 const fs = require('fs');
 const path = require('path');
@@ -71,8 +71,6 @@ function isAuthorizedOrigin(req) {
   try {
     const refOrOrig = referer || origin;
     if (!refOrOrig) {
-      // In production, browsers send Referer/Origin for POST. If completely missing,
-      // block to prevent direct terminal curls/hotlinking, but allow if host matches localhost.
       if (host && (host.startsWith('localhost') || host.startsWith('127.0.0.1'))) {
         return true;
       }
@@ -80,14 +78,12 @@ function isAuthorizedOrigin(req) {
     }
 
     const urlObj = new URL(refOrOrig);
-    const refHost = urlObj.host; // e.g. "smartlms.vercel.app"
+    const refHost = urlObj.host;
 
-    // If referrer host matches API server host, it's same-origin
     if (host && refHost === host) {
       return true;
     }
 
-    // Check against standard Vercel environment variables
     const vercelUrl = process.env.VERCEL_PROJECT_URL || process.env.VERCEL_URL;
     if (vercelUrl) {
       const vercelHost = vercelUrl.replace(/^https?:\/\//, '');
@@ -96,7 +92,6 @@ function isAuthorizedOrigin(req) {
       }
     }
 
-    // Allow typical localhost development
     if (urlObj.hostname === 'localhost' || urlObj.hostname === '127.0.0.1') {
       return true;
     }
@@ -203,12 +198,10 @@ function findRelevantSection(query, sections) {
     const headerLower = section.header.toLowerCase();
     const contentLower = section.content.toLowerCase();
 
-    // 1. Header Exact Match Bonus
     if (headerLower.includes(normalizedQuery)) {
       score += 15;
     }
 
-    // 2. Keyword Match Density
     for (const word of queryWords) {
       const headerRegex = new RegExp(`\\b${word}\\b`, 'gi');
       const headerMatches = headerLower.match(headerRegex);
@@ -229,7 +222,6 @@ function findRelevantSection(query, sections) {
     }
   }
 
-  // Set highly relevant score threshold
   if (highestScore >= 6) {
     return bestMatch.section;
   }
@@ -246,7 +238,6 @@ function runResponseQualityGuard(response) {
 
   let cleaned = response;
 
-  // 1. Prevent System Prompt/Constraint Leakage
   const leakWords = [
     "You are a professional academic tutor",
     "Key Tutoring Principles:",
@@ -265,11 +256,8 @@ function runResponseQualityGuard(response) {
     }
   }
 
-  // Ensure it doesn't mention private prompt variables
   cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "configuration");
 
-  // 2. Strict Conversational Polish & Enterprise-Grade Verification Checks
-  // A. Strip redundant robot/intro preambles for direct, off-topic-free responses
   const preambles = [
     /^sure,?\s*/i,
     /^absolutely,?\s*/i,
@@ -283,57 +271,114 @@ function runResponseQualityGuard(response) {
     cleaned = cleaned.replace(preamble, "");
   }
 
-  // B. Prune common filler phrases and words to make the response highly concise
   cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
   cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
   cleaned = cleaned.replace(/\bin order to\b/gi, "to");
 
-  // C. Dedup consecutive duplicated words ("the the", "and and", etc.)
   cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
 
-  // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
   cleaned = cleaned.replace(/!{2,}/g, "!");
   cleaned = cleaned.replace(/\?{2,}/g, "?");
   cleaned = cleaned.replace(/,{2,}/g, ",");
   cleaned = cleaned.replace(/\.{4,}/g, "...");
   cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
 
-  // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
   cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
   cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
 
-  // F. Flawless Sentence Structure: ensure sentences start with capital letters
   cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
 
-  // 3. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
-  // Code Blocks (```)
   const codeBlockCount = (cleaned.match(/```/g) || []).length;
   if (codeBlockCount % 2 !== 0) {
     cleaned += "\n```";
   }
 
-  // Inline Code (`)
   const inlineCodeCount = (cleaned.match(/`/g) || []).length;
   if (inlineCodeCount % 2 !== 0) {
     cleaned += "`";
   }
 
-  // Bold (**)
   const boldCount = (cleaned.match(/\*\*/g) || []).length;
   if (boldCount % 2 !== 0) {
     cleaned += "**";
   }
 
-  // Italic (_)
   const italicCount = (cleaned.match(/_/g) || []).length;
   if (italicCount % 2 !== 0) {
     cleaned += "_";
   }
 
-  // Simple Script Injection filter
   cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
 
   return cleaned.trim();
+}
+
+/**
+ * Resolves appropriate Gemini API Key. Supports fallbacks.
+ */
+function resolveApiKey(type, payload = {}) {
+  const projectId = payload.project_id || payload.projectId || payload.course_id;
+  if (projectId) {
+    const projectEnvKey = `GEMINI_PROJECT_${String(projectId).toUpperCase().replace(/[^A-Z0-9_]/g, '_')}_API_KEY`;
+    if (process.env[projectEnvKey]) {
+      return process.env[projectEnvKey];
+    }
+  }
+
+  const featureKeys = {
+    tutor: process.env.GEMINI_COURSE_TUTOR_API_KEY,
+    generate_assessment: process.env.GEMINI_ASSESSMENT_API_KEY,
+    grading: process.env.GEMINI_GRADING_API_KEY,
+    analytics: process.env.GEMINI_ANALYTICS_API_KEY,
+    kofi: process.env.GEMINI_PLATFORM_API_KEY,
+    voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY
+  };
+
+  if (featureKeys[type]) {
+    return featureKeys[type];
+  }
+
+  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
+         process.env.GEMINI_COURSE_TUTOR_API_KEY ||
+         process.env.GEMINI_PLATFORM_API_KEY ||
+         process.env.GEMINI_API_KEY ||
+         process.env.GEMINI_VOICE_API_KEY ||
+         process.env.GEMINI_EMBEDDING_API_KEY;
+}
+
+/**
+ * Resolves dynamic model ID, defaulting non-excluded project models to "gemini-3.1-flash-lite".
+ */
+function resolveModelId(type, payload = {}) {
+  let modelOverride = null;
+  if (type === 'tutor') modelOverride = process.env.GEMINI_TUTOR_MODEL;
+  else if (type === 'generate_assessment') modelOverride = process.env.GEMINI_ASSESSMENT_MODEL;
+  else if (type === 'grading') modelOverride = process.env.GEMINI_GRADING_MODEL;
+  else if (type === 'analytics') modelOverride = process.env.GEMINI_ANALYTICS_MODEL;
+  else if (type === 'kofi') modelOverride = process.env.GEMINI_PLATFORM_MODEL;
+
+  if (modelOverride) {
+    const norm = modelOverride.trim().toLowerCase();
+    if (
+      norm === 'gemini 3.1 flash lite' ||
+      norm === 'gemini-3.1-flash-lite' ||
+      norm === 'gemini_3.1_flash_lite' ||
+      norm === 'gemini-3.1-flash-lite-preview' ||
+      norm === 'gemini 31 flash lite' ||
+      norm === 'gemini-31-flash-lite' ||
+      norm === 'gemini 3.1 flash lite preview' ||
+      norm === 'models/gemini-3.1-flash-lite' ||
+      norm === 'gemma-4-31b' ||
+      norm === 'gemma-4-31b-it' ||
+      norm === 'gemma-4' ||
+      norm === 'gemma2-27b-it'
+    ) {
+      return "gemini-3.1-flash-lite";
+    }
+    return modelOverride;
+  }
+
+  return "gemini-3.1-flash-lite";
 }
 
 module.exports = async function handler(req, res) {
@@ -342,7 +387,6 @@ module.exports = async function handler(req, res) {
     headers: req.headers
   });
 
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(200, corsHeaders);
     res.end('ok');
@@ -355,14 +399,12 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // 1. Same-Origin & Referer Domain Lock Protection
   if (!isAuthorizedOrigin(req)) {
     res.writeHead(403, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Forbidden: Request origin is not authorized' }));
     return;
   }
 
-  // 2. Client-IP based sliding window rate limiting
   const clientIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress || 'unknown';
   if (checkRateLimit(clientIp)) {
     res.writeHead(429, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -373,7 +415,6 @@ module.exports = async function handler(req, res) {
   try {
     let { message, history = [] } = req.body || {};
 
-    // 3. Strict Input Verification and Sanitization
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Missing or invalid message parameter' }));
@@ -391,9 +432,8 @@ module.exports = async function handler(req, res) {
       history = [];
     }
 
-    // Keep history tight and validate schemas
     const sanitizedHistory = history
-      .slice(-10) // Limit conversational memory to prevent API injection or token overhead
+      .slice(-10)
       .filter(h => {
         return h &&
                typeof h === 'object' &&
@@ -402,14 +442,12 @@ module.exports = async function handler(req, res) {
                (h.role === 'user' || h.role === 'assistant' || h.role === 'model');
       })
       .map(h => ({
-        role: h.role === 'assistant' ? 'assistant' : 'user',
+        role: h.role === 'assistant' || h.role === 'model' ? 'assistant' : 'user',
         content: h.content.trim().substring(0, 2000)
       }));
 
-    // Perform Intent Classification and Entity Extraction
     const classification = classifyIntent(message);
 
-    // STEP 3.5: Enterprise Conversation Management - Confidence Threshold Routing
     const decision = routeConversation(message);
     if (decision.action !== 'fallback') {
       console.log(`[Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
@@ -426,7 +464,6 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // STEP 4: High-Fidelity Platform Documentation Search (Bypasses Gemini Calls!)
     const sections = loadPlatformDocs();
     const matchedSection = findRelevantSection(message, sections);
 
@@ -435,7 +472,6 @@ module.exports = async function handler(req, res) {
       const responseText = `**${matchedSection.header}**\n\n${matchedSection.content}`;
       const polishedText = runResponseQualityGuard(responseText);
 
-      // Return the content directly as JSON, compatible with Client-side KofiAIManager
       res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         content: polishedText,
@@ -448,25 +484,8 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // STEP 5: Call Gemini API as a fallback
-    const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
-    let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
-    if (platformModel) {
-      const norm = platformModel.trim().toLowerCase();
-      if (
-        norm === 'gemma 4 31b' ||
-        norm === 'gemma-4-31b' ||
-        norm === 'gemma_4_31b' ||
-        norm === 'gemma4:31b' ||
-        norm === 'gemma-4-31b-it' ||
-        norm === 'gemma 4 31b it' ||
-        norm === 'gemma_4_31b_it' ||
-        norm === 'gemma 4-31b' ||
-        norm === 'models/gemma-4-31b'
-      ) {
-        platformModel = "gemma-4-31b";
-      }
-    }
+    const apiKey = resolveApiKey('kofi', req.body);
+    const kofiModel = resolveModelId('kofi', req.body);
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
   Your mission is to help visitors and users understand and navigate the platform's features.
@@ -492,8 +511,6 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma-4-31b-it)
-    const kofiModel = 'gemma-4-31b-it';
     await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
 
   } catch (error) {
@@ -516,7 +533,7 @@ module.exports = async function handler(req, res) {
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma-4-31b-it', res) {
+async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
@@ -525,18 +542,15 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
 
   const contents = [
     ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
       parts: [{ text: h.content }]
     })),
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
   let response;
-  // Normalize any variation of gemma-4-31b, gemma-4-31b-it or older models to gemma-4-31b-it
-  const normalizedModel = (modelName === 'gemma-4-31b' || modelName === 'gemma-4-31b-it' || modelName === 'gemma-4' || modelName === 'gemma2-27b-it') ? 'gemma-4-31b-it' : modelName;
-
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -612,9 +626,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
                   accumulatedText += rawText;
                   res.write(`data: ${JSON.stringify({ chunk: rawText })}\n\n`);
                 }
-              } catch (e) {
-                // Ignore partial/non-matching JSON structures
-              }
+              } catch (e) {}
               buffer = buffer.substring(i + 1);
               i = -1;
               startIdx = -1;
@@ -648,17 +660,15 @@ async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, his
 
   const contents = [
     ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
       parts: [{ text: h.content }]
     })),
     { role: 'user', parts: [{ text: prompt }] }
   ];
 
   let response;
-  const normalizedModel = (model === 'gemma-4-31b' || model === 'gemma-4-31b-it' || model === 'gemma-4') ? 'gemma2-27b-it' : model;
-
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

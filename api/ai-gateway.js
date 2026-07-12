@@ -203,6 +203,171 @@ function runTutorResponseQualityGuard(response) {
   return cleaned.trim();
 }
 
+/**
+ * Resolves the appropriate Gemini API Key for a given request.
+ * Supports project-specific overrides (via project_id or course_id) and feature-specific credentials,
+ * falling back gracefully to unified defaults.
+ */
+function resolveApiKey(type, payload = {}) {
+  const projectId = payload.project_id || payload.projectId || payload.course_id;
+  if (projectId) {
+    const projectEnvKey = `GEMINI_PROJECT_${String(projectId).toUpperCase().replace(/[^A-Z0-9_]/g, '_')}_API_KEY`;
+    if (process.env[projectEnvKey]) {
+      return process.env[projectEnvKey];
+    }
+  }
+
+  const featureKeys = {
+    tutor: process.env.GEMINI_COURSE_TUTOR_API_KEY,
+    generate_assessment: process.env.GEMINI_ASSESSMENT_API_KEY,
+    grading: process.env.GEMINI_GRADING_API_KEY,
+    analytics: process.env.GEMINI_ANALYTICS_API_KEY,
+    kofi: process.env.GEMINI_PLATFORM_API_KEY,
+    voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY,
+    generate_embedding: process.env.GEMINI_EMBEDDING_API_KEY,
+    generate_batch_embeddings: process.env.GEMINI_EMBEDDING_API_KEY
+  };
+
+  if (featureKeys[type]) {
+    return featureKeys[type];
+  }
+
+  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
+         process.env.GEMINI_COURSE_TUTOR_API_KEY ||
+         process.env.GEMINI_PLATFORM_API_KEY ||
+         process.env.GEMINI_API_KEY ||
+         process.env.GEMINI_VOICE_API_KEY ||
+         process.env.GEMINI_EMBEDDING_API_KEY;
+}
+
+/**
+ * Resolves the confirmed, official, valid model ID for the request.
+ * Centralizes all non-excluded project models to "gemini-3.1-flash-lite" by default.
+ */
+function resolveModelId(type, payload = {}) {
+  if (type === 'voice') {
+    let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
+    const norm = voiceModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 2.5 flash native audio' ||
+      norm === 'gemini-2.5-flash-native-audio' ||
+      norm === 'gemini_2.5_flash_native_audio' ||
+      norm === 'gemini 25 flash native audio' ||
+      norm === 'gemini-25-flash-native-audio' ||
+      norm === 'models/gemini-2.5-flash-native-audio'
+    ) {
+      return "gemini-2.5-flash-native-audio";
+    }
+    return voiceModel;
+  }
+
+  if (type === 'generate_embedding' || type === 'generate_batch_embeddings') {
+    let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
+    const norm = embeddingModel.trim().toLowerCase();
+    if (
+      norm === 'gemini-embedding' ||
+      norm === 'gemini_embedding' ||
+      norm === 'gemini embedding' ||
+      norm === 'gemini-embedding-004' ||
+      norm === 'text-embedding-004' ||
+      norm === 'gemini embedding 004' ||
+      norm === 'gemini_embedding_004' ||
+      norm === 'models/text-embedding-004'
+    ) {
+      return "text-embedding-004";
+    }
+    return embeddingModel;
+  }
+
+  // Check custom environment variable overrides for project models
+  let modelOverride = null;
+  if (type === 'tutor') modelOverride = process.env.GEMINI_TUTOR_MODEL;
+  else if (type === 'generate_assessment') modelOverride = process.env.GEMINI_ASSESSMENT_MODEL;
+  else if (type === 'grading') modelOverride = process.env.GEMINI_GRADING_MODEL;
+  else if (type === 'analytics') modelOverride = process.env.GEMINI_ANALYTICS_MODEL;
+  else if (type === 'kofi') modelOverride = process.env.GEMINI_PLATFORM_MODEL;
+
+  if (modelOverride) {
+    const norm = modelOverride.trim().toLowerCase();
+    if (
+      norm === 'gemini 3.1 flash lite' ||
+      norm === 'gemini-3.1-flash-lite' ||
+      norm === 'gemini_3.1_flash_lite' ||
+      norm === 'gemini-3.1-flash-lite-preview' ||
+      norm === 'gemini 31 flash lite' ||
+      norm === 'gemini-31-flash-lite' ||
+      norm === 'gemini 3.1 flash lite preview' ||
+      norm === 'models/gemini-3.1-flash-lite'
+    ) {
+      return "gemini-3.1-flash-lite";
+    }
+    return modelOverride;
+  }
+
+  return "gemini-3.1-flash-lite";
+}
+
+/**
+ * Unified, enterprise-grade Gemini API calling helper.
+ * Handles headers, request bodies, error handling, quality guards, and response formatting.
+ */
+async function callGeminiAPI(options) {
+  const {
+    apiKey,
+    model,
+    prompt,
+    systemInstruction,
+    history = [],
+    temperature = 0.7,
+    topP = 0.8,
+    topK = 40,
+    maxOutputTokens = 2048,
+    responseMimeType = null
+  } = options;
+
+  if (!apiKey) {
+    throw new Error(`Gemini API Key is not configured in the environment.`);
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: prompt }] }
+  ];
+
+  const requestBody = {
+    contents,
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    generationConfig: {
+      temperature,
+      topP,
+      topK,
+      maxOutputTokens,
+    }
+  };
+
+  if (responseMimeType) {
+    requestBody.generationConfig.responseMimeType = responseMimeType;
+  }
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API returned ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return { rawText, data };
+}
+
 module.exports = async function handler(req, res) {
   console.log("AI Gateway Request:", {
     method: req.method,
@@ -306,23 +471,8 @@ module.exports = async function handler(req, res) {
       const { course_id, message } = payload;
 
       // 1. Generate embedding for user message using configured embedding model
-      const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
-      let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-      if (embeddingModel) {
-        const norm = embeddingModel.trim().toLowerCase();
-        if (
-          norm === 'gemini-embedding' ||
-          norm === 'gemini_embedding' ||
-          norm === 'gemini embedding' ||
-          norm === 'gemini-embedding-004' ||
-          norm === 'text-embedding-004' ||
-          norm === 'gemini embedding 004' ||
-          norm === 'gemini_embedding_004' ||
-          norm === 'models/text-embedding-004'
-        ) {
-          embeddingModel = 'text-embedding-004';
-        }
-      }
+      const apiKey = resolveApiKey('generate_embedding', payload);
+      const embeddingModel = resolveModelId('generate_embedding', payload);
       const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
       let context = '';
 
@@ -443,7 +593,6 @@ module.exports = async function handler(req, res) {
 async function handleCourseTutor(payload, res) {
   let { message, history = [], context = '' } = payload;
 
-  // 1. Input Validation and Sanitization
   if (!message || typeof message !== 'string') {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Missing or invalid message parameter' }));
@@ -462,7 +611,7 @@ async function handleCourseTutor(payload, res) {
   }
 
   const sanitizedHistory = history
-    .slice(-10) // Limit conversational memory to prevent API injection or token overhead
+    .slice(-10)
     .filter(h => {
       return h &&
              typeof h === 'object' &&
@@ -471,14 +620,12 @@ async function handleCourseTutor(payload, res) {
              (h.role === 'user' || h.role === 'assistant' || h.role === 'model');
     })
     .map(h => ({
-      role: h.role === 'assistant' ? 'assistant' : 'user',
+      role: h.role === 'assistant' || h.role === 'model' ? 'assistant' : 'user',
       content: h.content.trim().substring(0, 2000)
     }));
 
-  // Perform Intent Classification and Entity Extraction
   const classification = classifyIntent(message);
 
-  // STEP 1.5: Enterprise Conversation Management - Confidence Threshold Routing
   const decision = routeConversation(message);
   if (decision.action !== 'fallback') {
     console.log(`[Tutor Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
@@ -495,7 +642,6 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
-  // 2. Request Intent Filter
   const filterRefusal = filterTutorRequestIntent(message);
   if (filterRefusal) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -510,7 +656,6 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
-  // 3. Precise Tutor Predefined Responses
   const preciseResponse = findTutorPreciseResponse(message);
   if (preciseResponse) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -525,23 +670,8 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
-  const apiKey = process.env.GEMINI_COURSE_TUTOR_API_KEY;
-  let tutorModel = process.env.GEMINI_TUTOR_MODEL || "gemini-3.1-flash-lite";
-  if (tutorModel) {
-    const norm = tutorModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 3.1 flash lite' ||
-      norm === 'gemini-3.1-flash-lite' ||
-      norm === 'gemini_3.1_flash_lite' ||
-      norm === 'gemini-3.1-flash-lite-preview' ||
-      norm === 'gemini 31 flash lite' ||
-      norm === 'gemini-31-flash-lite' ||
-      norm === 'gemini 3.1 flash lite preview' ||
-      norm === 'models/gemini-3.1-flash-lite'
-    ) {
-      tutorModel = "gemini-3.1-flash-lite";
-    }
-  }
+  const apiKey = resolveApiKey('tutor', payload);
+  const tutorModel = resolveModelId('tutor', payload);
 
   const systemPrompt = `You are a professional academic tutor for this course.
   Your goal is to provide high-quality, conversational tutoring.
@@ -567,7 +697,32 @@ async function handleCourseTutor(payload, res) {
   Course Context:
   ${context.substring(0, 15000)}`;
 
-  return callTutorGemini(apiKey, tutorModel, message, systemPrompt, sanitizedHistory, res, classification);
+  try {
+    const { rawText, data } = await callGeminiAPI({
+      apiKey,
+      model: tutorModel,
+      prompt: message,
+      systemInstruction: systemPrompt,
+      history: sanitizedHistory,
+      temperature: 0.7
+    });
+
+    const guardedText = runTutorResponseQualityGuard(rawText);
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: guardedText,
+      raw: data,
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'fallback_tutor_gemini'
+    }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
 }
 
 /**
@@ -575,40 +730,8 @@ async function handleCourseTutor(payload, res) {
  */
 async function handleAssessmentGenerator(payload, res) {
   const { topic, type, count, difficulty, rubrics, email, role, lesson_title, lesson_content } = payload;
-  const apiKey = process.env.GEMINI_ASSESSMENT_API_KEY;
-  let assessmentModel = process.env.GEMINI_ASSESSMENT_MODEL || "gemini-2.5-flash";
-  if (assessmentModel) {
-    const norm = assessmentModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 2.5 flash' ||
-      norm === 'gemini-2.5-flash' ||
-      norm === 'gemini_2.5_flash' ||
-      norm === 'gemini 25 flash' ||
-      norm === 'gemini-25-flash' ||
-      norm === 'gemini-2.5-flash-preview' ||
-      norm === 'models/gemini-2.5-flash'
-    ) {
-      assessmentModel = "gemini-2.5-flash";
-    }
-  }
-
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
-    return;
-  }
-
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
-    return;
-  }
-
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_ASSESSMENT_API_KEY not configured in environment' }));
-    return;
-  }
+  const apiKey = resolveApiKey('generate_assessment', payload);
+  const assessmentModel = resolveModelId('generate_assessment', payload);
 
   let schemaPrompt = '';
   if (type === 'quiz') {
@@ -678,33 +801,15 @@ async function handleAssessmentGenerator(payload, res) {
   Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${assessmentModel}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: {
-          temperature: 0.2, // Lower temperature for high-fidelity structured JSON output
-          topP: 0.8,
-          topK: 40,
-          maxOutputTokens: 2048,
-        }
-      })
+    const { rawText, data } = await callGeminiAPI({
+      apiKey,
+      model: assessmentModel,
+      prompt,
+      systemInstruction: systemPrompt,
+      temperature: 0.2, // Lower temperature for structured JSON
+      responseMimeType: 'application/json'
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Gemini API Error (Assessment Generator):', errorText);
-      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-      return;
-    }
-
-    const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    // Robust extraction of JSON array from response
     let parsed = null;
     try {
       parsed = JSON.parse(rawText.trim());
@@ -736,7 +841,6 @@ async function handleAssessmentGenerator(payload, res) {
       }
     }
 
-    // Sanitize and run Response Quality Guard on string fields
     parsed.forEach(q => {
       if (q.text) q.text = runTutorResponseQualityGuard(q.text);
       if (q.hint) q.hint = runTutorResponseQualityGuard(q.hint);
@@ -751,7 +855,7 @@ async function handleAssessmentGenerator(payload, res) {
       }
       q.points = Math.max(1, q.points);
 
-      // Strictly remove any generated 'difficulty' field to ensure it is not saved to the unsupported database field
+      // Strictly remove any generated 'difficulty' field
       if ('difficulty' in q) {
         delete q.difficulty;
       }
@@ -764,10 +868,8 @@ async function handleAssessmentGenerator(payload, res) {
     }));
 
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error('Assessment Generator Error:', errorMsg);
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: errorMsg }));
+    res.end(JSON.stringify({ error: error.message }));
   }
 }
 
@@ -776,28 +878,8 @@ async function handleAssessmentGenerator(payload, res) {
  */
 async function handleGradingAssistant(payload, res) {
   const { assignment_title, student_submission, rubric, questions, email, role } = payload;
-  const apiKey = process.env.GEMINI_GRADING_API_KEY;
-  let gradingModel = process.env.GEMINI_GRADING_MODEL || "gemini-3.5-flash";
-  if (gradingModel) {
-    const norm = gradingModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 3.5 flash' ||
-      norm === 'gemini-3.5-flash' ||
-      norm === 'gemini_3.5_flash' ||
-      norm === 'gemini 35 flash' ||
-      norm === 'gemini-35-flash' ||
-      norm === 'gemini-3.5-flash-preview' ||
-      norm === 'models/gemini-3.5-flash'
-    ) {
-      gradingModel = "gemini-3.5-flash";
-    }
-  }
-
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_GRADING_API_KEY not configured in environment' }));
-    return;
-  }
+  const apiKey = resolveApiKey('grading', payload);
+  const gradingModel = resolveModelId('grading', payload);
 
   let questionList = [];
   if (Array.isArray(questions)) {
@@ -835,33 +917,15 @@ async function handleGradingAssistant(payload, res) {
   Help the teacher grade by providing insights based on the rubric. Output ONLY valid JSON containing report, overall_feedback, and questions keys.`;
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gradingModel}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: {
-          temperature: 0.2, // Lower temperature for structured JSON output
-          topP: 0.8,
-          topK: 40,
-          maxOutputTokens: 2048,
-        }
-      })
+    const { rawText, data } = await callGeminiAPI({
+      apiKey,
+      model: gradingModel,
+      prompt,
+      systemInstruction: systemPrompt,
+      temperature: 0.2, // Lower temperature for structured JSON
+      responseMimeType: 'application/json'
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Gemini API Error (Grading Assistant):', errorText);
-      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-      return;
-    }
-
-    const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    // Robust extraction of JSON object from the response
     let parsed = null;
     try {
       parsed = JSON.parse(rawText.trim());
@@ -883,22 +947,14 @@ async function handleGradingAssistant(payload, res) {
     }
 
     if (parsed) {
-      // Sanitize and run Response Quality Guard on string fields
-      if (parsed.report) {
-        parsed.report = runTutorResponseQualityGuard(parsed.report);
-      }
-      if (parsed.overall_feedback) {
-        parsed.overall_feedback = runTutorResponseQualityGuard(parsed.overall_feedback);
-      }
+      if (parsed.report) parsed.report = runTutorResponseQualityGuard(parsed.report);
+      if (parsed.overall_feedback) parsed.overall_feedback = runTutorResponseQualityGuard(parsed.overall_feedback);
       if (Array.isArray(parsed.questions)) {
         parsed.questions.forEach(q => {
-          if (q.feedback) {
-            q.feedback = runTutorResponseQualityGuard(q.feedback);
-          }
+          if (q.feedback) q.feedback = runTutorResponseQualityGuard(q.feedback);
         });
       }
     } else {
-      // Fallback if AI didn't return valid JSON
       const guardedText = runTutorResponseQualityGuard(rawText);
       parsed = {
         report: guardedText,
@@ -914,67 +970,9 @@ async function handleGradingAssistant(payload, res) {
     }));
 
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error('Grading Assistant Error:', errorMsg);
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: errorMsg }));
+    res.end(JSON.stringify({ error: error.message }));
   }
-}
-
-/**
- * Dedicated Gemini API Caller for Role-based Analytics with RunTutorResponseQualityGuard
- */
-async function callAnalyticsGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_ANALYTICS_API_KEY not configured in environment' }));
-    return;
-  }
-
-  const contents = [
-    ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    })),
-    { role: 'user', parts: [{ text: prompt }] }
-  ];
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents,
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      }
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error:', errorText);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-    return;
-  }
-
-  const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
-
-  // Apply our enterprise-grade quality guard!
-  const guardedText = runTutorResponseQualityGuard(rawText);
-
-  const aiResponse = {
-    content: guardedText,
-    raw: data
-  };
-
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(aiResponse));
 }
 
 /**
@@ -982,21 +980,8 @@ async function callAnalyticsGemini(apiKey, model, prompt, systemInstruction, his
  */
 async function handleAnalyticsAI(payload, res) {
   const { analytics_data, question, email, role } = payload;
-  const apiKey = process.env.GEMINI_ANALYTICS_API_KEY;
-  let analyticsModel = process.env.GEMINI_ANALYTICS_MODEL || "gemini-3-flash";
-  if (analyticsModel) {
-    const norm = analyticsModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 3 flash' ||
-      norm === 'gemini-3-flash' ||
-      norm === 'gemini_3_flash' ||
-      norm === 'gemini3 flash' ||
-      norm === 'gemini-3-flash-preview' ||
-      norm === 'models/gemini-3-flash'
-    ) {
-      analyticsModel = "gemini-3-flash";
-    }
-  }
+  const apiKey = resolveApiKey('analytics', payload);
+  const analyticsModel = resolveModelId('analytics', payload);
 
   const prompt = `My Role: ${role}
   My Identity: ${email}
@@ -1020,7 +1005,6 @@ async function handleAnalyticsAI(payload, res) {
     Since you are a student, focus on personal progress tutoring. Highlight strengths, identify areas of improvement based on recent grades, suggest helpful study habits, and provide encouragement. Be a supportive personal study assistant.`;
   }
 
-  // Enforce conversational quality requirements on the assistant itself via the system prompt as well
   systemPrompt += `
   Strict Conversational Quality Check:
   - Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
@@ -1029,32 +1013,35 @@ async function handleAnalyticsAI(payload, res) {
   - Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
   - Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-  return callAnalyticsGemini(apiKey, analyticsModel, prompt, systemPrompt, [], res);
-}
+  try {
+    const { rawText, data } = await callGeminiAPI({
+      apiKey,
+      model: analyticsModel,
+      prompt,
+      systemInstruction: systemPrompt,
+      temperature: 0.7
+    });
 
+    const guardedText = runTutorResponseQualityGuard(rawText);
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: guardedText,
+      raw: data
+    }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
 
 /**
  * Feature 6: Embedding Generation for RAG
  */
 async function handleGenerateEmbedding(payload, res) {
   const { text } = payload;
-  const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
-  let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-  if (embeddingModel) {
-    const norm = embeddingModel.trim().toLowerCase();
-    if (
-      norm === 'gemini-embedding' ||
-      norm === 'gemini_embedding' ||
-      norm === 'gemini embedding' ||
-      norm === 'gemini-embedding-004' ||
-      norm === 'text-embedding-004' ||
-      norm === 'gemini embedding 004' ||
-      norm === 'gemini_embedding_004' ||
-      norm === 'models/text-embedding-004'
-    ) {
-      embeddingModel = 'text-embedding-004';
-    }
-  }
+  const apiKey = resolveApiKey('generate_embedding', payload);
+  const embeddingModel = resolveModelId('generate_embedding', payload);
   const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
   if (!apiKey) {
@@ -1063,46 +1050,36 @@ async function handleGenerateEmbedding(payload, res) {
     return;
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:embedContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: `models/${cleanEmbeddingModel}`,
-      content: { parts: [{ text }] }
-    })
-  });
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:embedContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: `models/${cleanEmbeddingModel}`,
+        content: { parts: [{ text }] }
+      })
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Embedding API Error: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ embedding: data.embedding.values }));
+  } catch (error) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Embedding API Error: ${errorText}` }));
-    return;
+    res.end(JSON.stringify({ error: error.message }));
   }
-
-  const data = await response.json();
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ embedding: data.embedding.values }));
 }
 
 async function handleGenerateBatchEmbeddings(payload, res) {
   const { texts } = payload;
-  const apiKey = process.env.GEMINI_EMBEDDING_API_KEY;
-  let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-  if (embeddingModel) {
-    const norm = embeddingModel.trim().toLowerCase();
-    if (
-      norm === 'gemini-embedding' ||
-      norm === 'gemini_embedding' ||
-      norm === 'gemini embedding' ||
-      norm === 'gemini-embedding-004' ||
-      norm === 'text-embedding-004' ||
-      norm === 'gemini embedding 004' ||
-      norm === 'gemini_embedding_004' ||
-      norm === 'models/text-embedding-004'
-    ) {
-      embeddingModel = 'text-embedding-004';
-    }
-  }
+  const apiKey = resolveApiKey('generate_batch_embeddings', payload);
+  const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
   const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
   if (!apiKey) {
@@ -1111,27 +1088,32 @@ async function handleGenerateBatchEmbeddings(payload, res) {
     return;
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: texts.map(text => ({
-        model: `models/${cleanEmbeddingModel}`,
-        content: { parts: [{ text }] }
-      }))
-    })
-  });
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: texts.map(text => ({
+          model: `models/${cleanEmbeddingModel}`,
+          content: { parts: [{ text }] }
+        }))
+      })
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Batch Embedding API Error: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ embeddings: data.embeddings.map(e => e.values) }));
+  } catch (error) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Batch Embedding API Error: ${errorText}` }));
-    return;
+    res.end(JSON.stringify({ error: error.message }));
   }
-
-  const data = await response.json();
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ embeddings: data.embeddings.map(e => e.values) }));
 }
 
 /**
@@ -1139,21 +1121,8 @@ async function handleGenerateBatchEmbeddings(payload, res) {
  */
 async function handleVoiceAI(payload, res) {
   const { message, audio, history = [] } = payload;
-  const apiKey = process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY; // Fallback to tutor key
-  let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
-  if (voiceModel) {
-    const norm = voiceModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 2.5 flash native audio' ||
-      norm === 'gemini-2.5-flash-native-audio' ||
-      norm === 'gemini_2.5_flash_native_audio' ||
-      norm === 'gemini 25 flash native audio' ||
-      norm === 'gemini-25-flash-native-audio' ||
-      norm === 'models/gemini-2.5-flash-native-audio'
-    ) {
-      voiceModel = "gemini-2.5-flash-native-audio";
-    }
-  }
+  const apiKey = resolveApiKey('voice', payload);
+  const voiceModel = resolveModelId('voice', payload);
 
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -1161,16 +1130,14 @@ async function handleVoiceAI(payload, res) {
     return;
   }
 
-  // Build content parts
   const parts = [];
   if (message) {
     parts.push({ text: message });
   }
   if (audio) {
-    // If client sent audio base64
     parts.push({
       inline_data: {
-        mime_type: "audio/mp3", // default
+        mime_type: "audio/mp3",
         data: audio
       }
     });
@@ -1212,117 +1179,4 @@ async function handleVoiceAI(payload, res) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: error.message }));
   }
-}
-
-/**
- * Generic Gemini API Caller for Course-aware Tutor (with runTutorResponseQualityGuard)
- */
-async function callTutorGemini(apiKey, model, prompt, systemInstruction, history = [], res, classification = null) {
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'GEMINI_COURSE_TUTOR_API_KEY not configured in environment' }));
-    return;
-  }
-
-  const contents = [
-    ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    })),
-    { role: 'user', parts: [{ text: prompt }] }
-  ];
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents,
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      }
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error:', errorText);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-    return;
-  }
-
-  const data = await response.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
-  const guardedText = runTutorResponseQualityGuard(rawText);
-
-  const aiResponse = {
-    content: guardedText,
-    raw: data,
-    ...(classification ? {
-      intent: classification.intent,
-      category: classification.category,
-      confidence: classification.confidence,
-      entities: classification.entities,
-      action: 'fallback_tutor_gemini'
-    } : {})
-  };
-
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(aiResponse));
-}
-
-/**
- * Generic Gemini API Caller
- */
-async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
-  if (!apiKey) {
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Gemini API Key not configured in environment' }));
-    return;
-  }
-
-  const contents = [
-    ...history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    })),
-    { role: 'user', parts: [{ text: prompt }] }
-  ];
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents,
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      }
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error:', errorText);
-    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Gemini API returned ${response.status}: ${errorText}` }));
-    return;
-  }
-
-  const data = await response.json();
-
-  const aiResponse = {
-    content: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.',
-    raw: data
-  };
-
-  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(aiResponse));
 }
