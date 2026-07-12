@@ -1,7 +1,7 @@
 // Vercel Serverless Function: api/kofi-assistant.js
 // Handles platform guide (Kofi AI) requests publicly without auth, session or Supabase check.
 // Enhanced with enterprise-grade rate limiting, same-origin domain lock, input sanitization, and robust error handling.
-// Public Kofi AI assistant model: Gemma 4 31B mapped to state-of-the-art gemma2-27b-it to resolve 404/502 errors.
+// Public Kofi AI assistant model: Gemma 4 31B (gemma-4-31b-it) to resolve 404/502 errors.
 
 const fs = require('fs');
 const path = require('path');
@@ -492,11 +492,9 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma2-27b-it)
-    const kofiModel = 'gemma2-27b-it';
-
-    // Call Non-Streaming since public client parses JSON data directly
-    await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
+    // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma-4-31b-it)
+    const kofiModel = 'gemma-4-31b-it';
+    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -518,7 +516,7 @@ module.exports = async function handler(req, res) {
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
-async function callGeminiStream(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma2-27b-it', res) {
+async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma-4-31b-it', res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
@@ -534,7 +532,8 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
   ];
 
   let response;
-  const normalizedModel = (modelName === 'gemma-4-31b' || modelName === 'gemma-4-31b-it' || modelName === 'gemma-4') ? 'gemma2-27b-it' : modelName;
+  // Normalize any variation of gemma-4-31b, gemma-4-31b-it or older models to gemma-4-31b-it
+  const normalizedModel = (modelName === 'gemma-4-31b' || modelName === 'gemma-4-31b-it' || modelName === 'gemma-4' || modelName === 'gemma2-27b-it') ? 'gemma-4-31b-it' : modelName;
 
   try {
     response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
