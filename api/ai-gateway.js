@@ -2,6 +2,8 @@
 // Handles downstream Gemini API content generation & embeddings.
 // Keeps secret keys secured inside the Vercel environment.
 
+const { classifyIntent, routeConversation } = require('./conversation-manager');
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-session-id, x-supabase-signature',
@@ -473,11 +475,38 @@ async function handleCourseTutor(payload, res) {
       content: h.content.trim().substring(0, 2000)
     }));
 
+  // Perform Intent Classification and Entity Extraction
+  const classification = classifyIntent(message);
+
+  // STEP 1.5: Enterprise Conversation Management - Confidence Threshold Routing
+  const decision = routeConversation(message);
+  if (decision.action !== 'fallback') {
+    console.log(`[Tutor Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
+    const polishedText = runTutorResponseQualityGuard(decision.content);
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: polishedText,
+      intent: decision.metadata.intent,
+      category: decision.metadata.category,
+      confidence: decision.metadata.confidence,
+      entities: decision.metadata.entities,
+      action: decision.action
+    }));
+    return;
+  }
+
   // 2. Request Intent Filter
   const filterRefusal = filterTutorRequestIntent(message);
   if (filterRefusal) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ content: filterRefusal }));
+    res.end(JSON.stringify({
+      content: filterRefusal,
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'filter_refusal'
+    }));
     return;
   }
 
@@ -485,7 +514,14 @@ async function handleCourseTutor(payload, res) {
   const preciseResponse = findTutorPreciseResponse(message);
   if (preciseResponse) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ content: preciseResponse }));
+    res.end(JSON.stringify({
+      content: preciseResponse,
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'precise_response'
+    }));
     return;
   }
 
@@ -531,7 +567,7 @@ async function handleCourseTutor(payload, res) {
   Course Context:
   ${context.substring(0, 15000)}`;
 
-  return callTutorGemini(apiKey, tutorModel, message, systemPrompt, sanitizedHistory, res);
+  return callTutorGemini(apiKey, tutorModel, message, systemPrompt, sanitizedHistory, res, classification);
 }
 
 /**
@@ -1181,7 +1217,7 @@ async function handleVoiceAI(payload, res) {
 /**
  * Generic Gemini API Caller for Course-aware Tutor (with runTutorResponseQualityGuard)
  */
-async function callTutorGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
+async function callTutorGemini(apiKey, model, prompt, systemInstruction, history = [], res, classification = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_COURSE_TUTOR_API_KEY not configured in environment' }));
@@ -1225,7 +1261,14 @@ async function callTutorGemini(apiKey, model, prompt, systemInstruction, history
 
   const aiResponse = {
     content: guardedText,
-    raw: data
+    raw: data,
+    ...(classification ? {
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'fallback_tutor_gemini'
+    } : {})
   };
 
   res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
