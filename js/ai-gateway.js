@@ -571,6 +571,7 @@ class AIManager {
             title = 'AI Assistant',
             placeholder = 'Ask me anything...',
             onSend = async (msg) => {},
+            onSendStream = null,
             onClear = () => {},
             welcomeMessage = 'Hello! How can I help you today?'
         } = options;
@@ -591,6 +592,11 @@ class AIManager {
                 <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
                 <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 12px 12px;">
+                    <div class="ai-voice-toolbar mb-10 flex gap-10" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
+                        <button class="button secondary tiny w-auto ai-mic-btn" title="Start voice input" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; display:flex; align-items:center; justify-content:center;">🎙️</button>
+                        <button class="button secondary tiny w-auto ai-tts-btn" title="Toggle Read Aloud" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px;">🔇 Read Aloud: Off</button>
+                        <button class="button secondary tiny w-auto ai-handsfree-btn" title="Toggle Hands-Free continuous conversation" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px;">🎙️ Hands-Free: Off</button>
+                    </div>
                     <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
                         <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
                         <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0;">Send</button>
@@ -607,6 +613,10 @@ class AIManager {
         const clearBtn = container.querySelector('.ai-clear-btn');
         const messagesArea = container.querySelector('.ai-chat-messages');
         const counter = container.querySelector('.ai-char-counter');
+        const micBtn = container.querySelector('.ai-mic-btn');
+        const ttsBtn = container.querySelector('.ai-tts-btn');
+        const handsFreeBtn = container.querySelector('.ai-handsfree-btn');
+        let ttsEnabled = false;
 
         const updateCharCounter = () => {
             const len = input.value.length;
@@ -698,9 +708,17 @@ class AIManager {
             });
 
             try {
-                const response = await onSend(msg);
+                let response;
+                if (typeof onSendStream === 'function') {
+                    response = await onSendStream(msg);
+                } else {
+                    response = await onSend(msg);
+                }
                 typingDiv.remove();
                 appendMessage('assistant', response);
+                if (ttsEnabled && window.voiceEngine) {
+                    window.voiceEngine.speak(response);
+                }
             } catch (e) {
                 typingDiv.remove();
                 const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
@@ -715,6 +733,136 @@ class AIManager {
 
         sendBtn.onclick = handleSend;
         input.onkeypress = (e) => { if (e.key === 'Enter') handleSend(); };
+
+        // Synchronize Voice Engine state with UI indicators
+        const syncVoiceUI = (state) => {
+            if (!state) return;
+
+            // Mic button styling
+            if (state.status === 'listening') {
+                if (micBtn) {
+                    micBtn.style.background = '#ef4444';
+                    micBtn.style.borderColor = '#ef4444';
+                    micBtn.style.color = '#fff';
+                    micBtn.innerHTML = '🛑';
+                    micBtn.title = 'Stop listening';
+                }
+            } else {
+                if (micBtn) {
+                    micBtn.style.background = '#f1f5f9';
+                    micBtn.style.borderColor = '#cbd5e1';
+                    micBtn.style.color = 'inherit';
+                    micBtn.innerHTML = '🎙️';
+                    micBtn.title = 'Start voice input';
+                }
+            }
+
+            // Handsfree button styling
+            if (handsFreeBtn) {
+                if (window.voiceEngine && window.voiceEngine.settings.conversationMode) {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: On';
+                    handsFreeBtn.style.background = '#dcfce7';
+                    handsFreeBtn.style.color = '#15803d';
+                    handsFreeBtn.style.borderColor = '#bbf7d0';
+                } else {
+                    handsFreeBtn.textContent = '🎙️ Hands-Free: Off';
+                    handsFreeBtn.style.background = '#f1f5f9';
+                    handsFreeBtn.style.color = 'inherit';
+                    handsFreeBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+
+            // TTS Read Aloud button styling
+            if (ttsBtn) {
+                if (ttsEnabled) {
+                    ttsBtn.textContent = '🔊 Read Aloud: On';
+                    ttsBtn.style.background = '#dbeafe';
+                    ttsBtn.style.color = '#1d4ed8';
+                    ttsBtn.style.borderColor = '#bfdbfe';
+                } else {
+                    ttsBtn.textContent = '🔇 Read Aloud: Off';
+                    ttsBtn.style.background = '#f1f5f9';
+                    ttsBtn.style.color = 'inherit';
+                    ttsBtn.style.borderColor = '#cbd5e1';
+                }
+            }
+        };
+
+        // Hook up Voice Engine callback subscriptions
+        if (window.voiceEngine) {
+            window.voiceEngine.onStateChange = syncVoiceUI;
+
+            window.voiceEngine.conversationManager.aiCallback = async (text) => {
+                if (!text) return;
+                input.value = text;
+                updateCharCounter();
+                await handleSend();
+            };
+
+            // Handle system-level microphone or recognition errors gracefully
+            window.voiceEngine.onError = (err) => {
+                if (!err) return;
+                console.warn("[Voice Engine Alert]", err);
+
+                // For permissions denied or user inactivity pause, append an informative system card
+                let alertHtml = '';
+                if (err.type === 'permission_denied') {
+                    alertHtml = `<span style="color: #ef4444; font-weight: 600;">🎙️ Mic Access Denied:</span> Please enable microphone permissions in your browser address bar to use voice features.`;
+                } else if (err.type === 'silence_timeout') {
+                    alertHtml = `🎙️ <em>${window.escapeHtml(err.message)}</em>`;
+                    // Automatically disable hands-free states on error/silence timeout
+                    syncVoiceUI(window.voiceEngine.getStatus());
+                } else if (err.type === 'no_speech') {
+                    // Suppress noise alerts unless continuous/hands-free gets stuck
+                    return;
+                } else {
+                    alertHtml = `<span style="color: #ef4444;">⚠️ Voice Error:</span> ${window.escapeHtml(err.message)}`;
+                }
+
+                if (alertHtml) {
+                    appendMessage('assistant', alertHtml, true);
+                }
+            };
+
+            // Set initial state
+            syncVoiceUI(window.voiceEngine.getStatus());
+        }
+
+        if (micBtn) {
+            micBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const state = window.voiceEngine.getStatus();
+                if (state.status === 'listening') {
+                    window.voiceEngine.stopListening();
+                } else {
+                    window.voiceEngine.listen();
+                }
+            };
+        }
+
+        if (ttsBtn) {
+            ttsBtn.onclick = () => {
+                ttsEnabled = !ttsEnabled;
+                if (!ttsEnabled && window.voiceEngine) {
+                    window.voiceEngine.stop();
+                }
+                syncVoiceUI(window.voiceEngine ? window.voiceEngine.getStatus() : null);
+            };
+        }
+
+        if (handsFreeBtn) {
+            handsFreeBtn.onclick = () => {
+                if (!window.voiceEngine) return;
+                const isConv = !window.voiceEngine.settings.conversationMode;
+                if (isConv) {
+                    ttsEnabled = true; // Auto-enable read aloud for conversational flow
+                    window.voiceEngine.startConversation();
+                } else {
+                    window.voiceEngine.stopConversation();
+                }
+                syncVoiceUI(window.voiceEngine.getStatus());
+            };
+        }
     }
 }
 
