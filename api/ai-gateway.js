@@ -279,31 +279,8 @@ function resolveModelId(type, payload = {}) {
     return embeddingModel;
   }
 
-  // Check custom environment variable overrides for project models
-  let modelOverride = null;
-  if (type === 'tutor') modelOverride = process.env.GEMINI_TUTOR_MODEL;
-  else if (type === 'generate_assessment') modelOverride = process.env.GEMINI_ASSESSMENT_MODEL;
-  else if (type === 'grading') modelOverride = process.env.GEMINI_GRADING_MODEL;
-  else if (type === 'analytics') modelOverride = process.env.GEMINI_ANALYTICS_MODEL;
-  else if (type === 'kofi') modelOverride = process.env.GEMINI_PLATFORM_MODEL;
-
-  if (modelOverride) {
-    const norm = modelOverride.trim().toLowerCase();
-    if (
-      norm === 'gemini 3.1 flash lite' ||
-      norm === 'gemini-3.1-flash-lite' ||
-      norm === 'gemini_3.1_flash_lite' ||
-      norm === 'gemini-3.1-flash-lite-preview' ||
-      norm === 'gemini 31 flash lite' ||
-      norm === 'gemini-31-flash-lite' ||
-      norm === 'gemini 3.1 flash lite preview' ||
-      norm === 'models/gemini-3.1-flash-lite'
-    ) {
-      return "gemini-3.1-flash-lite";
-    }
-    return modelOverride;
-  }
-
+  // The 5 core project models (Course Tutor, Assessment Generator, Grading Assistant, Analytics AI, and Kofi Assistant)
+  // are all strictly hardcoded to use the centralized official, valid, and supported Gemini 3.1 Flash Lite model ID.
   return "gemini-3.1-flash-lite";
 }
 
