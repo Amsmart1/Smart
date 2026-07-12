@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { classifyIntent, routeConversation } = require('./conversation-manager');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -405,6 +406,26 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
+    // Perform Intent Classification and Entity Extraction
+    const classification = classifyIntent(message);
+
+    // STEP 3.5: Enterprise Conversation Management - Confidence Threshold Routing
+    const decision = routeConversation(message);
+    if (decision.action !== 'fallback') {
+      console.log(`[Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
+      const polishedText = runResponseQualityGuard(decision.content);
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: polishedText,
+        intent: decision.metadata.intent,
+        category: decision.metadata.category,
+        confidence: decision.metadata.confidence,
+        entities: decision.metadata.entities,
+        action: decision.action
+      }));
+      return;
+    }
+
     // STEP 4: High-Fidelity Platform Documentation Search (Bypasses Gemini Calls!)
     const sections = loadPlatformDocs();
     const matchedSection = findRelevantSection(message, sections);
@@ -416,7 +437,14 @@ module.exports = async function handler(req, res) {
 
       // Return the content directly as JSON, compatible with Client-side KofiAIManager
       res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ content: polishedText }));
+      res.end(JSON.stringify({
+        content: polishedText,
+        intent: classification.intent,
+        category: classification.category,
+        confidence: classification.confidence,
+        entities: classification.entities,
+        action: 'fallback_local_search'
+      }));
       return;
     }
 
@@ -468,7 +496,7 @@ module.exports = async function handler(req, res) {
     const kofiModel = 'gemma2-27b-it';
 
     // Call Non-Streaming since public client parses JSON data directly
-    await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res);
+    await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -612,7 +640,7 @@ async function callGeminiStream(apiKey, prompt, systemInstruction, history = [],
 /**
  * Generic Gemini API Caller (Non-Streaming)
  */
-async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, history = [], res) {
+async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, history = [], res, classification = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
@@ -675,7 +703,14 @@ async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, his
 
   const aiResponse = {
     content: guardedText,
-    raw: data
+    raw: data,
+    ...(classification ? {
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'fallback_gemini'
+    } : {})
   };
 
   res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
