@@ -3,6 +3,9 @@
 // Enhanced with enterprise-grade rate limiting, same-origin domain lock, input sanitization, and robust error handling.
 // Public Kofi AI assistant model: Gemma 4 31B mapped to state-of-the-art gemma2-27b-it to resolve 404/502 errors.
 
+const fs = require('fs');
+const path = require('path');
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'content-type',
@@ -103,6 +106,235 @@ function isAuthorizedOrigin(req) {
   }
 }
 
+// Global cached documentation sections
+let cachedDocs = null;
+
+/**
+ * Loads, splits, and caches sections from local documentation files (PLATFORM_DOCS.md & README.md)
+ */
+function loadPlatformDocs() {
+  if (cachedDocs) return cachedDocs;
+
+  const docsPath = path.join(process.cwd(), 'PLATFORM_DOCS.md');
+  const readmePath = path.join(process.cwd(), 'README.md');
+
+  let docsContent = "";
+  let readmeContent = "";
+
+  try {
+    if (fs.existsSync(docsPath)) {
+      docsContent = fs.readFileSync(docsPath, 'utf8');
+    }
+  } catch (err) {
+    console.error("Failed to read PLATFORM_DOCS.md:", err);
+  }
+
+  try {
+    if (fs.existsSync(readmePath)) {
+      readmeContent = fs.readFileSync(readmePath, 'utf8');
+    }
+  } catch (err) {
+    console.error("Failed to read README.md:", err);
+  }
+
+  const sections = [];
+  const combined = docsContent + "\n\n" + readmeContent;
+  const lines = combined.split('\n');
+
+  let currentHeader = "";
+  let currentContent = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(##+)\s+(.*)$/);
+    if (match) {
+      if (currentHeader && currentContent.length > 0) {
+        sections.push({
+          header: currentHeader,
+          content: currentContent.join('\n').trim()
+        });
+      }
+      currentHeader = match[2].trim();
+      currentContent = [];
+    } else {
+      currentContent.push(line);
+    }
+  }
+
+  if (currentHeader && currentContent.length > 0) {
+    sections.push({
+      header: currentHeader,
+      content: currentContent.join('\n').trim()
+    });
+  }
+
+  cachedDocs = sections;
+  return cachedDocs;
+}
+
+/**
+ * Searches parsed sections using weighted keyword frequencies
+ */
+function findRelevantSection(query, sections) {
+  if (!query || !sections || sections.length === 0) return null;
+
+  const normalizedQuery = query.toLowerCase().trim();
+  let bestMatch = null;
+  let highestScore = 0;
+
+  const stopWords = new Set([
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'if', 'then', 'else',
+    'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during',
+    'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off',
+    'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
+    'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
+    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will',
+    'just', 'should', 'now', 'what', 'does', 'do', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+    'my', 'your', 'his', 'her', 'its', 'our', 'their'
+  ]);
+
+  const queryWords = normalizedQuery
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !stopWords.has(word));
+
+  for (const section of sections) {
+    let score = 0;
+    const headerLower = section.header.toLowerCase();
+    const contentLower = section.content.toLowerCase();
+
+    // 1. Header Exact Match Bonus
+    if (headerLower.includes(normalizedQuery)) {
+      score += 15;
+    }
+
+    // 2. Keyword Match Density
+    for (const word of queryWords) {
+      const headerRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      const headerMatches = headerLower.match(headerRegex);
+      if (headerMatches) {
+        score += headerMatches.length * 8;
+      }
+
+      const contentRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      const contentMatches = contentLower.match(contentRegex);
+      if (contentMatches) {
+        score += contentMatches.length * 1.5;
+      }
+    }
+
+    if (score > highestScore) {
+      highestScore = score;
+      bestMatch = { section, score };
+    }
+  }
+
+  // Set highly relevant score threshold
+  if (highestScore >= 6) {
+    return bestMatch.section;
+  }
+
+  return null;
+}
+
+/**
+ * Post-processes LLM response to guarantee safety, syntax sanity, and prevents system leaks.
+ * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
+ */
+function runResponseQualityGuard(response) {
+  if (!response || typeof response !== 'string') return "";
+
+  let cleaned = response;
+
+  // 1. Prevent System Prompt/Constraint Leakage
+  const leakWords = [
+    "You are a professional academic tutor",
+    "Key Tutoring Principles:",
+    "Strict Academic Guardrails:",
+    "systemPrompt",
+    "systemInstruction",
+    "Course Context:",
+    "Key Platform Features",
+    "Important Constraints:",
+    "Strict Conversational Quality Check:"
+  ];
+
+  for (const leak of leakWords) {
+    if (cleaned.includes(leak)) {
+      cleaned = cleaned.split(leak)[0];
+    }
+  }
+
+  // Ensure it doesn't mention private prompt variables
+  cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "configuration");
+
+  // 2. Strict Conversational Polish & Enterprise-Grade Verification Checks
+  // A. Strip redundant robot/intro preambles for direct, off-topic-free responses
+  const preambles = [
+    /^sure,?\s*/i,
+    /^absolutely,?\s*/i,
+    /^i'd be happy to help with that,?\s*/i,
+    /^here is the information,?\s*/i,
+    /^as requested,?\s*/i,
+    /^certainly,?\s*/i,
+    /^no problem,?\s*/i
+  ];
+  for (const preamble of preambles) {
+    cleaned = cleaned.replace(preamble, "");
+  }
+
+  // B. Prune common filler phrases and words to make the response highly concise
+  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
+
+  // C. Dedup consecutive duplicated words ("the the", "and and", etc.)
+  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+
+  // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
+  cleaned = cleaned.replace(/!{2,}/g, "!");
+  cleaned = cleaned.replace(/\?{2,}/g, "?");
+  cleaned = cleaned.replace(/,{2,}/g, ",");
+  cleaned = cleaned.replace(/\.{4,}/g, "...");
+  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
+
+  // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
+  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
+  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  // F. Flawless Sentence Structure: ensure sentences start with capital letters
+  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
+
+  // 3. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
+  // Code Blocks (```)
+  const codeBlockCount = (cleaned.match(/```/g) || []).length;
+  if (codeBlockCount % 2 !== 0) {
+    cleaned += "\n```";
+  }
+
+  // Inline Code (`)
+  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
+  if (inlineCodeCount % 2 !== 0) {
+    cleaned += "`";
+  }
+
+  // Bold (**)
+  const boldCount = (cleaned.match(/\*\*/g) || []).length;
+  if (boldCount % 2 !== 0) {
+    cleaned += "**";
+  }
+
+  // Italic (_)
+  const italicCount = (cleaned.match(/_/g) || []).length;
+  if (italicCount % 2 !== 0) {
+    cleaned += "_";
+  }
+
+  // Simple Script Injection filter
+  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+
+  return cleaned.trim();
+}
+
 module.exports = async function handler(req, res) {
   console.log("Kofi AI Request:", {
     method: req.method,
@@ -173,6 +405,22 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
+    // STEP 4: High-Fidelity Platform Documentation Search (Bypasses Gemini Calls!)
+    const sections = loadPlatformDocs();
+    const matchedSection = findRelevantSection(message, sections);
+
+    if (matchedSection) {
+      console.log(`[Local Search] Matches section: "${matchedSection.header}"`);
+      const responseText = `**${matchedSection.header}**\n\n${matchedSection.content}`;
+      const polishedText = runResponseQualityGuard(responseText);
+
+      // Return the content directly as JSON, compatible with Client-side KofiAIManager
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ content: polishedText }));
+      return;
+    }
+
+    // STEP 5: Call Gemini API as a fallback
     const apiKey = process.env.GEMINI_PLATFORM_API_KEY;
     let platformModel = process.env.GEMINI_PLATFORM_MODEL || "gemma-4-31b";
     if (platformModel) {
@@ -218,12 +466,13 @@ module.exports = async function handler(req, res) {
 
     // Strictly separate public Kofi model (mapped to state-of-the-art open model gemma2-27b-it)
     const kofiModel = 'gemma2-27b-it';
-    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+
+    // Call Non-Streaming since public client parses JSON data directly
+    await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res);
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error('Kofi AI Gateway Error:', errorMsg);
-    // If headers already sent, do not attempt writeHead
     if (!res.headersSent) {
       res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -241,7 +490,7 @@ module.exports = async function handler(req, res) {
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma2-27b-it', res) {
+async function callGeminiStream(apiKey, prompt, systemInstruction, history = [], modelName = 'gemma2-27b-it', res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
@@ -257,7 +506,6 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
   ];
 
   let response;
-  // Normalize any variation of gemma-4-31b or gemma-4-31b-it to supported gemma2-27b-it
   const normalizedModel = (modelName === 'gemma-4-31b' || modelName === 'gemma-4-31b-it' || modelName === 'gemma-4') ? 'gemma2-27b-it' : modelName;
 
   try {
@@ -281,6 +529,13 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${fetchErr.message}` }));
     return;
   }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    ...corsHeaders
+  });
 
   let buffer = "";
   let accumulatedText = "";
@@ -343,7 +598,6 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
       }
     }
 
-    // Process final polished output
     const polishedText = runResponseQualityGuard(accumulatedText);
     res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
     res.end();
@@ -356,9 +610,9 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
 }
 
 /**
- * Generic Gemini API Caller
+ * Generic Gemini API Caller (Non-Streaming)
  */
-async function callGemini(apiKey, model, prompt, systemInstruction, history = [], res) {
+async function callGeminiNonStream(apiKey, model, prompt, systemInstruction, history = [], res) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
@@ -374,8 +628,10 @@ async function callGemini(apiKey, model, prompt, systemInstruction, history = []
   ];
 
   let response;
+  const normalizedModel = (model === 'gemma-4-31b' || model === 'gemma-4-31b-it' || model === 'gemma-4') ? 'gemma2-27b-it' : model;
+
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -413,6 +669,9 @@ async function callGemini(apiKey, model, prompt, systemInstruction, history = []
     res.end(JSON.stringify({ error: 'Bad Gateway: Upstream AI model returned invalid JSON response.' }));
     return;
   }
+
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const guardedText = runResponseQualityGuard(rawText);
 
   const aiResponse = {
     content: guardedText,
