@@ -55,7 +55,7 @@ function countMatches(wordList, keywords) {
  *  - intent: {string} Name of classified intent
  *  - category: {string} 'conversation_management' | 'task_oriented'
  *  - confidence: {number} Score between 0.00 and 1.00
- *  - entities: {Object} Extracted entities as a structured dictionary (e.g. { person, role, subject, level, object })
+ *  - entities: {Object} Extracted entities structured as informational dimensions (who, what, why, where, when, how, which)
  *  - entities_list: {Array<Object>} Legacy compatibility list of extracted entities
  */
 function classifyIntent(message) {
@@ -245,47 +245,62 @@ function classifyIntent(message) {
     }
   }
 
-  // 4. Structured Entity Extraction (Enterprise-grade dictionary matching)
+  // 4. Generalized Entity Extraction answering:
+  // "What, why, where, when, how, who, which, etc specific questions, objects, features, or values involved?"
 
-  // A. Person extraction (Pattern-based matching)
+  // --- WHO ---
   const personMatch = message.match(/(?:i am|i'm|my name is)\s+((?:mr\.|ms\.|mrs\.|dr\.|prof\.|mr|ms|mrs|dr|prof)?\s*[a-za-z0-9_-]+(?:\s+[a-za-z0-9_-]+)?)/i);
+  let whoVal = "";
   if (personMatch && personMatch[1]) {
-    // Exclude trailing punctuations or common verbs
-    let personName = personMatch[1].trim().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
-    if (!/^(a|the|student|teacher|admin|instructor|visitor)$/i.test(personName)) {
-      entities.person = personName;
-    }
+    whoVal = personMatch[1].trim().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
   }
-
-  // B. Role extraction
   const roleMatch = message.match(/\b(teacher|student|admin|instructor|lecturer|professor|educator)\b/i);
   if (roleMatch) {
-    entities.role = roleMatch[1];
+    whoVal = whoVal ? `${whoVal}, ${roleMatch[1]}` : roleMatch[1];
   }
+  if (whoVal) entities.who = whoVal;
 
-  // C. Subject extraction
-  const subjectMatch = message.match(/\b(biology|physics|chemistry|mathematics|math|english|history|science|computer\s+science)\b/i);
-  if (subjectMatch) {
-    entities.subject = subjectMatch[1];
-  }
-
-  // D. Level extraction
-  const levelMatch = message.match(/\b(shs|jhs|undergraduate|graduate|primary|secondary|tertiary)\b/i);
-  if (levelMatch) {
-    entities.level = levelMatch[1];
-  }
-
-  // E. Object extraction
-  const objectMatch = message.match(/\b(notes|syllabus|quiz|exam|test|slides|homework|assignment|book|paper|material|materials|document|file)\b/i);
+  // --- WHAT ---
+  const objectMatch = message.match(/\b(notes|syllabus|quiz|exam|test|slides|homework|assignment|book|paper|material|materials|document|file|account|profile|name|joke|greetings)\b/i);
   if (objectMatch) {
-    entities.object = objectMatch[1];
+    entities.what = objectMatch[1];
+  }
+
+  // --- WHY ---
+  const whyMatch = message.match(/\b(guidance|help|understand|study|prepare|excel|grade|check|view|learn)\b/i);
+  if (whyMatch) {
+    entities.why = whyMatch[1];
+  }
+
+  // --- WHERE ---
+  const whereMatch = message.match(/\b(dashboard|forum|discussion board|classroom|database|meeting|help center|support)\b/i);
+  if (whereMatch) {
+    entities.where = whereMatch[1];
+  }
+
+  // --- WHEN ---
+  const whenMatch = message.match(/\b(now|today|live|scheduled|before|after|tomorrow|later)\b/i);
+  if (whenMatch) {
+    entities.when = whenMatch[1];
+  }
+
+  // --- HOW ---
+  const howMatch = message.match(/\b(upload|register|enroll|change|update|reset|webcam|video|qr code|link)\b/i);
+  if (howMatch) {
+    entities.how = howMatch[1];
+  }
+
+  // --- WHICH ---
+  const whichMatch = message.match(/\b(biology|physics|chemistry|mathematics|math|english|history|science|computer\s+science|shs|jhs|beginner|advanced)\b/i);
+  if (whichMatch) {
+    entities.which = whichMatch[1];
   }
 
   // F. Create legacy list of entities for compatibility
   for (const [key, val] of Object.entries(entities)) {
     entities_list.push({
       value: val,
-      type: key.charAt(0).toUpperCase() + key.slice(1) // Person, Role, Subject, Level, Object
+      type: key.charAt(0).toUpperCase() + key.slice(1) // Who, What, Why, Where, When, How, Which
     });
   }
 
