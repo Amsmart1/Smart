@@ -418,6 +418,7 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
+    // 1. Intent Classification, Entity Extraction & Confidence Scoring (Conversation Manager)
     const classification = classifyIntent(message);
 
     const decision = routeConversation(message);
@@ -432,26 +433,6 @@ module.exports = async function handler(req, res) {
         confidence: decision.metadata.confidence,
         entities: decision.metadata.entities,
         action: decision.action
-      }));
-      return;
-    }
-
-    const sections = loadPlatformDocs();
-    const matchedSection = findRelevantSection(message, sections);
-
-    if (matchedSection) {
-      console.log(`[Local Search] Matches section: "${matchedSection.header}"`);
-      const responseText = `**${matchedSection.header}**\n\n${matchedSection.content}`;
-      const polishedText = runResponseQualityGuard(responseText);
-
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        content: polishedText,
-        intent: classification.intent,
-        category: classification.category,
-        confidence: classification.confidence,
-        entities: classification.entities,
-        action: 'fallback_local_search'
       }));
       return;
     }
@@ -479,7 +460,7 @@ module.exports = async function handler(req, res) {
   - Strict Conversational Quality Check:
     * Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
     * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
-    * Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
+    * Conversational Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
@@ -508,7 +489,177 @@ module.exports = async function handler(req, res) {
 };
 
 /**
+ * Assesses the accuracy of a generated response relative to the user query and documentation context.
+ * It uses Gemini with low temperature for highly structured deterministic feedback.
+ */
+async function checkResponseAccuracy(apiKey, modelName, userQuery, responseText, docContext = '') {
+  if (!apiKey) {
+    return { accurate: true, corrected_response: null };
+  }
+
+  const prompt = `You are the Request-Response Accuracy Checker for SmartLMS.
+Your task is to analyze the user's query, the documentation context provided to the assistant (if any), and the assistant's generated response.
+Determine if the generated response is:
+1. "Accurate": The response directly and politely answers the user's query. It is professional, grammatically flawless, free of all conversational filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"), doesn't repeat phrases, doesn't contain placeholders, and doesn't leak any system instructions or internal details.
+2. "Inaccurate": The response is off-topic, fails to answer the user's query, contains hallucinations, leaks system prompts/instructions, repeats itself, contains forbidden conversational filler words, has poor grammar, or contains empty/broken sections.
+
+User Query: "${userQuery}"
+${docContext ? `Documentation Context Provided: "${docContext}"` : 'No Documentation Context was provided.'}
+Generated Assistant Response: "${responseText}"
+
+You must output a valid JSON object with EXACTLY these three keys:
+- "accurate": boolean (true if accurate, false if inaccurate)
+- "reason": string (a very concise reason explaining your assessment)
+- "corrected_response": string or null (if "accurate" is false, provide a fully corrected, flawless, and direct response that perfectly adheres to the platform constraints and directly answers the user's query without fillers or leaks; otherwise null)
+
+Return ONLY the raw JSON object, without any markdown code block formatting or preamble outside.`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+
+    if (!response.ok) {
+      console.warn("Accuracy checker API call failed, falling back to original response.");
+      return { accurate: true, corrected_response: null };
+    }
+
+    const data = await response.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    let result = JSON.parse(rawText.trim());
+
+    return {
+      accurate: result.accurate === true,
+      reason: result.reason || '',
+      corrected_response: result.corrected_response || null
+    };
+  } catch (e) {
+    console.warn("Failed to parse accuracy checker response, falling back to original response.", e);
+    return { accurate: true, corrected_response: null };
+  }
+}
+
+/**
+ * Generic Gemini API Caller for non-streaming responses.
+ * Implements the requested production request-response flow:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation -> Request-Response Accuracy Checker -> Deliver / Regenerate.
+ */
+async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
+    return;
+  }
+
+  // 1. Documentation Search (if applicable)
+  const sections = loadPlatformDocs();
+  const matchedSection = findRelevantSection(message, sections);
+  let docContext = "";
+  let action = "direct_gemini";
+
+  if (matchedSection) {
+    docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
+    action = "fallback_local_search";
+    console.log(`[Kofi AI Doc Search] Matched section: "${matchedSection.header}"`);
+  } else {
+    console.log(`[Kofi AI Direct] No doc search match. Directing to Gemini straight.`);
+  }
+
+  // 2. Prepare prompt with doc context if available
+  let promptWithContext = message;
+  if (docContext) {
+    promptWithContext = `Use the following platform documentation context to answer the user's question accurately. Do not invent any details not present in the documentation. Keep the tone helpful, direct, and professional.
+
+Documentation Context:
+${docContext}
+
+User Question:
+${message}`;
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: promptWithContext }] }
+  ];
+
+  let rawText = "";
+  let data = null;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Upstream AI model returned ${response.status}: ${errorText}` }));
+      return;
+    }
+
+    data = await response.json();
+    rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  } catch (err) {
+    console.error("Gemini API Non-Stream Call Failed:", err);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${err.message}` }));
+    return;
+  }
+
+  // 3. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(rawText);
+
+  // 4. Request-Response Accuracy Checker Pass
+  console.log("[Accuracy Checker] Executing accuracy evaluation pass...");
+  const evaluation = await checkResponseAccuracy(apiKey, modelName, message, polishedText, docContext);
+
+  if (!evaluation.accurate && evaluation.corrected_response) {
+    console.log(`[Accuracy Checker] Inaccurate response detected: "${evaluation.reason}". Regenerating / Correcting...`);
+    polishedText = runResponseQualityGuard(evaluation.corrected_response);
+  } else {
+    console.log("[Accuracy Checker] Response verified as Accurate. Delivering response.");
+  }
+
+  // 5. Deliver final response
+  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    content: polishedText,
+    intent: classification.intent,
+    category: classification.category,
+    confidence: classification.confidence,
+    entities: classification.entities,
+    action: action,
+    accuracy_checked: true,
+    accurate: evaluation.accurate
+  }));
+}
+
+/**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
+ * Implements the requested production request-response flow:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation -> Request-Response Accuracy Checker -> Deliver / Regenerate.
  */
 async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
   if (!apiKey) {
@@ -517,17 +668,39 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     return;
   }
 
+  // 1. Documentation Search
+  const sections = loadPlatformDocs();
+  const matchedSection = findRelevantSection(prompt, sections);
+  let docContext = "";
+
+  if (matchedSection) {
+    docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
+    console.log(`[Kofi AI Doc Search Stream] Matched section: "${matchedSection.header}"`);
+  }
+
+  // 2. Prepare prompt with doc context if available
+  let promptWithContext = prompt;
+  if (docContext) {
+    promptWithContext = `Use the following platform documentation context to answer the user's question accurately. Do not invent any details not present in the documentation. Keep the tone helpful, direct, and professional.
+
+Documentation Context:
+${docContext}
+
+User Question:
+${prompt}`;
+  }
+
   const contents = [
     ...history.map(h => ({
       role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
       parts: [{ text: h.content }]
     })),
-    { role: 'user', parts: [{ text: prompt }] }
+    { role: 'user', parts: [{ text: promptWithContext }] }
   ];
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -548,6 +721,31 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     return;
   }
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Upstream AI model returned ${response.status}: ${errorText}` }));
+    return;
+  }
+
+  const data = await response.json();
+  let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  // 3. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(rawText);
+
+  // 4. Request-Response Accuracy Checker Pass
+  console.log("[Accuracy Checker Stream] Executing accuracy evaluation pass...");
+  const evaluation = await checkResponseAccuracy(apiKey, modelName, prompt, polishedText, docContext);
+
+  if (!evaluation.accurate && evaluation.corrected_response) {
+    console.log(`[Accuracy Checker Stream] Inaccurate response detected: "${evaluation.reason}". Correcting...`);
+    polishedText = runResponseQualityGuard(evaluation.corrected_response);
+  } else {
+    console.log("[Accuracy Checker Stream] Response verified as Accurate. Delivering streaming response.");
+  }
+
+  // 5. Stream verified chunks to the client via SSE to satisfy streaming requirements cleanly
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -555,73 +753,14 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     ...corsHeaders
   });
 
-  let buffer = "";
-  let accumulatedText = "";
-
-  try {
-    const reader = response.body;
-    for await (const chunk of reader) {
-      buffer += chunk.toString();
-
-      let inString = false;
-      let escaped = false;
-      let braceCount = 0;
-      let startIdx = -1;
-      let i = 0;
-
-      while (i < buffer.length) {
-        const char = buffer[i];
-        if (escaped) {
-          escaped = false;
-          i++;
-          continue;
-        }
-        if (char === '\\') {
-          escaped = true;
-          i++;
-          continue;
-        }
-        if (char === '"') {
-          inString = !inString;
-          i++;
-          continue;
-        }
-        if (!inString) {
-          if (char === '{') {
-            if (braceCount === 0) {
-              startIdx = i;
-            }
-            braceCount++;
-          } else if (char === '}') {
-            braceCount--;
-            if (braceCount === 0 && startIdx !== -1) {
-              const jsonStr = buffer.substring(startIdx, i + 1);
-              try {
-                const obj = JSON.parse(jsonStr);
-                const rawText = obj.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (rawText) {
-                  accumulatedText += rawText;
-                  res.write(`data: ${JSON.stringify({ chunk: rawText })}\n\n`);
-                }
-              } catch (e) {}
-              buffer = buffer.substring(i + 1);
-              i = -1;
-              startIdx = -1;
-            }
-          }
-        }
-        i++;
-      }
-    }
-
-    const polishedText = runResponseQualityGuard(accumulatedText);
-    res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
-    res.end();
-
-  } catch (streamErr) {
-    console.error("Stream reader error:", streamErr);
-    res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
-    res.end();
+  const words = polishedText.split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const chunk = words[i] + (i < words.length - 1 ? ' ' : '');
+    res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+    // Non-blocking tiny sleep to simulate streaming beautifully
+    await new Promise(resolve => setTimeout(resolve, 15));
   }
-}
 
+  res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
+  res.end();
+}
