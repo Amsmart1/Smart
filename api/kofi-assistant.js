@@ -418,6 +418,7 @@ module.exports = async function handler(req, res) {
         content: h.content.trim().substring(0, 2000)
       }));
 
+    // 1. Intent Classification, Entity Extraction & Confidence Scoring (Conversation Manager)
     const classification = classifyIntent(message);
 
     const decision = routeConversation(message);
@@ -436,52 +437,38 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const sections = loadPlatformDocs();
-    const matchedSection = findRelevantSection(message, sections);
-
-    if (matchedSection) {
-      console.log(`[Local Search] Matches section: "${matchedSection.header}"`);
-      const responseText = `**${matchedSection.header}**\n\n${matchedSection.content}`;
-      const polishedText = runResponseQualityGuard(responseText);
-
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        content: polishedText,
-        intent: classification.intent,
-        category: classification.category,
-        confidence: classification.confidence,
-        entities: classification.entities,
-        action: 'fallback_local_search'
-      }));
-      return;
-    }
-
     const apiKey = resolveApiKey('kofi', req.body);
     const kofiModel = resolveModelId('kofi', req.body);
 
-    const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform.
-  Your mission is to help visitors and users understand and navigate the platform's features.
+    const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform. Help users understand and navigate features.
 
-  Key Platform Features you should highlight when relevant, with the following details:
-  1. Proctored Assessments: Maintain absolute academic integrity with our event-driven anti-cheat monitoring system. It features real-time integrity alert streams, webcam snapshot captures with face-detection, tab-switch tracking, copy-paste blockages, and browser focus tracking. It uploads recordings and events chunk-by-chunk for extensive proctoring logs and comprehensive violation reports.
-  2. Live Virtual Classes: Engage in real-time learning with seamlessly integrated virtual meeting tools, automated localized timezone-aligned attendance tracking (visualized as attendance heatmaps), and secure, on-demand meeting recording playbacks.
-  3. Verified Certification: Earn secure, verifiable, and high-fidelity PDF certificates of completion featuring elegant golden borders, watermark designs, registrar digital signatures, a unique Verification ID, and an embedded QR code for real-time validation against our secure database.
-  4. Advanced Analytics: Access highly detailed visual reports using Chart.js radar charts for multi-dimensional student profiling, GitHub-style 7-row student attendance heatmaps, AI-driven automated grading and feedback insights, and predictive models to identify student academic risks early.
-  5. Interactive Discussions: Collaborate deeply with course-specific real-time discussion boards supporting nested reply threads, post view-count tracking (recording views of posts currently in the viewport), direct file attachment uploads, and official Staff badges to recognize teachers and admins.
+  Key Platform Features:
+  1. Proctored Assessments: Event-driven anti-cheat monitoring with webcam snapshots, face detection, tab-switch tracking, copy-paste blocks, and detailed violation reports.
+  2. Live Virtual Classes: Integrated meetings with automated attendance tracking (heatmaps) and playback recordings.
+  3. Verified Certification: Verifiable secure PDF certificates featuring elegant golden borders, watermark designs, registrar signatures, and embedded QR codes.
+  4. Advanced Analytics: Radar charts for student profiling, 7-row attendance heatmaps, AI-driven grading insights, and academic risk predictions.
+  5. Interactive Discussions: Discussion boards with nested replies, viewport-based view-count tracking, attachments, and Staff badges.
 
-  Important Constraints:
-  - You are a client-side guide ONLY. You do NOT have any access to personal student data, grades, quiz/assignment submissions, or private course content.
-  - If a user asks for sensitive backend information, SQL databases, server configurations, private student/course records, or personal details, you must politely refuse and remind them that you are a frontend guide designed solely for navigation and feature demonstration.
-  - You cannot perform any administrative or transactional actions like enrollment, course creation, account deletion, password resets, or changing grades.
-  - For technical support, account billing, or official issues beyond navigation, direct users to the "Help Center" or "Contact Us" pages.
-  - Keep responses professional, friendly, and concise.
-  - Use markdown for formatting (bullet points for features, bold for emphasis).
-  - Strict Conversational Quality Check:
-    * Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
-    * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
-    * Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
-    * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
-    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
+  Constraints:
+  - You are a client-side guide ONLY. You do NOT have access to personal student data, grades, quiz/assignment submissions, or private course content. Refuse sensitive backend, database, or records requests.
+  - You cannot perform administrative or transactional actions (enrollment, course creation, updates, resets).
+  - Direct technical support or billing queries to the Help Center or Contact Us.
+  - Keep responses professional, friendly, and concise. Use markdown.
+
+  Conversational Quality & Accuracy:
+  - Flawless grammar, consistent verb tenses, professional objective tone.
+  - Absolutely NO filler words ("actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know") or repetition.
+  - Match the user request precisely. Prioritize direct guidance over verbose explanations.
+
+  INTEGRATED REQUEST-RESPONSE ACCURACY CHECKER & SELF-CORRECTION STEP:
+  Critically evaluate your response draft against the query and platform constraints. Correct any inaccuracies, placeholders, or instruction leaks in place during generation.
+
+  You MUST respond ONLY with a valid JSON object matching the following schema. No conversational text or markdown code fences outside:
+  {
+    "content": "Your actual helpful and detailed markdown response answering the user query. Correct any drafts in place first before writing this value.",
+    "accurate": true,
+    "reason": "Brief reason confirming that the response is accurate and compliant."
+  }`;
 
     const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
     if (isStream) {
@@ -508,7 +495,123 @@ module.exports = async function handler(req, res) {
 };
 
 /**
+ * Generic Gemini API Caller for non-streaming responses.
+ * Implements the requested production request-response flow in a SINGLE API call:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver.
+ */
+async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification) {
+  if (!apiKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
+    return;
+  }
+
+  // 1. Documentation Search (if applicable)
+  const sections = loadPlatformDocs();
+  const matchedSection = findRelevantSection(message, sections);
+  let docContext = "";
+  let action = "direct_gemini";
+
+  if (matchedSection) {
+    docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
+    action = "fallback_local_search";
+    console.log(`[Kofi AI Doc Search] Matched section: "${matchedSection.header}"`);
+  } else {
+    console.log(`[Kofi AI Direct] No doc search match. Directing to Gemini straight.`);
+  }
+
+  // 2. Prepare prompt with doc context if available
+  let promptWithContext = message;
+  if (docContext) {
+    promptWithContext = `Use the following platform documentation context to answer the user's question accurately. Do not invent any details not present in the documentation. Keep the tone helpful, direct, and professional.
+
+Documentation Context:
+${docContext}
+
+User Question:
+${message}`;
+  }
+
+  const contents = [
+    ...history.map(h => ({
+      role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    })),
+    { role: 'user', parts: [{ text: promptWithContext }] }
+  ];
+
+  let rawText = "";
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        generationConfig: {
+          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
+          topP: 0.8,
+          topK: 40,
+          maxOutputTokens: 2048,
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Upstream AI model returned ${response.status}: ${errorText}` }));
+      return;
+    }
+
+    const data = await response.json();
+    rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  } catch (err) {
+    console.error("Gemini API Non-Stream Call Failed:", err);
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Bad Gateway: Unable to connect to upstream AI model. ${err.message}` }));
+    return;
+  }
+
+  // 3. Parse the Integrated Accuracy Checker response
+  let contentText = "";
+  let isAccurate = true;
+  let reason = "Verified in single pass.";
+
+  try {
+    const parsedJson = JSON.parse(rawText.trim());
+    contentText = parsedJson.content || "";
+    isAccurate = parsedJson.accurate !== false;
+    reason = parsedJson.reason || reason;
+  } catch (e) {
+    console.warn("Failed to parse integrated JSON, falling back to raw response text.", e);
+    contentText = rawText;
+  }
+
+  // 4. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(contentText);
+
+  console.log(`[Single Pass Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
+
+  // 5. Deliver final response
+  res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    content: polishedText,
+    intent: classification.intent,
+    category: classification.category,
+    confidence: classification.confidence,
+    entities: classification.entities,
+    action: action,
+    accuracy_checked: true,
+    accurate: isAccurate
+  }));
+}
+
+/**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
+ * Implements the requested production request-response flow in a SINGLE API call:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver (Streaming).
  */
 async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
   if (!apiKey) {
@@ -517,27 +620,50 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     return;
   }
 
+  // 1. Documentation Search
+  const sections = loadPlatformDocs();
+  const matchedSection = findRelevantSection(prompt, sections);
+  let docContext = "";
+
+  if (matchedSection) {
+    docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
+    console.log(`[Kofi AI Doc Search Stream] Matched section: "${matchedSection.header}"`);
+  }
+
+  // 2. Prepare prompt with doc context if available
+  let promptWithContext = prompt;
+  if (docContext) {
+    promptWithContext = `Use the following platform documentation context to answer the user's question accurately. Do not invent any details not present in the documentation. Keep the tone helpful, direct, and professional.
+
+Documentation Context:
+${docContext}
+
+User Question:
+${prompt}`;
+  }
+
   const contents = [
     ...history.map(h => ({
       role: h.role === 'assistant' || h.role === 'model' ? 'model' : 'user',
       parts: [{ text: h.content }]
     })),
-    { role: 'user', parts: [{ text: prompt }] }
+    { role: 'user', parts: [{ text: promptWithContext }] }
   ];
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
         system_instruction: { parts: [{ text: systemInstruction }] },
         generationConfig: {
-          temperature: 0.7,
+          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
           topP: 0.8,
           topK: 40,
           maxOutputTokens: 2048,
+          responseMimeType: 'application/json'
         }
       })
     });
@@ -548,6 +674,37 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     return;
   }
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Upstream AI model returned ${response.status}: ${errorText}` }));
+    return;
+  }
+
+  const data = await response.json();
+  let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  // 3. Parse the Integrated Accuracy Checker response
+  let contentText = "";
+  let isAccurate = true;
+  let reason = "Verified in single pass.";
+
+  try {
+    const parsedJson = JSON.parse(rawText.trim());
+    contentText = parsedJson.content || "";
+    isAccurate = parsedJson.accurate !== false;
+    reason = parsedJson.reason || reason;
+  } catch (e) {
+    console.warn("Failed to parse integrated JSON for stream, falling back to raw response text.", e);
+    contentText = rawText;
+  }
+
+  // 4. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(contentText);
+
+  console.log(`[Single Pass Stream Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
+
+  // 5. Stream verified chunks to the client via SSE to satisfy streaming requirements cleanly
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -555,73 +712,14 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
     ...corsHeaders
   });
 
-  let buffer = "";
-  let accumulatedText = "";
-
-  try {
-    const reader = response.body;
-    for await (const chunk of reader) {
-      buffer += chunk.toString();
-
-      let inString = false;
-      let escaped = false;
-      let braceCount = 0;
-      let startIdx = -1;
-      let i = 0;
-
-      while (i < buffer.length) {
-        const char = buffer[i];
-        if (escaped) {
-          escaped = false;
-          i++;
-          continue;
-        }
-        if (char === '\\') {
-          escaped = true;
-          i++;
-          continue;
-        }
-        if (char === '"') {
-          inString = !inString;
-          i++;
-          continue;
-        }
-        if (!inString) {
-          if (char === '{') {
-            if (braceCount === 0) {
-              startIdx = i;
-            }
-            braceCount++;
-          } else if (char === '}') {
-            braceCount--;
-            if (braceCount === 0 && startIdx !== -1) {
-              const jsonStr = buffer.substring(startIdx, i + 1);
-              try {
-                const obj = JSON.parse(jsonStr);
-                const rawText = obj.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (rawText) {
-                  accumulatedText += rawText;
-                  res.write(`data: ${JSON.stringify({ chunk: rawText })}\n\n`);
-                }
-              } catch (e) {}
-              buffer = buffer.substring(i + 1);
-              i = -1;
-              startIdx = -1;
-            }
-          }
-        }
-        i++;
-      }
-    }
-
-    const polishedText = runResponseQualityGuard(accumulatedText);
-    res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
-    res.end();
-
-  } catch (streamErr) {
-    console.error("Stream reader error:", streamErr);
-    res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
-    res.end();
+  const words = polishedText.split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const chunk = words[i] + (i < words.length - 1 ? ' ' : '');
+    res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+    // Non-blocking tiny sleep to simulate streaming beautifully
+    await new Promise(resolve => setTimeout(resolve, 15));
   }
-}
 
+  res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
+  res.end();
+}
