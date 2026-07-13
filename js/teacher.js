@@ -4669,7 +4669,7 @@ function renderAnalyticsUI(data) {
               assessment_performance: assessments.map(a => ({ title: a.title, avg: a.avg_score })),
               top_risk_students: (gaps?.low_performing_students || []).slice(0, 5)
           };
-          return await AIManager.analyzeAnalytics(msg, dataContext, { courseId });
+          return await AIManager.analyzeAnalytics(msg, dataContext);
       }
   });
 
