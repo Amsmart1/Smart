@@ -230,6 +230,256 @@ function findRelevantSection(query, sections) {
 }
 
 /**
+ * Searches parsed sections using weighted keyword frequencies, returning both section and score.
+ */
+function findRelevantSectionWithScore(query, sections) {
+  if (!query || !sections || sections.length === 0) return null;
+
+  const normalizedQuery = query.toLowerCase().trim();
+  let bestMatch = null;
+  let highestScore = 0;
+
+  const stopWords = new Set([
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'if', 'then', 'else',
+    'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during',
+    'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off',
+    'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
+    'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
+    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will',
+    'just', 'should', 'now', 'what', 'does', 'do', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+    'my', 'your', 'his', 'her', 'its', 'our', 'their'
+  ]);
+
+  const queryWords = normalizedQuery
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !stopWords.has(word));
+
+  for (const section of sections) {
+    let score = 0;
+    const headerLower = section.header.toLowerCase();
+    const contentLower = section.content.toLowerCase();
+
+    if (headerLower.includes(normalizedQuery)) {
+      score += 15;
+    }
+
+    for (const word of queryWords) {
+      const headerRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      const headerMatches = headerLower.match(headerRegex);
+      if (headerMatches) {
+        score += headerMatches.length * 8;
+      }
+
+      const contentRegex = new RegExp(`\\b${word}\\b`, 'gi');
+      const contentMatches = contentLower.match(contentRegex);
+      if (contentMatches) {
+        score += contentMatches.length * 1.5;
+      }
+    }
+
+    if (score > highestScore) {
+      highestScore = score;
+      bestMatch = { section, score };
+    }
+  }
+
+  if (highestScore >= 6) {
+    return { section: bestMatch.section, score: highestScore };
+  }
+
+  return null;
+}
+
+/**
+ * Performs comprehensive accuracy checking on a matched section from local document search.
+ * Verifies if the matched section is highly accurate, contextually relevant, and safe.
+ */
+function verifyLocalSearchAccuracy(query, section, score) {
+  if (!query || !section) {
+    return { isAccurate: false, confidenceScore: 0, reason: "Query or section is empty" };
+  }
+
+  const queryLower = query.toLowerCase().trim();
+  const headerLower = section.header.toLowerCase();
+  const contentLower = section.content.toLowerCase();
+
+  const stopWords = new Set([
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'if', 'then', 'else',
+    'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during',
+    'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off',
+    'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
+    'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
+    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will',
+    'just', 'should', 'now', 'what', 'does', 'do', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+    'my', 'your', 'his', 'her', 'its', 'our', 'their'
+  ]);
+
+  const queryWords = queryLower
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !stopWords.has(word));
+
+  if (queryWords.length === 0) {
+    return {
+      isAccurate: false,
+      confidenceScore: 0.1,
+      reason: "Query contains no key search terms after removing stop words."
+    };
+  }
+
+  let headerMatches = 0;
+  let contentMatches = 0;
+  const matchedWords = [];
+
+  for (const word of queryWords) {
+    const hasInHeader = headerLower.includes(word);
+    const hasInContent = contentLower.includes(word);
+
+    if (hasInHeader) {
+      headerMatches++;
+    }
+    if (hasInContent) {
+      contentMatches++;
+    }
+    if (hasInHeader || hasInContent) {
+      matchedWords.push(word);
+    }
+  }
+
+  const matchRatio = matchedWords.length / queryWords.length;
+
+  let confidenceScore = 0;
+  if (score >= 15) {
+    confidenceScore = 0.90 + (0.10 * matchRatio);
+  } else if (score >= 10) {
+    confidenceScore = 0.75 + (0.15 * matchRatio);
+  } else if (score >= 6) {
+    confidenceScore = 0.50 + (0.25 * matchRatio);
+  } else {
+    confidenceScore = 0.50 * matchRatio;
+  }
+
+  confidenceScore = Math.min(1.0, Math.max(0.0, confidenceScore));
+
+  const isRatioValid = matchRatio >= 0.40;
+  const isScoreValid = score >= 10 || (score >= 6 && headerMatches > 0);
+  const isAccurate = isRatioValid && isScoreValid && confidenceScore >= 0.75;
+
+  let reason = "";
+  if (isAccurate) {
+    reason = `High-confidence match: matched ${matchedWords.length}/${queryWords.length} key terms (${(matchRatio * 100).toFixed(0)}%) with document section "${section.header}".`;
+  } else {
+    reason = `Low-confidence match: matched ${matchedWords.length}/${queryWords.length} key terms (${(matchRatio * 100).toFixed(0)}%) with score ${score}. Minimum criteria for direct accuracy not met.`;
+  }
+
+  return {
+    isAccurate,
+    confidenceScore: Number(confidenceScore.toFixed(2)),
+    reason,
+    matchedWords,
+    matchRatio
+  };
+}
+
+/**
+ * Scans user inputs for public assistant to detect prompt injection, toxic keywords, or out-of-scope requests.
+ * Returns a professional, friendly refusal response string if blocked, or null if allowed.
+ */
+function filterRequestIntent(message) {
+  const normalized = message.toLowerCase();
+
+  // 1. Prompt Injection Indicators
+  const injectionPatterns = [
+    "ignore previous instructions",
+    "ignore all instructions",
+    "system prompt",
+    "system instruction",
+    "you are now",
+    "forget everything",
+    "developer mode",
+    "dan mode",
+    "jailbreak",
+    "override",
+    "ignore the instructions",
+    "output the above",
+    "print your instructions",
+    "reveal your prompt"
+  ];
+
+  if (injectionPatterns.some(p => normalized.includes(p))) {
+    return "I am designed to be a helpful guide for the SmartLMS platform. I cannot bypass, reveal, or modify my system instructions, prompt configuration, or safety parameters. How can I assist you with navigating our features today?";
+  }
+
+  // 2. Toxic or Harmful Intent Indicators
+  const harmfulIntentPatterns = [
+    "how to hack",
+    "write a virus",
+    "write malware",
+    "write an exploit",
+    "how to bypass anti-cheat",
+    "bypass anti cheat",
+    "cheat on quiz",
+    "sql injection script",
+    "xss script",
+    "how to ddos"
+  ];
+
+  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
+    return "As the SmartLMS guide, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain our platform security or proctoring features from an educational perspective instead!";
+  }
+
+  // 3. Out-Of-Scope General Knowledge/Trivia Tasks that are completely off-topic
+  const outOfScopeIndicators = [
+    "recipe for",
+    "how to cook",
+    "how to bake",
+    "who is the president",
+    "translate this to spanish",
+    "how to make a cake",
+    "favorite celebrity",
+    "gossip about"
+  ];
+
+  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
+    return "I am your dedicated platform guide. I specialize in helping you understand the features, tools, and capabilities of SmartLMS. I am unable to answer general lifestyle, entertainment, or unrelated queries. Let me know if you have any questions about navigating our platform!";
+  }
+
+  return null;
+}
+
+/**
+ * Provides instant, cost-efficient, high-fidelity predefined answers for common platform navigation/support inquiries.
+ * Returns a markdown response string if matched, or null to fallback to the Gemini model / local doc search.
+ */
+function findPreciseResponse(message) {
+  const normalized = message.toLowerCase().trim();
+
+  const keywordMappings = [
+    {
+      keywords: ["my grade", "what is my grade", "view my grades", "check my score", "score on assignment", "how did i do"],
+      response: "I am your platform navigation guide. Because I do **not** have access to your personal course enrollments, gradebooks, or submissions, I cannot view or modify your grades. Please go to the **Grades** or **Performance** tab in your student dashboard to view your graded assessments."
+    },
+    {
+      keywords: ["how to study", "study tips", "study advice", "how do i pass", "study guide"],
+      response: "Here are some tips to excel on SmartLMS:\n1. 📖 **Go to Lessons**: Read all assigned materials and complete interactive lessons under your courses.\n2. 🤖 **Ask course AI Tutor**: Use the Course Tutor chatbot in each course for customized academic explanations.\n3. 📝 **Practice Anti-Cheat Compliance**: Ensure your webcam, screen sharing, and audio permissions are set up correctly before starting proctored exams."
+    },
+    {
+      keywords: ["support", "help desk", "contact us", "billing", "technical support", "customer service"],
+      response: "For direct technical assistance or platform support, please navigate to the **Support** section in your sidebar or click **Contact Us** in the website footer to submit a ticket. Our support team is ready to help!"
+    }
+  ];
+
+  for (const mapping of keywordMappings) {
+    if (mapping.keywords.some(keyword => normalized.includes(keyword))) {
+      return mapping.response;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Post-processes LLM response to guarantee safety, syntax sanity, and prevents system leaks.
  * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
  */
@@ -275,7 +525,29 @@ function runResponseQualityGuard(response) {
   cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
   cleaned = cleaned.replace(/\bin order to\b/gi, "to");
 
-  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+  // Only deduplicate common redundant filler double-words
+  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
+  for (const word of doubleWords) {
+    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
+    cleaned = cleaned.replace(doubleRegex, word);
+  }
+
+  // Temporary placeholders for URLs, decimals, and ellipsis to protect them from incorrect spacing cleanups
+  const urlPlaceholders = [];
+  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
+    const idx = urlPlaceholders.length;
+    urlPlaceholders.push(match);
+    return `___URL_PLACEHOLDER_${idx}___`;
+  });
+
+  const decimalPlaceholders = [];
+  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
+    const idx = decimalPlaceholders.length;
+    decimalPlaceholders.push(match);
+    return `___DECIMAL_PLACEHOLDER_${idx}___`;
+  });
+
+  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
 
   cleaned = cleaned.replace(/!{2,}/g, "!");
   cleaned = cleaned.replace(/\?{2,}/g, "?");
@@ -285,6 +557,17 @@ function runResponseQualityGuard(response) {
 
   cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
   cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  // Restore ellipsis, decimals, and URLs safely
+  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
+
+  for (let i = 0; i < decimalPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
+  }
+
+  for (let i = 0; i < urlPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
+  }
 
   cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
 
@@ -385,7 +668,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    let { message, history = [] } = req.body || {};
+    let { message, history = [], local_only = false, search_type = null } = req.body || {};
 
     if (!message || typeof message !== 'string') {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -397,6 +680,23 @@ module.exports = async function handler(req, res) {
     if (message.length > 1000) {
       res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Message is too long (maximum 1000 characters)' }));
+      return;
+    }
+
+    // A. Request Filtering and Polish Guard (XSS, Injection, Out of Scope) - Absolutely first to prevent prompt injection!
+    const filterRefusal = filterRequestIntent(message);
+    if (filterRefusal) {
+      console.log(`[Kofi AI Filter] Intercepted toxic or out-of-scope query: "${message}"`);
+      const classification = classifyIntent(message);
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: filterRefusal,
+        intent: classification.intent,
+        category: classification.category,
+        confidence: classification.confidence,
+        entities: classification.entities,
+        action: 'filter_refusal'
+      }));
       return;
     }
 
@@ -437,13 +737,91 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // B. Precise predefined keyword responses (Immediate mappings for grades, study tips, etc.)
+    const preciseResponse = findPreciseResponse(message);
+    if (preciseResponse) {
+      console.log(`[Kofi AI Precise] Intercepted precise keyword query: "${message}"`);
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: preciseResponse,
+        intent: classification.intent,
+        category: classification.category,
+        confidence: classification.confidence,
+        entities: classification.entities,
+        action: 'precise_response'
+      }));
+      return;
+    }
+
     const apiKey = resolveApiKey('kofi', req.body);
     const kofiModel = resolveModelId('kofi', req.body);
+
+    // C. Document Search & Comprehensive Accuracy Checking (Where Gemini is not called)
+    const sections = loadPlatformDocs();
+    const matchedResult = findRelevantSectionWithScore(message, sections);
+    let localAccuracyResult = null;
+
+    if (matchedResult) {
+      localAccuracyResult = verifyLocalSearchAccuracy(message, matchedResult.section, matchedResult.score);
+    }
+
+    // Determine if we should bypass Gemini and resolve locally
+    const shouldResolveLocally = local_only ||
+                                 search_type === 'local' ||
+                                 !apiKey ||
+                                 (localAccuracyResult && localAccuracyResult.isAccurate);
+
+    if (shouldResolveLocally) {
+      if (matchedResult && localAccuracyResult && localAccuracyResult.isAccurate) {
+        console.log(`[Kofi AI Local Search] Bypassing Gemini. Matched accurately: "${matchedResult.section.header}" (Score: ${matchedResult.score})`);
+        const contentText = `**${matchedResult.section.header}**\n\n${matchedResult.section.content}`;
+        const polishedText = runResponseQualityGuard(contentText);
+
+        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: polishedText,
+          intent: classification.intent,
+          category: classification.category,
+          confidence: classification.confidence,
+          entities: classification.entities,
+          action: 'local_document_search',
+          accuracy_checked: true,
+          accurate: true,
+          confidenceScore: localAccuracyResult.confidenceScore,
+          reason: localAccuracyResult.reason
+        }));
+        return;
+      } else if (local_only || search_type === 'local' || !apiKey) {
+        console.log(`[Kofi AI Local Search] Bypassing Gemini but no accurate match was found.`);
+        const fallbackText = "I couldn't find a sufficiently accurate match in our platform documentation to answer your question directly. Please try rephrasing your query or let me know how I can help you navigate SmartLMS features!";
+        const polishedText = runResponseQualityGuard(fallbackText);
+
+        res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: polishedText,
+          intent: classification.intent,
+          category: classification.category,
+          confidence: classification.confidence,
+          entities: classification.entities,
+          action: 'local_document_search_failed',
+          accuracy_checked: true,
+          accurate: false,
+          confidenceScore: localAccuracyResult ? localAccuracyResult.confidenceScore : 0.0,
+          reason: localAccuracyResult ? localAccuracyResult.reason : "No matching documentation section found."
+        }));
+        return;
+      }
+    }
 
     const systemPrompt = `You are "Kofi AI", the professional guide for the SmartLMS platform. Help users understand and navigate features.
 
   Key Platform Features:
   - Available in local platform documentation
+
+  SmartLMS Knowledge Grounding & No Hallucination Boundaries:
+  - You are strictly grounded ONLY in SmartLMS-specific documentation, features, and platform guidelines.
+  - Do NOT provide general LMS assistance, generic educational tools help, or generic Canvas/Moodle/Blackboard suggestions.
+  - Strictly NO hallucinating features, menus, capabilities, or details that are not explicitly documented in the provided SmartLMS context. If a feature or capability is not mentioned in the documentation context, explicitly state that you do not have information about it on the SmartLMS platform.
 
   Constraints:
   - You are a client-side guide ONLY. You do NOT have access to personal student data, grades, quiz/assignment submissions, or private course content. Refuse sensitive backend, database, or records requests.
@@ -468,9 +846,9 @@ module.exports = async function handler(req, res) {
 
     const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
     if (isStream) {
-      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res, matchedResult?.section);
     } else {
-      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
+      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification, matchedResult?.section);
     }
 
   } catch (error) {
@@ -495,25 +873,23 @@ module.exports = async function handler(req, res) {
  * Implements the requested production request-response flow in a SINGLE API call:
  * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver.
  */
-async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification) {
+async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification, matchedSection = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
-  // 1. Documentation Search (if applicable)
-  const sections = loadPlatformDocs();
-  const matchedSection = findRelevantSection(message, sections);
+  // 1. Reuses pre-matched Documentation Search from handler to prevent duplication and improve latency!
   let docContext = "";
   let action = "direct_gemini";
 
   if (matchedSection) {
     docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
     action = "fallback_local_search";
-    console.log(`[Kofi AI Doc Search] Matched section: "${matchedSection.header}"`);
+    console.log(`[Kofi AI Doc Search Cache] Using cached matched section: "${matchedSection.header}"`);
   } else {
-    console.log(`[Kofi AI Direct] No doc search match. Directing to Gemini straight.`);
+    console.log(`[Kofi AI Direct] No cached doc search match. Directing to Gemini straight.`);
   }
 
   // 2. Prepare prompt with doc context if available
@@ -606,24 +982,20 @@ ${message}`;
 
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
- * Implements the requested production request-response flow in a SINGLE API call:
- * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver (Streaming).
+ * Implements real-time token streaming directly from the upstream Gemini API.
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
+async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res, matchedSection = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
-  // 1. Documentation Search
-  const sections = loadPlatformDocs();
-  const matchedSection = findRelevantSection(prompt, sections);
+  // 1. Reuses pre-matched Documentation Search from handler to prevent duplication and improve latency!
   let docContext = "";
-
   if (matchedSection) {
     docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
-    console.log(`[Kofi AI Doc Search Stream] Matched section: "${matchedSection.header}"`);
+    console.log(`[Kofi AI Doc Search Stream Cache] Using cached matched section: "${matchedSection.header}"`);
   }
 
   // 2. Prepare prompt with doc context if available
@@ -646,20 +1018,22 @@ ${prompt}`;
     { role: 'user', parts: [{ text: promptWithContext }] }
   ];
 
+  // Configure a streamlined streaming prompt that doesn't wrap in JSON, so we can stream pure text/markdown cleanly!
+  const streamInstruction = `${systemInstruction}\n\nIMPORTANT: Stream your helpful response directly as standard Markdown text. Do NOT wrap your output in a JSON object structure when streaming.`;
+
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
-        system_instruction: { parts: [{ text: systemInstruction }] },
+        system_instruction: { parts: [{ text: streamInstruction }] },
         generationConfig: {
-          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
+          temperature: 0.2,
           topP: 0.8,
           topK: 40,
-          maxOutputTokens: 2048,
-          responseMimeType: 'application/json'
+          maxOutputTokens: 2048
         }
       })
     });
@@ -677,30 +1051,6 @@ ${prompt}`;
     return;
   }
 
-  const data = await response.json();
-  let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  // 3. Parse the Integrated Accuracy Checker response
-  let contentText = "";
-  let isAccurate = true;
-  let reason = "Verified in single pass.";
-
-  try {
-    const parsedJson = JSON.parse(rawText.trim());
-    contentText = parsedJson.content || "";
-    isAccurate = parsedJson.accurate !== false;
-    reason = parsedJson.reason || reason;
-  } catch (e) {
-    console.warn("Failed to parse integrated JSON for stream, falling back to raw response text.", e);
-    contentText = rawText;
-  }
-
-  // 4. Post-Process the generated response with Quality Guard
-  let polishedText = runResponseQualityGuard(contentText);
-
-  console.log(`[Single Pass Stream Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
-
-  // 5. Stream verified chunks to the client via SSE to satisfy streaming requirements cleanly
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -708,14 +1058,94 @@ ${prompt}`;
     ...corsHeaders
   });
 
-  const words = polishedText.split(' ');
-  for (let i = 0; i < words.length; i++) {
-    const chunk = words[i] + (i < words.length - 1 ? ' ' : '');
-    res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
-    // Non-blocking tiny sleep to simulate streaming beautifully
-    await new Promise(resolve => setTimeout(resolve, 15));
+  const reader = response.body;
+  if (!reader) {
+    res.write(`data: ${JSON.stringify({ error: "Upstream stream body is unavailable" })}\n\n`);
+    res.end();
+    return;
   }
 
+  let buffer = "";
+  let fullResponseText = "";
+
+  const processBuffer = (buf) => {
+    let braceCount = 0;
+    let inString = false;
+    let escape = false;
+    let startIdx = -1;
+
+    for (let i = 0; i < buf.length; i++) {
+      const char = buf[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (char === '{') {
+          if (braceCount === 0) startIdx = i;
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0 && startIdx !== -1) {
+            const jsonStr = buf.substring(startIdx, i + 1);
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                fullResponseText += text;
+                // Deliver raw chunk tokens in real-time!
+                res.write(`data: ${JSON.stringify({ chunk: text })}\n\n`);
+              }
+            } catch (e) {
+              // Ignore partial parsing errors on chunk boundaries
+            }
+            buf = buf.substring(i + 1);
+            i = -1;
+            startIdx = -1;
+          }
+        }
+      }
+    }
+    return buf;
+  };
+
+  try {
+    if (typeof reader[Symbol.asyncIterator] === 'function') {
+      for await (const chunk of reader) {
+        buffer += chunk.toString('utf8');
+        buffer = processBuffer(buffer);
+      }
+    } else {
+      const streamReader = reader.getReader();
+      const decoder = new TextDecoder("utf-8");
+      while (true) {
+        const { done, value } = await streamReader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        buffer = processBuffer(buffer);
+      }
+    }
+  } catch (streamError) {
+    console.error("Upstream stream read error:", streamError);
+  }
+
+  // Deliver the final unified polished response matching all quality guard standards!
+  const polishedText = runResponseQualityGuard(fullResponseText || "Sorry, I am unable to generate a response at this moment.");
   res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
   res.end();
 }
+
+// Utility exports for testing and verification
+module.exports.filterRequestIntent = filterRequestIntent;
+module.exports.findPreciseResponse = findPreciseResponse;
+module.exports.findRelevantSectionWithScore = findRelevantSectionWithScore;
+module.exports.verifyLocalSearchAccuracy = verifyLocalSearchAccuracy;
+module.exports.loadPlatformDocs = loadPlatformDocs;

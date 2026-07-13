@@ -155,8 +155,29 @@ function runTutorResponseQualityGuard(response) {
   cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
   cleaned = cleaned.replace(/\bin order to\b/gi, "to");
 
-  // C. Dedup consecutive duplicated words ("the the", "and and", etc.)
-  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+  // C. Dedup consecutive duplicated words ("the the", "and and", etc.) - Safely restricted to common filler words
+  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
+  for (const word of doubleWords) {
+    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
+    cleaned = cleaned.replace(doubleRegex, word);
+  }
+
+  // Temporary placeholders for URLs, decimals, and ellipsis to protect them from incorrect spacing cleanups
+  const urlPlaceholders = [];
+  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
+    const idx = urlPlaceholders.length;
+    urlPlaceholders.push(match);
+    return `___URL_PLACEHOLDER_${idx}___`;
+  });
+
+  const decimalPlaceholders = [];
+  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
+    const idx = decimalPlaceholders.length;
+    decimalPlaceholders.push(match);
+    return `___DECIMAL_PLACEHOLDER_${idx}___`;
+  });
+
+  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
 
   // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
   cleaned = cleaned.replace(/!{2,}/g, "!");
@@ -168,6 +189,17 @@ function runTutorResponseQualityGuard(response) {
   // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
   cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
   cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  // Restore ellipsis, decimals, and URLs safely
+  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
+
+  for (let i = 0; i < decimalPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
+  }
+
+  for (let i = 0; i < urlPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
+  }
 
   // F. Flawless Sentence Structure: ensure sentences start with capital letters
   cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
