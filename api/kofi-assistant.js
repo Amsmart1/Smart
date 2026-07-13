@@ -347,37 +347,9 @@ function resolveApiKey(type, payload = {}) {
 }
 
 /**
- * Resolves dynamic model ID, defaulting non-excluded project models to "gemini-3.1-flash-lite".
+ * Resolves dynamic model ID, strictly mapping core project models to "gemini-3.1-flash-lite".
  */
 function resolveModelId(type, payload = {}) {
-  let modelOverride = null;
-  if (type === 'tutor') modelOverride = process.env.GEMINI_TUTOR_MODEL;
-  else if (type === 'generate_assessment') modelOverride = process.env.GEMINI_ASSESSMENT_MODEL;
-  else if (type === 'grading') modelOverride = process.env.GEMINI_GRADING_MODEL;
-  else if (type === 'analytics') modelOverride = process.env.GEMINI_ANALYTICS_MODEL;
-  else if (type === 'kofi') modelOverride = process.env.GEMINI_PLATFORM_MODEL;
-
-  if (modelOverride) {
-    const norm = modelOverride.trim().toLowerCase();
-    if (
-      norm === 'gemini 3.1 flash lite' ||
-      norm === 'gemini-3.1-flash-lite' ||
-      norm === 'gemini_3.1_flash_lite' ||
-      norm === 'gemini-3.1-flash-lite-preview' ||
-      norm === 'gemini 31 flash lite' ||
-      norm === 'gemini-31-flash-lite' ||
-      norm === 'gemini 3.1 flash lite preview' ||
-      norm === 'models/gemini-3.1-flash-lite' ||
-      norm === 'gemma-4-31b' ||
-      norm === 'gemma-4-31b-it' ||
-      norm === 'gemma-4' ||
-      norm === 'gemma2-27b-it'
-    ) {
-      return "gemini-3.1-flash-lite";
-    }
-    return modelOverride;
-  }
-
   return "gemini-3.1-flash-lite";
 }
 
@@ -511,7 +483,12 @@ module.exports = async function handler(req, res) {
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
     * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
 
-    await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+    const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
+    if (isStream) {
+      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+    } else {
+      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
+    }
 
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -550,7 +527,7 @@ async function callGemini(apiKey, prompt, systemInstruction, history = [], model
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
