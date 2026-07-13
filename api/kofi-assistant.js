@@ -525,7 +525,29 @@ function runResponseQualityGuard(response) {
   cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
   cleaned = cleaned.replace(/\bin order to\b/gi, "to");
 
-  cleaned = cleaned.replace(/\b(\w+)\s+\1\b/gi, "$1");
+  // Only deduplicate common redundant filler double-words
+  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
+  for (const word of doubleWords) {
+    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
+    cleaned = cleaned.replace(doubleRegex, word);
+  }
+
+  // Temporary placeholders for URLs, decimals, and ellipsis to protect them from incorrect spacing cleanups
+  const urlPlaceholders = [];
+  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
+    const idx = urlPlaceholders.length;
+    urlPlaceholders.push(match);
+    return `___URL_PLACEHOLDER_${idx}___`;
+  });
+
+  const decimalPlaceholders = [];
+  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
+    const idx = decimalPlaceholders.length;
+    decimalPlaceholders.push(match);
+    return `___DECIMAL_PLACEHOLDER_${idx}___`;
+  });
+
+  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
 
   cleaned = cleaned.replace(/!{2,}/g, "!");
   cleaned = cleaned.replace(/\?{2,}/g, "?");
@@ -535,6 +557,17 @@ function runResponseQualityGuard(response) {
 
   cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
   cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  // Restore ellipsis, decimals, and URLs safely
+  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
+
+  for (let i = 0; i < decimalPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
+  }
+
+  for (let i = 0; i < urlPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
+  }
 
   cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
 
@@ -650,6 +683,23 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // A. Request Filtering and Polish Guard (XSS, Injection, Out of Scope) - Absolutely first to prevent prompt injection!
+    const filterRefusal = filterRequestIntent(message);
+    if (filterRefusal) {
+      console.log(`[Kofi AI Filter] Intercepted toxic or out-of-scope query: "${message}"`);
+      const classification = classifyIntent(message);
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: filterRefusal,
+        intent: classification.intent,
+        category: classification.category,
+        confidence: classification.confidence,
+        entities: classification.entities,
+        action: 'filter_refusal'
+      }));
+      return;
+    }
+
     if (!Array.isArray(history)) {
       history = [];
     }
@@ -683,22 +733,6 @@ module.exports = async function handler(req, res) {
         confidence: decision.metadata.confidence,
         entities: decision.metadata.entities,
         action: decision.action
-      }));
-      return;
-    }
-
-    // A. Request Filtering and Polish Guard (XSS, Injection, Out of Scope)
-    const filterRefusal = filterRequestIntent(message);
-    if (filterRefusal) {
-      console.log(`[Kofi AI Filter] Intercepted toxic or out-of-scope query: "${message}"`);
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        content: filterRefusal,
-        intent: classification.intent,
-        category: classification.category,
-        confidence: classification.confidence,
-        entities: classification.entities,
-        action: 'filter_refusal'
       }));
       return;
     }
@@ -812,9 +846,9 @@ module.exports = async function handler(req, res) {
 
     const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
     if (isStream) {
-      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res);
+      await callGemini(apiKey, message, systemPrompt, sanitizedHistory, kofiModel, res, matchedResult?.section);
     } else {
-      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification);
+      await callGeminiNonStream(apiKey, kofiModel, message, systemPrompt, sanitizedHistory, res, classification, matchedResult?.section);
     }
 
   } catch (error) {
@@ -839,25 +873,23 @@ module.exports = async function handler(req, res) {
  * Implements the requested production request-response flow in a SINGLE API call:
  * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver.
  */
-async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification) {
+async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification, matchedSection = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
-  // 1. Documentation Search (if applicable)
-  const sections = loadPlatformDocs();
-  const matchedSection = findRelevantSection(message, sections);
+  // 1. Reuses pre-matched Documentation Search from handler to prevent duplication and improve latency!
   let docContext = "";
   let action = "direct_gemini";
 
   if (matchedSection) {
     docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
     action = "fallback_local_search";
-    console.log(`[Kofi AI Doc Search] Matched section: "${matchedSection.header}"`);
+    console.log(`[Kofi AI Doc Search Cache] Using cached matched section: "${matchedSection.header}"`);
   } else {
-    console.log(`[Kofi AI Direct] No doc search match. Directing to Gemini straight.`);
+    console.log(`[Kofi AI Direct] No cached doc search match. Directing to Gemini straight.`);
   }
 
   // 2. Prepare prompt with doc context if available
@@ -950,24 +982,20 @@ ${message}`;
 
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
- * Implements the requested production request-response flow in a SINGLE API call:
- * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver (Streaming).
+ * Implements real-time token streaming directly from the upstream Gemini API.
  */
-async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
+async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res, matchedSection = null) {
   if (!apiKey) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'GEMINI_PLATFORM_API_KEY not configured in environment' }));
     return;
   }
 
-  // 1. Documentation Search
-  const sections = loadPlatformDocs();
-  const matchedSection = findRelevantSection(prompt, sections);
+  // 1. Reuses pre-matched Documentation Search from handler to prevent duplication and improve latency!
   let docContext = "";
-
   if (matchedSection) {
     docContext = `**${matchedSection.header}**\n\n${matchedSection.content}`;
-    console.log(`[Kofi AI Doc Search Stream] Matched section: "${matchedSection.header}"`);
+    console.log(`[Kofi AI Doc Search Stream Cache] Using cached matched section: "${matchedSection.header}"`);
   }
 
   // 2. Prepare prompt with doc context if available
@@ -990,20 +1018,22 @@ ${prompt}`;
     { role: 'user', parts: [{ text: promptWithContext }] }
   ];
 
+  // Configure a streamlined streaming prompt that doesn't wrap in JSON, so we can stream pure text/markdown cleanly!
+  const streamInstruction = `${systemInstruction}\n\nIMPORTANT: Stream your helpful response directly as standard Markdown text. Do NOT wrap your output in a JSON object structure when streaming.`;
+
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
-        system_instruction: { parts: [{ text: systemInstruction }] },
+        system_instruction: { parts: [{ text: streamInstruction }] },
         generationConfig: {
-          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
+          temperature: 0.2,
           topP: 0.8,
           topK: 40,
-          maxOutputTokens: 2048,
-          responseMimeType: 'application/json'
+          maxOutputTokens: 2048
         }
       })
     });
@@ -1021,30 +1051,6 @@ ${prompt}`;
     return;
   }
 
-  const data = await response.json();
-  let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-  // 3. Parse the Integrated Accuracy Checker response
-  let contentText = "";
-  let isAccurate = true;
-  let reason = "Verified in single pass.";
-
-  try {
-    const parsedJson = JSON.parse(rawText.trim());
-    contentText = parsedJson.content || "";
-    isAccurate = parsedJson.accurate !== false;
-    reason = parsedJson.reason || reason;
-  } catch (e) {
-    console.warn("Failed to parse integrated JSON for stream, falling back to raw response text.", e);
-    contentText = rawText;
-  }
-
-  // 4. Post-Process the generated response with Quality Guard
-  let polishedText = runResponseQualityGuard(contentText);
-
-  console.log(`[Single Pass Stream Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
-
-  // 5. Stream verified chunks to the client via SSE to satisfy streaming requirements cleanly
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -1052,14 +1058,87 @@ ${prompt}`;
     ...corsHeaders
   });
 
-  const words = polishedText.split(' ');
-  for (let i = 0; i < words.length; i++) {
-    const chunk = words[i] + (i < words.length - 1 ? ' ' : '');
-    res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
-    // Non-blocking tiny sleep to simulate streaming beautifully
-    await new Promise(resolve => setTimeout(resolve, 15));
+  const reader = response.body;
+  if (!reader) {
+    res.write(`data: ${JSON.stringify({ error: "Upstream stream body is unavailable" })}\n\n`);
+    res.end();
+    return;
   }
 
+  let buffer = "";
+  let fullResponseText = "";
+
+  const processBuffer = (buf) => {
+    let braceCount = 0;
+    let inString = false;
+    let escape = false;
+    let startIdx = -1;
+
+    for (let i = 0; i < buf.length; i++) {
+      const char = buf[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (char === '{') {
+          if (braceCount === 0) startIdx = i;
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0 && startIdx !== -1) {
+            const jsonStr = buf.substring(startIdx, i + 1);
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                fullResponseText += text;
+                // Deliver raw chunk tokens in real-time!
+                res.write(`data: ${JSON.stringify({ chunk: text })}\n\n`);
+              }
+            } catch (e) {
+              // Ignore partial parsing errors on chunk boundaries
+            }
+            buf = buf.substring(i + 1);
+            i = -1;
+            startIdx = -1;
+          }
+        }
+      }
+    }
+    return buf;
+  };
+
+  try {
+    if (typeof reader[Symbol.asyncIterator] === 'function') {
+      for await (const chunk of reader) {
+        buffer += chunk.toString('utf8');
+        buffer = processBuffer(buffer);
+      }
+    } else {
+      const streamReader = reader.getReader();
+      const decoder = new TextDecoder("utf-8");
+      while (true) {
+        const { done, value } = await streamReader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        buffer = processBuffer(buffer);
+      }
+    }
+  } catch (streamError) {
+    console.error("Upstream stream read error:", streamError);
+  }
+
+  // Deliver the final unified polished response matching all quality guard standards!
+  const polishedText = runResponseQualityGuard(fullResponseText || "Sorry, I am unable to generate a response at this moment.");
   res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
   res.end();
 }
