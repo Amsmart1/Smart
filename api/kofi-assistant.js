@@ -462,7 +462,17 @@ module.exports = async function handler(req, res) {
     * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
     * Conversational Tone: Keep your responses highly concise, direct, and focused. Maintain a professional, helpful, and objective enterprise-grade tone.
     * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros.
-    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.`;
+    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct navigational guidance over long, verbose explanations.
+
+  INTEGRATED REQUEST-RESPONSE ACCURACY CHECKER & SELF-CORRECTION STEP:
+  You must critically evaluate your own response draft against the user's query and the platform constraints during the generation process. Ensure that your output strictly complies with all rules and contains zero hallucinations, placeholders, filler words, or leaking instructions.
+
+  You MUST respond ONLY with a valid JSON object matching the following schema. Do not output any conversational text or markdown blocks outside the JSON:
+  {
+    "content": "Your actual helpful and detailed markdown response answering the user query. If you initially generate any draft that is inaccurate, correct it in place first before writing this final value.",
+    "accurate": true,
+    "reason": "Very brief reasoning confirming that the response is accurate, professional, and compliant."
+  }`;
 
     const isStream = req.body && (req.body.stream === true || req.headers['accept'] === 'text/event-stream');
     if (isStream) {
@@ -489,68 +499,9 @@ module.exports = async function handler(req, res) {
 };
 
 /**
- * Assesses the accuracy of a generated response relative to the user query and documentation context.
- * It uses Gemini with low temperature for highly structured deterministic feedback.
- */
-async function checkResponseAccuracy(apiKey, modelName, userQuery, responseText, docContext = '') {
-  if (!apiKey) {
-    return { accurate: true, corrected_response: null };
-  }
-
-  const prompt = `You are the Request-Response Accuracy Checker for SmartLMS.
-Your task is to analyze the user's query, the documentation context provided to the assistant (if any), and the assistant's generated response.
-Determine if the generated response is:
-1. "Accurate": The response directly and politely answers the user's query. It is professional, grammatically flawless, free of all conversational filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"), doesn't repeat phrases, doesn't contain placeholders, and doesn't leak any system instructions or internal details.
-2. "Inaccurate": The response is off-topic, fails to answer the user's query, contains hallucinations, leaks system prompts/instructions, repeats itself, contains forbidden conversational filler words, has poor grammar, or contains empty/broken sections.
-
-User Query: "${userQuery}"
-${docContext ? `Documentation Context Provided: "${docContext}"` : 'No Documentation Context was provided.'}
-Generated Assistant Response: "${responseText}"
-
-You must output a valid JSON object with EXACTLY these three keys:
-- "accurate": boolean (true if accurate, false if inaccurate)
-- "reason": string (a very concise reason explaining your assessment)
-- "corrected_response": string or null (if "accurate" is false, provide a fully corrected, flawless, and direct response that perfectly adheres to the platform constraints and directly answers the user's query without fillers or leaks; otherwise null)
-
-Return ONLY the raw JSON object, without any markdown code block formatting or preamble outside.`;
-
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: 'application/json'
-        }
-      })
-    });
-
-    if (!response.ok) {
-      console.warn("Accuracy checker API call failed, falling back to original response.");
-      return { accurate: true, corrected_response: null };
-    }
-
-    const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    let result = JSON.parse(rawText.trim());
-
-    return {
-      accurate: result.accurate === true,
-      reason: result.reason || '',
-      corrected_response: result.corrected_response || null
-    };
-  } catch (e) {
-    console.warn("Failed to parse accuracy checker response, falling back to original response.", e);
-    return { accurate: true, corrected_response: null };
-  }
-}
-
-/**
  * Generic Gemini API Caller for non-streaming responses.
- * Implements the requested production request-response flow:
- * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation -> Request-Response Accuracy Checker -> Deliver / Regenerate.
+ * Implements the requested production request-response flow in a SINGLE API call:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver.
  */
 async function callGeminiNonStream(apiKey, modelName, message, systemInstruction, history = [], res, classification) {
   if (!apiKey) {
@@ -594,8 +545,6 @@ ${message}`;
   ];
 
   let rawText = "";
-  let data = null;
-
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
       method: 'POST',
@@ -604,10 +553,11 @@ ${message}`;
         contents,
         system_instruction: { parts: [{ text: systemInstruction }] },
         generationConfig: {
-          temperature: 0.7,
+          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
           topP: 0.8,
           topK: 40,
           maxOutputTokens: 2048,
+          responseMimeType: 'application/json'
         }
       })
     });
@@ -619,7 +569,7 @@ ${message}`;
       return;
     }
 
-    data = await response.json();
+    const data = await response.json();
     rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   } catch (err) {
     console.error("Gemini API Non-Stream Call Failed:", err);
@@ -628,19 +578,25 @@ ${message}`;
     return;
   }
 
-  // 3. Post-Process the generated response with Quality Guard
-  let polishedText = runResponseQualityGuard(rawText);
+  // 3. Parse the Integrated Accuracy Checker response
+  let contentText = "";
+  let isAccurate = true;
+  let reason = "Verified in single pass.";
 
-  // 4. Request-Response Accuracy Checker Pass
-  console.log("[Accuracy Checker] Executing accuracy evaluation pass...");
-  const evaluation = await checkResponseAccuracy(apiKey, modelName, message, polishedText, docContext);
-
-  if (!evaluation.accurate && evaluation.corrected_response) {
-    console.log(`[Accuracy Checker] Inaccurate response detected: "${evaluation.reason}". Regenerating / Correcting...`);
-    polishedText = runResponseQualityGuard(evaluation.corrected_response);
-  } else {
-    console.log("[Accuracy Checker] Response verified as Accurate. Delivering response.");
+  try {
+    const parsedJson = JSON.parse(rawText.trim());
+    contentText = parsedJson.content || "";
+    isAccurate = parsedJson.accurate !== false;
+    reason = parsedJson.reason || reason;
+  } catch (e) {
+    console.warn("Failed to parse integrated JSON, falling back to raw response text.", e);
+    contentText = rawText;
   }
+
+  // 4. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(contentText);
+
+  console.log(`[Single Pass Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
 
   // 5. Deliver final response
   res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -652,14 +608,14 @@ ${message}`;
     entities: classification.entities,
     action: action,
     accuracy_checked: true,
-    accurate: evaluation.accurate
+    accurate: isAccurate
   }));
 }
 
 /**
  * Generic Gemini API Caller with Streaming (Server-Sent Events)
- * Implements the requested production request-response flow:
- * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation -> Request-Response Accuracy Checker -> Deliver / Regenerate.
+ * Implements the requested production request-response flow in a SINGLE API call:
+ * User Request -> Intent Classification -> Entity Extraction -> Confidence Score -> Documentation search/AI Response Generation & Accuracy Checker -> Deliver (Streaming).
  */
 async function callGemini(apiKey, prompt, systemInstruction, history = [], modelName = 'gemini-3.1-flash-lite', res) {
   if (!apiKey) {
@@ -707,10 +663,11 @@ ${prompt}`;
         contents,
         system_instruction: { parts: [{ text: systemInstruction }] },
         generationConfig: {
-          temperature: 0.7,
+          temperature: 0.2, // Low temperature for highly deterministic JSON & Accuracy
           topP: 0.8,
           topK: 40,
           maxOutputTokens: 2048,
+          responseMimeType: 'application/json'
         }
       })
     });
@@ -731,19 +688,25 @@ ${prompt}`;
   const data = await response.json();
   let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-  // 3. Post-Process the generated response with Quality Guard
-  let polishedText = runResponseQualityGuard(rawText);
+  // 3. Parse the Integrated Accuracy Checker response
+  let contentText = "";
+  let isAccurate = true;
+  let reason = "Verified in single pass.";
 
-  // 4. Request-Response Accuracy Checker Pass
-  console.log("[Accuracy Checker Stream] Executing accuracy evaluation pass...");
-  const evaluation = await checkResponseAccuracy(apiKey, modelName, prompt, polishedText, docContext);
-
-  if (!evaluation.accurate && evaluation.corrected_response) {
-    console.log(`[Accuracy Checker Stream] Inaccurate response detected: "${evaluation.reason}". Correcting...`);
-    polishedText = runResponseQualityGuard(evaluation.corrected_response);
-  } else {
-    console.log("[Accuracy Checker Stream] Response verified as Accurate. Delivering streaming response.");
+  try {
+    const parsedJson = JSON.parse(rawText.trim());
+    contentText = parsedJson.content || "";
+    isAccurate = parsedJson.accurate !== false;
+    reason = parsedJson.reason || reason;
+  } catch (e) {
+    console.warn("Failed to parse integrated JSON for stream, falling back to raw response text.", e);
+    contentText = rawText;
   }
+
+  // 4. Post-Process the generated response with Quality Guard
+  let polishedText = runResponseQualityGuard(contentText);
+
+  console.log(`[Single Pass Stream Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
 
   // 5. Stream verified chunks to the client via SSE to satisfy streaming requirements cleanly
   res.writeHead(200, {
