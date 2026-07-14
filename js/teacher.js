@@ -4659,7 +4659,7 @@ function renderAnalyticsUI(data) {
     <div id="analyticsAIChat" class="mt-20"></div>
   `;
 
-  KofiAIManager.renderChatbot('analyticsAIChat', {
+  AIManager.renderChatbot('analyticsAIChat', {
       title: 'Teacher Insights Assistant',
       welcomeMessage: 'Hi! I can help you analyze class performance, identify at-risk students, and suggest teaching interventions based on your course data.',
       onSend: async (msg) => {

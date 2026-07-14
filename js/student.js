@@ -1482,7 +1482,7 @@ async function renderAnalytics() {
       <div id="analyticsAIChat" class="mt-20"></div>
     `;
 
-    KofiAIManager.renderChatbot('analyticsAIChat', {
+    AIManager.renderChatbot('analyticsAIChat', {
         title: 'LMS Learning Assistant',
         welcomeMessage: 'Hi! I can analyze your performance trends and suggest areas for improvement. Ask me anything about your progress!',
         onSend: async (msg) => {
@@ -1671,7 +1671,7 @@ async function startAITutor(courseId) {
         <div id="aiTutorChatContainer"></div>
     `;
 
-    KofiAIManager.renderChatbot('aiTutorChatContainer', {
+    AIManager.renderChatbot('aiTutorChatContainer', {
         title: 'AI Course Tutor',
         welcomeMessage: `Hi! I'm your AI tutor for **${course?.title}**. Ask me anything about the course materials, or if you need help with an assignment!`,
         placeholder: 'Ask about lessons, topics, or concepts...',
