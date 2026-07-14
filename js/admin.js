@@ -1631,7 +1631,7 @@ async function renderAnalytics() {
     </section>
     `;
 
-    KofiAIManager.renderChatbot('analyticsAIChat', {
+    AIManager.renderChatbot('analyticsAIChat', {
         title: 'System Intelligence Assistant',
         welcomeMessage: 'Hi! I can provide system-wide insights, performance trends, and security audits across the entire LMS.',
         onSend: async (msg) => {
