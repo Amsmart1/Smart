@@ -1558,7 +1558,7 @@ const SessionGuard = {
             }
 
             const isMaint = isActiveMaintenance(m);
-            const isRestricted = !fresh.active || fresh.flagged || isAccountLocked(fresh);
+            const isRestricted = !fresh.active || fresh.flagged || isAccountLocked(fresh) || (fresh.reset_request && fresh.reset_request.status === 'approved');
             const roleMismatch = fresh.role !== user.role;
             const currentSid = SessionManager.getSessionId();
             // Invalidation detection: mismatch occurs if fresh.session_id is missing (unauthorized)
@@ -1572,6 +1572,7 @@ const SessionGuard = {
                     if (!fresh.active) msg = 'Your account has been deactivated.';
                     else if (fresh.flagged) msg = 'Your account has been flagged for suspicious activity.';
                     else if (isAccountLocked(fresh)) msg = 'Your account has been locked due to multiple failed attempts.';
+                    else if (fresh.reset_request && fresh.reset_request.status === 'approved') msg = 'You must change your password before continuing.';
                 } else if (sessionMismatch) {
                     const reason = fresh.metadata?.last_invalidation_reason;
                     if (reason === 'password_change') {
