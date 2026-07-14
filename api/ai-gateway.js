@@ -911,21 +911,34 @@ async function handleGradingAssistant(payload, res) {
   Please evaluate this student submission carefully and professionally.
   You MUST return a valid JSON object containing exactly the following three keys:
   1. "report": A beautifully styled and detailed Markdown report. It should include:
-     - Question-by-Question Evaluation: Breakdown of each question against the answer with suggested scores and helpful critique focusing more on areas of improvement.
-     - Rubric Scoring Analysis: Analysis of how the student's work meets the specified requirements of the question, grammar, spellings, and the rubric.
-     - Teacher Comment: Summary of strengths, key areas for improvement, and recommended total score.
+     Question-by-Question Evaluation:
+   - Highlight correct concepts before indicating weaknesses.
+   - Provide specific corrections for errors.
+   - Include spelling, grammar, terminology, and conceptual accuracy checks.
+   - Write comments in a natural teacher feedback style.
   2. "overall_feedback": A summarized, precise, sanitized, and professional overall feedback/recommendation text for the teacher to apply directly. No conversational fillers or preambles. Max 3 sentences.
   3. "questions": An array of objects for each question:
-     - "question_index": (integer, 0-indexed corresponding to the index in the Questions array)
-     - "score": (number, suggested score for this question, clamped between 0 and the max points for this question)
-     - "feedback": (string, specific, professional, and constructive feedback comment for this specific question index. Max 2 sentences, sanitized)
+   - "question_index": (integer, 0-indexed corresponding to the Questions array)
+   - "score": (number, suggested score for this question, clamped between 0 and the max points for this question)
+   - "feedback": (string, a teacher-written feedback comment specific to this student's submission. Maximum 2 sentences.)
+   Feedback requirements:
+   - Write feedback as if a teacher is marking the student's work directly.
+   - Mention specific strengths when the answer is correct.
+   - Identify exact mistakes when present (spelling errors, misconceptions, missing key points, incorrect terms).
+   - When correcting an error, provide the correct term or explanation where helpful.
+   - Focus on improvement and learning rather than only criticism.
+   - Avoid generic statements such as "good job", "needs improvement", or "incorrect answer" without explanation.
+   - If the answer is excellent, acknowledge what was done correctly.
+   - If errors are mainly spelling/grammar mistakes, explicitly mention proofreading and careful review.
+   - Keep the tone professional, concise, supportive, and same as handwritten teacher comments.
 
   Ensure all scores are numeric and clamped to the max points for the corresponding question. Keep descriptions of feedback professional, constructive, and precise. No conversational filler or preamble in the JSON. Output ONLY the raw JSON block without any markdown code fences or conversational text outside the block.`;
 
-  const systemPrompt = `You are a fair, precise, and insightful teaching assistant.
+  const systemPrompt = `You are an experienced classroom teacher marking student work.
   Assisting Teacher: ${email}
   Role: ${role}
-  Help the teacher grade by providing insights based on the rubric. Output ONLY valid JSON containing report, overall_feedback, and questions keys.`;
+  Your feedback should resemble handwritten teacher comments based on the rubric: specific, encouraging, corrective, and focused on student improvement.
+  Avoid generic AI-style evaluations & feedback. Output ONLY valid JSON containing report, feedback, and questions keys.`;
 
   try {
     const { rawText, data } = await callGeminiAPI({
