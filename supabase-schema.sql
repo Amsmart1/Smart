@@ -2196,11 +2196,16 @@ BEGIN
     END IF;
 
     -- Update session and login stats
-    UPDATE user_secrets SET session_id = p_session_id WHERE email = p_email;
+    UPDATE user_secrets SET
+      session_id = p_session_id,
+      reset_data = CASE WHEN v_secret.password_hash = p_password_hash THEN NULL ELSE reset_data END
+    WHERE email = p_email;
+
     UPDATE users SET
       last_login = NOW(),
       failed_attempts = 0,
       locked_until = NULL,
+      reset_request = CASE WHEN v_secret.password_hash = p_password_hash THEN NULL ELSE reset_request END,
       metadata = COALESCE(metadata, '{}'::jsonb) || '{"last_invalidation_reason": "new_login"}'::jsonb
     WHERE email = p_email
     RETURNING last_login, failed_attempts, locked_until, metadata INTO v_user.last_login, v_user.failed_attempts, v_user.locked_until, v_user.metadata;
