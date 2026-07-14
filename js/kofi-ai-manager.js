@@ -124,8 +124,79 @@ class KofiAIManager {
     /**
      * Streaming-compatible interface for public Kofi Assistant
      */
-    static async askKofiStream(message) {
-        return await this.askKofi(message);
+    static async askKofiStream(message, onChunk, onDone) {
+        const historyKey = 'kofi';
+        const history = this._history.get(historyKey) || [];
+        const payload = { message, history, stream: true };
+
+        try {
+            const response = await fetch(this.CONFIG.endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                throw new Error(`Kofi AI stream error: HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let fullText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+
+                // Keep the last partial line in the buffer
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    if (trimmed.startsWith('data: ')) {
+                        const jsonStr = trimmed.substring(6).trim();
+                        try {
+                            const parsed = JSON.parse(jsonStr);
+                            if (parsed.chunk) {
+                                fullText += parsed.chunk;
+                                if (typeof onChunk === 'function') {
+                                    onChunk(parsed.chunk);
+                                }
+                            } else if (parsed.final) {
+                                fullText = parsed.final;
+                            } else if (parsed.error) {
+                                throw new Error(parsed.error);
+                            }
+                        } catch (e) {
+                            console.warn("Error parsing stream chunk:", e, trimmed);
+                        }
+                    }
+                }
+            }
+
+            // Save history
+            history.push({ role: 'user', content: message });
+            history.push({ role: 'assistant', content: fullText });
+            this._history.set(historyKey, history.slice(-this.CONFIG.maxHistoryMessages));
+
+            if (typeof onDone === 'function') {
+                onDone(fullText);
+            }
+
+            return fullText;
+        } catch (error) {
+            console.error("Kofi AI stream failed:", error);
+            throw error;
+        }
     }
 
     /**

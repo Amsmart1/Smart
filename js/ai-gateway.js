@@ -708,19 +708,56 @@ class AIManager {
             });
 
             try {
-                let response;
+                let response = '';
                 if (typeof onSendStream === 'function') {
-                    response = await onSendStream(msg);
+                    let streamDiv = null;
+                    let streamInner = null;
+
+                    const onChunk = (chunk) => {
+                        if (typingDiv) {
+                            typingDiv.remove();
+                        }
+                        if (!streamDiv) {
+                            streamDiv = document.createElement('div');
+                            streamDiv.className = 'ai-msg assistant mb-15';
+                            streamDiv.style.marginBottom = '15px';
+                            streamDiv.innerHTML = `
+                                <div class="p-10 border-radius-md small text-left" style="background: #fff; color: var(--text, #1e293b); border: 1px solid #cbd5e1; display: inline-block; max-width: 85%; border-radius: 8px; padding: 10px; text-align: left; line-height: 1.5; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                                </div>
+                            `;
+                            messagesArea.appendChild(streamDiv);
+                            streamInner = streamDiv.querySelector('div');
+                        }
+                        response += chunk;
+                        streamInner.innerHTML = formatMarkdown(response);
+                        messagesArea.scrollTo({
+                            top: messagesArea.scrollHeight,
+                            behavior: 'smooth'
+                        });
+                    };
+
+                    const onDone = (finalText) => {
+                        if (finalText) {
+                            response = finalText;
+                            if (streamInner) {
+                                streamInner.innerHTML = formatMarkdown(response);
+                            }
+                        }
+                    };
+
+                    await onSendStream(msg, onChunk, onDone);
+
                 } else {
                     response = await onSend(msg);
+                    typingDiv.remove();
+                    appendMessage('assistant', response);
                 }
-                typingDiv.remove();
-                appendMessage('assistant', response);
+
                 if (ttsEnabled && window.voiceEngine) {
                     window.voiceEngine.speak(response);
                 }
             } catch (e) {
-                typingDiv.remove();
+                if (typingDiv) typingDiv.remove();
                 const errorMessage = window.escapeHtml(e.message || 'Sorry, I encountered an error. Please try again.');
                 appendMessage('assistant', `<span style="color: #ef4444; font-weight: 600;">⚠️ Error: ${errorMessage}</span>`, true);
                 console.error(e);
