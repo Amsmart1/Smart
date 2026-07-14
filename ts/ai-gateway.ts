@@ -22,9 +22,12 @@ serve(async (req) => {
     if (!supabaseAnonKey) throw new Error('Missing environment variable: SUPABASE_ANON_KEY');
 
     // Secure private gateway secret key for backend-to-backend communication
-    // Falls back to SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY if not explicitly defined
-    const gatewaySecret = Deno.env.get('AI_GATEWAY_SECRET') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || supabaseAnonKey;
+    // Never fall back to SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY if not explicitly defined
+    const gatewaySecret = Deno.env.get('AI_GATEWAY_SECRET');
 
+if (!gatewaySecret) {
+  throw new Error('Missing environment variable: AI_GATEWAY_SECRET');
+}
     const { type, payload } = await req.json();
 
     if (!type || !payload) {
