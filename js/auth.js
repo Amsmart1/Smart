@@ -489,12 +489,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // The authenticate_user RPC and purge_expired_records trigger handle these server-side.
 
             if (user.reset_request) {
-                if (user.reset_request.status === 'denied') {
-                    return ValidationUI.showError(passErr, `Reset Request Denied: ${user.reset_request.denial_reason || 'No reason provided.'}`);
-                }
-                if (user.reset_request.status === 'pending') {
-                    return ValidationUI.showError(passErr, 'Password reset request pending admin review.');
-                }
                 if (user.reset_request.status === 'approved') {
                     if (user.reset_request.expires_at && Date.now() > new Date(user.reset_request.expires_at).getTime()) {
                         user.reset_request = null;
