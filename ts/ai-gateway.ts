@@ -177,13 +177,30 @@ serve(async (req) => {
                           const pdfText = extractResult.text || '';
 
                           if (pdfText.trim().length > 0) {
-                              const chunkSize = 2000;
+                              // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
+                              const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                              const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                              const parsedChunks: string[] = [];
+
+                              let currentSegment = "";
+                              for (const segment of rawSegments) {
+                                  if (currentSegment && (currentSegment.length + segment.length > 2500)) {
+                                      parsedChunks.push(currentSegment);
+                                      currentSegment = segment;
+                                  } else {
+                                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                                  }
+                              }
+                              if (currentSegment) {
+                                  parsedChunks.push(currentSegment);
+                              }
+
                               let chunkIndex = 0;
-                              for (let i = 0; i < pdfText.length; i += chunkSize) {
+                              for (const chunkText of parsedChunks) {
                                   chunks.push({
                                       material_id: m.id,
                                       course_id: course_id,
-                                      content: `Document: ${m.title}\nContent Chunk:\n${pdfText.substring(i, i + chunkSize)}`,
+                                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
                                       metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
                                   });
                               }
