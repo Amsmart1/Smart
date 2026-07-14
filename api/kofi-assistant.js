@@ -168,68 +168,6 @@ function loadPlatformDocs() {
 }
 
 /**
- * Searches parsed sections using weighted keyword frequencies
- */
-function findRelevantSection(query, sections) {
-  if (!query || !sections || sections.length === 0) return null;
-
-  const normalizedQuery = query.toLowerCase().trim();
-  let bestMatch = null;
-  let highestScore = 0;
-
-  const stopWords = new Set([
-    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'if', 'then', 'else',
-    'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during',
-    'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off',
-    'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
-    'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
-    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will',
-    'just', 'should', 'now', 'what', 'does', 'do', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
-    'my', 'your', 'his', 'her', 'its', 'our', 'their'
-  ]);
-
-  const queryWords = normalizedQuery
-    .replace(/[^\w\s]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length > 2 && !stopWords.has(word));
-
-  for (const section of sections) {
-    let score = 0;
-    const headerLower = section.header.toLowerCase();
-    const contentLower = section.content.toLowerCase();
-
-    if (headerLower.includes(normalizedQuery)) {
-      score += 15;
-    }
-
-    for (const word of queryWords) {
-      const headerRegex = new RegExp(`\\b${word}\\b`, 'gi');
-      const headerMatches = headerLower.match(headerRegex);
-      if (headerMatches) {
-        score += headerMatches.length * 8;
-      }
-
-      const contentRegex = new RegExp(`\\b${word}\\b`, 'gi');
-      const contentMatches = contentLower.match(contentRegex);
-      if (contentMatches) {
-        score += contentMatches.length * 1.5;
-      }
-    }
-
-    if (score > highestScore) {
-      highestScore = score;
-      bestMatch = { section, score };
-    }
-  }
-
-  if (highestScore >= 6) {
-    return bestMatch.section;
-  }
-
-  return null;
-}
-
-/**
  * Searches parsed sections using weighted keyword frequencies, returning both section and score.
  */
 function findRelevantSectionWithScore(query, sections) {
