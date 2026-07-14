@@ -146,20 +146,81 @@ serve(async (req) => {
 
       // Fetch all materials and lessons for the course
       const [{ data: materials }, { data: lessons }] = await Promise.all([
-          supabaseClient.from('materials').select('id, title, description').eq('course_id', course_id),
+          supabaseClient.from('materials').select('id, title, description, file_url').eq('course_id', course_id),
           supabaseClient.from('lessons').select('id, title, content').eq('course_id', course_id)
       ]);
 
       const chunks: any[] = [];
 
-      materials?.forEach((m: any) => {
-          chunks.push({
-              material_id: m.id,
-              course_id: course_id,
-              content: `Material Title: ${m.title}\nDescription: ${m.description}`,
-              metadata: { type: 'material', title: m.title }
-          });
-      });
+      if (materials) {
+          for (const m of materials) {
+              const fileUrl = m.file_url || '';
+              const isPdf = fileUrl.toLowerCase().endsWith('.pdf') || fileUrl.includes('content-type=application/pdf');
+
+              if (isPdf) {
+                  try {
+                      // Call the Vercel helper to extract PDF text
+                      const extractResponse = await fetch(vercelTarget, {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                              'x-supabase-signature': gatewaySecret
+                          },
+                          body: JSON.stringify({
+                              type: 'extract_pdf_text',
+                              payload: { file_url: fileUrl, course_id }
+                          })
+                      });
+
+                      if (extractResponse.ok) {
+                          const extractResult = await extractResponse.json();
+                          const pdfText = extractResult.text || '';
+
+                          if (pdfText.trim().length > 0) {
+                              // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
+                              const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                              const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                              const parsedChunks: string[] = [];
+
+                              let currentSegment = "";
+                              for (const segment of rawSegments) {
+                                  if (currentSegment && (currentSegment.length + segment.length > 2500)) {
+                                      parsedChunks.push(currentSegment);
+                                      currentSegment = segment;
+                                  } else {
+                                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                                  }
+                              }
+                              if (currentSegment) {
+                                  parsedChunks.push(currentSegment);
+                              }
+
+                              let chunkIndex = 0;
+                              for (const chunkText of parsedChunks) {
+                                  chunks.push({
+                                      material_id: m.id,
+                                      course_id: course_id,
+                                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
+                                      metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
+                                  });
+                              }
+                              continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                          }
+                      }
+                  } catch (err) {
+                      console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+                  }
+              }
+
+              // Fallback to title and description for non-PDFs or failed extractions
+              chunks.push({
+                  material_id: m.id,
+                  course_id: course_id,
+                  content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
+                  metadata: { type: 'material', title: m.title }
+              });
+          }
+      }
 
       lessons?.forEach((l: any) => {
           const content = l.content || '';
