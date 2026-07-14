@@ -135,7 +135,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             // 1. Verify AIManager (Zero regression)
             if (typeof AIManager !== 'undefined') {
-                AIManager.renderChatbot('testChatContainer', {
+                KofiAIManager.renderChatbot('testChatContainer', {
                     title: 'AI Tutor Verification',
                     welcomeMessage: 'Testing the AI Tutor component UI.',
                     onSend: async (msg) => {
