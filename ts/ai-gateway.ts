@@ -90,6 +90,19 @@ if (!gatewaySecret) {
 
     if (type === 'tutor') {
       const { course_id, message } = payload;
+
+      // Query course title to ensure the tutor is course-aware of its own subject and title
+      let courseTitle = '';
+      try {
+          const { data: courseData } = await supabaseClient.from('courses').select('title').eq('id', course_id).maybeSingle();
+          if (courseData) {
+              courseTitle = courseData.title;
+          }
+      } catch (e) {
+          console.warn('Failed to query course title in Edge Function:', e);
+      }
+      vercelPayload.course_title = courseTitle;
+
       const embeddingResponse = await fetch(vercelTarget, {
         method: 'POST',
         headers: {
@@ -158,7 +171,14 @@ if (!gatewaySecret) {
       if (materials) {
           for (const m of materials) {
               const fileUrl = m.file_url || '';
-              const isPdf = fileUrl.toLowerCase().endsWith('.pdf') || fileUrl.includes('content-type=application/pdf');
+              let isPdf = false;
+              try {
+                  const urlObj = new URL(fileUrl);
+                  const pathOnly = urlObj.pathname.toLowerCase();
+                  isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf');
+              } catch (e) {
+                  isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+              }
 
               if (isPdf) {
                   try {
