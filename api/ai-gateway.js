@@ -575,6 +575,9 @@ module.exports = async function handler(req, res) {
       case 'generate_batch_embeddings':
         return await handleGenerateBatchEmbeddings(payload, res);
 
+      case 'extract_pdf_text':
+        return await handleExtractPdfText(payload, res);
+
       case 'voice':
         return await handleVoiceAI(payload, res);
 
@@ -1038,6 +1041,69 @@ async function handleAnalyticsAI(payload, res) {
       content: guardedText,
       raw: data
     }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
+ * Feature 6: PDF Text Extraction via Gemini multimodal capabilities
+ */
+async function handleExtractPdfText(payload, res) {
+  const { file_url } = payload;
+  if (!file_url) {
+    res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'file_url is required' }));
+    return;
+  }
+
+  try {
+    const pdfResponse = await fetch(file_url);
+    if (!pdfResponse.ok) {
+      throw new Error(`Failed to download PDF: ${pdfResponse.statusText}`);
+    }
+
+    const arrayBuffer = await pdfResponse.arrayBuffer();
+    const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+    const apiKey = resolveApiKey('tutor', payload);
+    const model = 'gemini-1.5-flash';
+
+    const requestBody = {
+      contents: [
+        {
+          parts: [
+            {
+              inline_data: {
+                mime_type: 'application/pdf',
+                data: base64Data
+              }
+            },
+            {
+              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini PDF Parse Error: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ text: extractedText }));
   } catch (error) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: error.message }));
