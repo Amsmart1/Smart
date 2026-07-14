@@ -782,7 +782,7 @@ async function handleAssessmentGenerator(payload, res) {
   let lessonPrompt = '';
   if (lesson_content && lesson_content.trim() !== '') {
     lessonPrompt = `
-  The assessment MUST be strictly aligned with the following lesson content:
+  The assessment MUST be strictly aligned with the following lesson content and GES SHS curriculum expectations and WASSCE examination standards:
   ---
   LESSON TITLE: ${lesson_title || 'Selected Lesson'}
   LESSON CONTENT:
@@ -791,7 +791,7 @@ async function handleAssessmentGenerator(payload, res) {
   Ensure that you only generate questions about the concepts, definitions, theories, and details explicitly mentioned in the lesson above. Do not include external or off-topic information.`;
   }
 
-  const systemPrompt = `You are an expert curriculum designer and assessment generator.
+  const systemPrompt = `You are an expert Ghana Education Service (GES) Senior High School (SHS) curriculum designer, WASSCE examination questions setter, and assessment specialist.
   Generating for Teacher: ${email || 'Teacher'}
   Role: ${role || 'teacher'}
   You MUST output ONLY a valid JSON array of question objects matching the SmartLMS schema. Do not output any conversational preamble or markdown outer formatting other than the JSON block.`;
@@ -808,6 +808,13 @@ async function handleAssessmentGenerator(payload, res) {
   Output MUST be a valid JSON array of question objects matching the SmartLMS schema.
 
   ${schemaPrompt}
+
+Assessment Design Requirements:
+- Align questions with GES SHS curriculum expectations and WASSCE examination standards.
+- Match the cognitive demand to the specified proficiency level.
+- Use appropriate WASSCE command verbs.
+- Ensure questions assess knowledge, recal, understanding, skills, application, and reasoning where appropriate.
+- Ensure questions have clear marking expectations.
 
   Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
 
