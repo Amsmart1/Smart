@@ -1671,18 +1671,15 @@ CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH RO
 -- while allowing trusted backend RPCs (like authenticate_user) to manage them.
 CREATE OR REPLACE FUNCTION tr_protect_user_lockout() RETURNS TRIGGER AS $$
 BEGIN
-  -- ABAC: Only administrators or trusted system-level contexts (postgres/service_role)
+  -- ABAC: Only administrators or trusted system-level contexts (postgres/service_role/supabase_admin)
   -- can modify sensitive security fields. This prevents client-side privilege escalation.
-  -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres'.
+  -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres' or 'supabase_admin'.
   IF (OLD.failed_attempts IS DISTINCT FROM NEW.failed_attempts OR
       OLD.locked_until IS DISTINCT FROM NEW.locked_until OR
       OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
       OLD.flagged IS DISTINCT FROM NEW.flagged)
       AND NOT is_admin()
-      AND current_user != 'postgres'
-      AND current_user != 'service_role'
-      AND COALESCE(current_setting('role', true), '') != 'postgres'
-      AND COALESCE(current_setting('role', true), '') != 'service_role' THEN
+      AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin') THEN
 
       RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
   END IF;
