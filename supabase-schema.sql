@@ -2118,6 +2118,9 @@ DECLARE
   v_user RECORD;
   v_secret RECORD;
 BEGIN
+  -- Signal that this is a trusted internal update from authenticate_user
+  PERFORM set_config('app.trusted_internal_update', 'true', true);
+
   SELECT
     id, email, full_name, phone, role, created_at, updated_at, last_login,
     failed_attempts, locked_until, lockouts, flagged, reset_request,
@@ -2353,6 +2356,9 @@ CREATE OR REPLACE FUNCTION finalize_password_reset_secure(
 DECLARE
     v_user RECORD;
 BEGIN
+    -- Signal that this is a trusted internal update from finalize_password_reset_secure
+    PERFORM set_config('app.trusted_internal_update', 'true', true);
+
     -- 1. Validate User
     SELECT * INTO v_user FROM users WHERE email = p_email;
     IF NOT FOUND THEN
