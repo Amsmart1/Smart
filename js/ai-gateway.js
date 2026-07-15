@@ -600,14 +600,12 @@ class AIManager {
                             <button class="ai-handsfree-btn circular-voice-btn" title="Toggle Hands-Free continuous conversation" aria-label="Toggle Hands-Free" style="width: 34px !important; height: 34px !important; border-radius: 50% !important; border: 1px solid #cbd5e1 !important; background: #f1f5f9; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 34px !important; box-shadow: 0 1px 2px rgba(0,0,0,0.05); outline: none;">🎙️</button>
                         </div>
 
-                        <!-- WhatsApp style Input Box containing Mic and text field -->
-                        <div class="whatsapp-input-wrapper" style="display: flex; align-items: center; flex: 1; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 24px; padding: 2px 8px 2px 4px; min-width: 0; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); height: 38px; box-sizing: border-box;">
+                        <!-- WhatsApp style Input Box containing Mic, text field, and send symbol button -->
+                        <div class="whatsapp-input-wrapper" style="display: flex; align-items: center; flex: 1; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 24px; padding: 2px 4px 2px 4px; min-width: 0; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); height: 38px; box-sizing: border-box;">
                             <button class="ai-mic-btn circular-mic-btn" title="Start voice input" aria-label="Start voice input" style="width: 30px !important; height: 30px !important; border-radius: 50% !important; border: none !important; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 30px !important; outline: none;">🎙️</button>
                             <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; background: transparent !important; border: none !important; outline: none !important; box-shadow: none !important; margin: 0 !important; padding: 6px 8px !important; font-size: 0.85rem; height: 100%; min-width: 0 !important;">
+                            <button class="ai-send-btn" aria-label="Send message" style="width: 30px !important; height: 30px !important; border-radius: 50% !important; border: none !important; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 30px !important; color: var(--p, #5b2ea6); outline: none;">➤</button>
                         </div>
-
-                        <!-- Send Button -->
-                        <button class="button small ai-send-btn" aria-label="Send message" style="border-radius: 20px !important; padding: 8px 16px !important; font-weight: 600; margin: 0 !important; width: auto !important; height: 36px !important; flex-shrink: 0 !important; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; background: var(--p, #5b2ea6); color: white;">Send</button>
 
                     </div>
                     <div class="ai-char-counter text-right mt-5" aria-hidden="true" style="font-size: 10px; color: #64748b; padding-right: 15px; margin-top: 5px; text-align: right;">0 / 1000</div>
@@ -764,37 +762,25 @@ class AIManager {
                 }
             }
 
-            // Handsfree button styling
+            // Handsfree button styling - dynamically update only the emojis/titles of these circular buttons
             if (handsFreeBtn) {
                 if (window.voiceEngine && window.voiceEngine.settings.conversationMode) {
                     handsFreeBtn.innerHTML = '🟢';
                     handsFreeBtn.title = 'Hands-Free: On';
-                    handsFreeBtn.style.background = '#dcfce7';
-                    handsFreeBtn.style.color = '#15803d';
-                    handsFreeBtn.style.borderColor = '#bbf7d0';
                 } else {
                     handsFreeBtn.innerHTML = '🎙️';
                     handsFreeBtn.title = 'Hands-Free: Off';
-                    handsFreeBtn.style.background = '#f1f5f9';
-                    handsFreeBtn.style.color = 'inherit';
-                    handsFreeBtn.style.borderColor = '#cbd5e1';
                 }
             }
 
-            // TTS Read Aloud button styling
+            // TTS Read Aloud button styling - dynamically update only the emojis/titles of these circular buttons
             if (ttsBtn) {
                 if (ttsEnabled) {
                     ttsBtn.innerHTML = '🔊';
                     ttsBtn.title = 'Read Aloud: On';
-                    ttsBtn.style.background = '#dbeafe';
-                    ttsBtn.style.color = '#1d4ed8';
-                    ttsBtn.style.borderColor = '#bfdbfe';
                 } else {
                     ttsBtn.innerHTML = '🔇';
                     ttsBtn.title = 'Read Aloud: Off';
-                    ttsBtn.style.background = '#f1f5f9';
-                    ttsBtn.style.color = 'inherit';
-                    ttsBtn.style.borderColor = '#cbd5e1';
                 }
             }
         };
