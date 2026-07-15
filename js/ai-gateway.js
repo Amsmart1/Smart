@@ -581,25 +581,25 @@ class AIManager {
         };
 
         const chatHtml = `
-            <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 10px 25px rgba(0,0,0,0.05); border-radius: 12px; background: #fff;">
-                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc; gap: 10px; flex-wrap: wrap;">
+            <div class="ai-chatbot-container card p-0 flex-column" role="region" aria-label="${window.escapeAttr(title)}" style="height: 500px; max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border, #e2e8f0); box-shadow: 0 20px 50px rgba(0,0,0,0.2); border-radius: 20px; background: #fff;">
+                <div class="ai-chatbot-header p-15 border-bottom flex-between bg-light" style="border-radius: 20px 20px 0 0; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border, #e2e8f0); padding: 12px 15px; background: #f8fafc; gap: 10px; flex-wrap: wrap;">
                     <div class="flex-center-y gap-10" style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 1.5rem" aria-hidden="true">🤖</span>
                         <strong style="color: var(--p, #5b2ea6); font-size: 1.05rem;">${window.escapeHtml(title)}</strong>
                     </div>
-                    <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem; border-radius: 4px;">Clear</button>
+                    <button class="button secondary tiny w-auto ai-clear-btn" aria-label="Clear conversation history" style="margin: 0; padding: 6px 12px; font-size: 0.75rem; border-radius: 4px; width: auto !important;">Clear</button>
                 </div>
                 <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
-                <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 12px 12px;">
+                <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 20px 20px;">
                     <div class="ai-voice-toolbar mb-10 flex gap-10" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
-                        <button class="button secondary tiny w-auto ai-mic-btn" title="Start voice input" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; display:flex; align-items:center; justify-content:center;">🎙️</button>
-                        <button class="button secondary tiny w-auto ai-tts-btn" title="Toggle Read Aloud" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px;">🔇 Read Aloud: Off</button>
-                        <button class="button secondary tiny w-auto ai-handsfree-btn" title="Toggle Hands-Free continuous conversation" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px;">🎙️ Hands-Free: Off</button>
+                        <button class="button secondary tiny w-auto ai-mic-btn" title="Start voice input" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; display:flex; align-items:center; justify-content:center; width: auto !important; height: auto !important;">🎙️</button>
+                        <button class="button secondary tiny w-auto ai-tts-btn" title="Toggle Read Aloud" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; width: auto !important;">🔇 Read Aloud: Off</button>
+                        <button class="button secondary tiny w-auto ai-handsfree-btn" title="Toggle Hands-Free continuous conversation" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; width: auto !important;">🎙️ Hands-Free: Off</button>
                     </div>
                     <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
                         <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
-                        <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0;">Send</button>
+                        <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0; width: auto !important;">Send</button>
                     </div>
                     <div class="ai-char-counter text-right mt-5" aria-hidden="true" style="font-size: 10px; color: #64748b; padding-right: 15px; margin-top: 5px; text-align: right;">0 / 1000</div>
                 </div>
@@ -864,6 +864,32 @@ class AIManager {
             };
         }
     }
+}
+
+// Ensure the floating Kofi AI widget is removed from the dashboards but fully preserved on the landing page
+document.addEventListener('DOMContentLoaded', () => {
+    const isDashboard = document.body.classList.contains('student-dashboard') ||
+                        document.body.classList.contains('teacher-dashboard') ||
+                        document.body.classList.contains('admin-dashboard') ||
+                        window.location.pathname.includes('student.html') ||
+                        window.location.pathname.includes('teacher.html') ||
+                        window.location.pathname.includes('admin.html');
+    if (isDashboard) {
+        const kofiWidget = document.getElementById('kofiAIContainer');
+        if (kofiWidget) {
+            kofiWidget.remove();
+        }
+    }
+});
+
+// Provide a safe, production-grade fallback for KofiAIManager to prevent reference errors under cache-first service worker loads
+if (typeof window.KofiAIManager === 'undefined') {
+    window.KofiAIManager = {
+        renderChatbot: (containerId, options) => AIManager.renderChatbot(containerId, options),
+        clearHistory: (key) => {},
+        askKofi: async (msg) => '',
+        askKofiStream: async (msg) => ''
+    };
 }
 
 window.AIManager = AIManager;
