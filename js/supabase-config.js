@@ -1375,6 +1375,13 @@ class SupabaseDB {
             session_id: sid || '',
             sessionId: sid || ''
         };
+
+        // Also enrich the nested payload object if present to prevent any destructuring mismatches
+        if (enrichedPayload.payload && typeof enrichedPayload.payload === 'object') {
+            enrichedPayload.payload.session_id = sid || '';
+            enrichedPayload.payload.sessionId = sid || '';
+        }
+
         const { data, error } = await supabaseClient.functions.invoke(name, {
             body: enrichedPayload
         });
