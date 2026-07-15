@@ -1290,6 +1290,8 @@ class SupabaseDB {
         const updatedUser = {
             ...user,
             password: hashedTemp,
+            failed_attempts: 0,
+            locked_until: null,
             reset_request: {
                 ...user.reset_request,
                 status: 'approved',
