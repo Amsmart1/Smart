@@ -5,7 +5,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { classifyIntent, routeConversation } = require('./conversation-manager');
+const {
+  classifyIntent,
+  routeConversation,
+  filterRequestIntent,
+  runResponseQualityGuard,
+  resolveApiKey,
+  resolveModelId
+} = require('./conversation-manager');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -168,68 +175,6 @@ function loadPlatformDocs() {
 }
 
 /**
- * Searches parsed sections using weighted keyword frequencies
- */
-function findRelevantSection(query, sections) {
-  if (!query || !sections || sections.length === 0) return null;
-
-  const normalizedQuery = query.toLowerCase().trim();
-  let bestMatch = null;
-  let highestScore = 0;
-
-  const stopWords = new Set([
-    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'if', 'then', 'else',
-    'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during',
-    'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off',
-    'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
-    'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
-    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will',
-    'just', 'should', 'now', 'what', 'does', 'do', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
-    'my', 'your', 'his', 'her', 'its', 'our', 'their'
-  ]);
-
-  const queryWords = normalizedQuery
-    .replace(/[^\w\s]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length > 2 && !stopWords.has(word));
-
-  for (const section of sections) {
-    let score = 0;
-    const headerLower = section.header.toLowerCase();
-    const contentLower = section.content.toLowerCase();
-
-    if (headerLower.includes(normalizedQuery)) {
-      score += 15;
-    }
-
-    for (const word of queryWords) {
-      const headerRegex = new RegExp(`\\b${word}\\b`, 'gi');
-      const headerMatches = headerLower.match(headerRegex);
-      if (headerMatches) {
-        score += headerMatches.length * 8;
-      }
-
-      const contentRegex = new RegExp(`\\b${word}\\b`, 'gi');
-      const contentMatches = contentLower.match(contentRegex);
-      if (contentMatches) {
-        score += contentMatches.length * 1.5;
-      }
-    }
-
-    if (score > highestScore) {
-      highestScore = score;
-      bestMatch = { section, score };
-    }
-  }
-
-  if (highestScore >= 6) {
-    return bestMatch.section;
-  }
-
-  return null;
-}
-
-/**
  * Searches parsed sections using weighted keyword frequencies, returning both section and score.
  */
 function findRelevantSectionWithScore(query, sections) {
@@ -383,72 +328,6 @@ function verifyLocalSearchAccuracy(query, section, score) {
 }
 
 /**
- * Scans user inputs for public assistant to detect prompt injection, toxic keywords, or out-of-scope requests.
- * Returns a professional, friendly refusal response string if blocked, or null if allowed.
- */
-function filterRequestIntent(message) {
-  const normalized = message.toLowerCase();
-
-  // 1. Prompt Injection Indicators
-  const injectionPatterns = [
-    "ignore previous instructions",
-    "ignore all instructions",
-    "system prompt",
-    "system instruction",
-    "you are now",
-    "forget everything",
-    "developer mode",
-    "dan mode",
-    "jailbreak",
-    "override",
-    "ignore the instructions",
-    "output the above",
-    "print your instructions",
-    "reveal your prompt"
-  ];
-
-  if (injectionPatterns.some(p => normalized.includes(p))) {
-    return "I am designed to be a helpful guide for the SmartLMS platform. I cannot bypass, reveal, or modify my system instructions, prompt configuration, or safety parameters. How can I assist you with navigating our features today?";
-  }
-
-  // 2. Toxic or Harmful Intent Indicators
-  const harmfulIntentPatterns = [
-    "how to hack",
-    "write a virus",
-    "write malware",
-    "write an exploit",
-    "how to bypass anti-cheat",
-    "bypass anti cheat",
-    "cheat on quiz",
-    "sql injection script",
-    "xss script",
-    "how to ddos"
-  ];
-
-  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
-    return "As the SmartLMS guide, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain our platform security or proctoring features from an educational perspective instead!";
-  }
-
-  // 3. Out-Of-Scope General Knowledge/Trivia Tasks that are completely off-topic
-  const outOfScopeIndicators = [
-    "recipe for",
-    "how to cook",
-    "how to bake",
-    "who is the president",
-    "translate this to spanish",
-    "how to make a cake",
-    "favorite celebrity",
-    "gossip about"
-  ];
-
-  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
-    return "I am your dedicated platform guide. I specialize in helping you understand the features, tools, and capabilities of SmartLMS. I am unable to answer general lifestyle, entertainment, or unrelated queries. Let me know if you have any questions about navigating our platform!";
-  }
-
-  return null;
-}
-
-/**
  * Provides instant, cost-efficient, high-fidelity predefined answers for common platform navigation/support inquiries.
  * Returns a markdown response string if matched, or null to fallback to the Gemini model / local doc search.
  */
@@ -477,163 +356,6 @@ function findPreciseResponse(message) {
   }
 
   return null;
-}
-
-/**
- * Post-processes LLM response to guarantee safety, syntax sanity, and prevents system leaks.
- * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
- */
-function runResponseQualityGuard(response) {
-  if (!response || typeof response !== 'string') return "";
-
-  let cleaned = response;
-
-  const leakWords = [
-    "You are a professional academic tutor",
-    "Key Tutoring Principles:",
-    "Strict Academic Guardrails:",
-    "systemPrompt",
-    "systemInstruction",
-    "Course Context:",
-    "Key Platform Features",
-    "Important Constraints:",
-    "Strict Conversational Quality Check:"
-  ];
-
-  for (const leak of leakWords) {
-    if (cleaned.includes(leak)) {
-      cleaned = cleaned.split(leak)[0];
-    }
-  }
-
-  cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "configuration");
-
-  const preambles = [
-    /^sure,?\s*/i,
-    /^absolutely,?\s*/i,
-    /^i'd be happy to help with that,?\s*/i,
-    /^here is the information,?\s*/i,
-    /^as requested,?\s*/i,
-    /^certainly,?\s*/i,
-    /^no problem,?\s*/i
-  ];
-  for (const preamble of preambles) {
-    cleaned = cleaned.replace(preamble, "");
-  }
-
-  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
-
-  // Only deduplicate common redundant filler double-words
-  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
-  for (const word of doubleWords) {
-    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
-    cleaned = cleaned.replace(doubleRegex, word);
-  }
-
-  // Temporary placeholders for URLs, decimals, and ellipsis to protect them from incorrect spacing cleanups
-  const urlPlaceholders = [];
-  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
-    const idx = urlPlaceholders.length;
-    urlPlaceholders.push(match);
-    return `___URL_PLACEHOLDER_${idx}___`;
-  });
-
-  const decimalPlaceholders = [];
-  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
-    const idx = decimalPlaceholders.length;
-    decimalPlaceholders.push(match);
-    return `___DECIMAL_PLACEHOLDER_${idx}___`;
-  });
-
-  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
-
-  cleaned = cleaned.replace(/!{2,}/g, "!");
-  cleaned = cleaned.replace(/\?{2,}/g, "?");
-  cleaned = cleaned.replace(/,{2,}/g, ",");
-  cleaned = cleaned.replace(/\.{4,}/g, "...");
-  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
-
-  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
-  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
-
-  // Restore ellipsis, decimals, and URLs safely
-  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
-
-  for (let i = 0; i < decimalPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
-  }
-
-  for (let i = 0; i < urlPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
-  }
-
-  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
-
-  const codeBlockCount = (cleaned.match(/```/g) || []).length;
-  if (codeBlockCount % 2 !== 0) {
-    cleaned += "\n```";
-  }
-
-  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
-  if (inlineCodeCount % 2 !== 0) {
-    cleaned += "`";
-  }
-
-  const boldCount = (cleaned.match(/\*\*/g) || []).length;
-  if (boldCount % 2 !== 0) {
-    cleaned += "**";
-  }
-
-  const italicCount = (cleaned.match(/_/g) || []).length;
-  if (italicCount % 2 !== 0) {
-    cleaned += "_";
-  }
-
-  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
-
-  return cleaned.trim();
-}
-
-/**
- * Resolves appropriate Gemini API Key. Supports fallbacks.
- */
-function resolveApiKey(type, payload = {}) {
-  const projectId = payload.project_id || payload.projectId || payload.course_id;
-  if (projectId) {
-    const projectEnvKey = `GEMINI_PROJECT_${String(projectId).toUpperCase().replace(/[^A-Z0-9_]/g, '_')}_API_KEY`;
-    if (process.env[projectEnvKey]) {
-      return process.env[projectEnvKey];
-    }
-  }
-
-  const featureKeys = {
-    tutor: process.env.GEMINI_COURSE_TUTOR_API_KEY,
-    generate_assessment: process.env.GEMINI_ASSESSMENT_API_KEY,
-    grading: process.env.GEMINI_GRADING_API_KEY,
-    analytics: process.env.GEMINI_ANALYTICS_API_KEY,
-    kofi: process.env.GEMINI_PLATFORM_API_KEY,
-    voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY
-  };
-
-  if (featureKeys[type]) {
-    return featureKeys[type];
-  }
-
-  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
-         process.env.GEMINI_COURSE_TUTOR_API_KEY ||
-         process.env.GEMINI_PLATFORM_API_KEY ||
-         process.env.GEMINI_API_KEY ||
-         process.env.GEMINI_VOICE_API_KEY ||
-         process.env.GEMINI_EMBEDDING_API_KEY;
-}
-
-/**
- * Resolves dynamic model ID, strictly mapping core project models to "gemini-3.1-flash-lite".
- */
-function resolveModelId(type, payload = {}) {
-  return "gemini-3.1-flash-lite";
 }
 
 module.exports = async function handler(req, res) {
@@ -684,7 +406,7 @@ module.exports = async function handler(req, res) {
     }
 
     // A. Request Filtering and Polish Guard (XSS, Injection, Out of Scope) - Absolutely first to prevent prompt injection!
-    const filterRefusal = filterRequestIntent(message);
+    const filterRefusal = filterRequestIntent(message, 'kofi');
     if (filterRefusal) {
       console.log(`[Kofi AI Filter] Intercepted toxic or out-of-scope query: "${message}"`);
       const classification = classifyIntent(message);
@@ -724,7 +446,7 @@ module.exports = async function handler(req, res) {
     const decision = routeConversation(message);
     if (decision.action !== 'fallback') {
       console.log(`[Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
-      const polishedText = runResponseQualityGuard(decision.content);
+      const polishedText = runResponseQualityGuard(decision.content, 'kofi');
       res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         content: polishedText,
@@ -775,7 +497,7 @@ module.exports = async function handler(req, res) {
       if (matchedResult && localAccuracyResult && localAccuracyResult.isAccurate) {
         console.log(`[Kofi AI Local Search] Bypassing Gemini. Matched accurately: "${matchedResult.section.header}" (Score: ${matchedResult.score})`);
         const contentText = `**${matchedResult.section.header}**\n\n${matchedResult.section.content}`;
-        const polishedText = runResponseQualityGuard(contentText);
+        const polishedText = runResponseQualityGuard(contentText, 'kofi');
 
         res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -794,7 +516,7 @@ module.exports = async function handler(req, res) {
       } else if (local_only || search_type === 'local' || !apiKey) {
         console.log(`[Kofi AI Local Search] Bypassing Gemini but no accurate match was found.`);
         const fallbackText = "I couldn't find a sufficiently accurate match in our platform documentation to answer your question directly. Please try rephrasing your query or let me know how I can help you navigate SmartLMS features!";
-        const polishedText = runResponseQualityGuard(fallbackText);
+        const polishedText = runResponseQualityGuard(fallbackText, 'kofi');
 
         res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -962,7 +684,7 @@ ${message}`;
   }
 
   // 4. Post-Process the generated response with Quality Guard
-  let polishedText = runResponseQualityGuard(contentText);
+  let polishedText = runResponseQualityGuard(contentText, 'kofi');
 
   console.log(`[Single Pass Accuracy Checked] Accurate: ${isAccurate}. Reason: ${reason}`);
 
@@ -1138,7 +860,7 @@ ${prompt}`;
   }
 
   // Deliver the final unified polished response matching all quality guard standards!
-  const polishedText = runResponseQualityGuard(fullResponseText || "Sorry, I am unable to generate a response at this moment.");
+  const polishedText = runResponseQualityGuard(fullResponseText || "Sorry, I am unable to generate a response at this moment.", 'kofi');
   res.write(`data: ${JSON.stringify({ final: polishedText })}\n\n`);
   res.end();
 }
