@@ -592,14 +592,23 @@ class AIManager {
                 <div class="ai-chat-messages flex-1 p-15 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages" style="background: #f8fafc; flex: 1; overflow-y: auto; padding: 15px;">
                 </div>
                 <div class="ai-chat-input p-10 border-top bg-white" style="border-top: 1px solid var(--border, #e2e8f0); background: #fff; padding: 10px; border-radius: 0 0 20px 20px;">
-                    <div class="ai-voice-toolbar mb-10 flex gap-10" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
-                        <button class="button secondary tiny w-auto ai-mic-btn" title="Start voice input" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; display:flex; align-items:center; justify-content:center; width: auto !important; height: auto !important;">🎙️</button>
-                        <button class="button secondary tiny w-auto ai-tts-btn" title="Toggle Read Aloud" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; width: auto !important;">🔇 Read Aloud: Off</button>
-                        <button class="button secondary tiny w-auto ai-handsfree-btn" title="Toggle Hands-Free continuous conversation" style="margin:0; padding:6px 12px; font-size:0.75rem; border-radius:12px; width: auto !important;">🎙️ Hands-Free: Off</button>
-                    </div>
-                    <div class="flex gap-10" style="display: flex; gap: 10px; align-items: center;">
-                        <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; border-radius: 20px; padding: 10px 15px; border: 1px solid #cbd5e1; outline: none; margin: 0; font-size: 0.9rem;">
-                        <button class="button small w-auto ai-send-btn" aria-label="Send message" style="border-radius: 20px; padding: 8px 20px; font-weight: 600; margin: 0; width: auto !important;">Send</button>
+                    <div class="flex gap-10 align-items-center" style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: nowrap; width: 100%;">
+
+                        <!-- Small Round Voice controls -->
+                        <div class="ai-voice-controls-row" style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+                            <button class="ai-tts-btn circular-voice-btn" title="Toggle Read Aloud" aria-label="Toggle Read Aloud" style="width: 34px !important; height: 34px !important; border-radius: 50% !important; border: 1px solid #cbd5e1 !important; background: #f1f5f9; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 34px !important; box-shadow: 0 1px 2px rgba(0,0,0,0.05); outline: none;">🔇</button>
+                            <button class="ai-handsfree-btn circular-voice-btn" title="Toggle Hands-Free continuous conversation" aria-label="Toggle Hands-Free" style="width: 34px !important; height: 34px !important; border-radius: 50% !important; border: 1px solid #cbd5e1 !important; background: #f1f5f9; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 34px !important; box-shadow: 0 1px 2px rgba(0,0,0,0.05); outline: none;">🎙️</button>
+                        </div>
+
+                        <!-- WhatsApp style Input Box containing Mic and text field -->
+                        <div class="whatsapp-input-wrapper" style="display: flex; align-items: center; flex: 1; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 24px; padding: 2px 8px 2px 4px; min-width: 0; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); height: 38px; box-sizing: border-box;">
+                            <button class="ai-mic-btn circular-mic-btn" title="Start voice input" aria-label="Start voice input" style="width: 30px !important; height: 30px !important; border-radius: 50% !important; border: none !important; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; padding: 0 !important; margin: 0 !important; transition: all 0.2s; flex-shrink: 0 !important; min-width: 30px !important; outline: none;">🎙️</button>
+                            <input type="text" class="m-0 ai-input-field" placeholder="${window.escapeAttr(placeholder)}" maxlength="1000" aria-label="Type your message" style="flex: 1; background: transparent !important; border: none !important; outline: none !important; box-shadow: none !important; margin: 0 !important; padding: 6px 8px !important; font-size: 0.85rem; height: 100%; min-width: 0 !important;">
+                        </div>
+
+                        <!-- Send Button -->
+                        <button class="button small ai-send-btn" aria-label="Send message" style="border-radius: 20px !important; padding: 8px 16px !important; font-weight: 600; margin: 0 !important; width: auto !important; height: 36px !important; flex-shrink: 0 !important; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; background: var(--p, #5b2ea6); color: white;">Send</button>
+
                     </div>
                     <div class="ai-char-counter text-right mt-5" aria-hidden="true" style="font-size: 10px; color: #64748b; padding-right: 15px; margin-top: 5px; text-align: right;">0 / 1000</div>
                 </div>
@@ -741,16 +750,14 @@ class AIManager {
             // Mic button styling
             if (state.status === 'listening') {
                 if (micBtn) {
-                    micBtn.style.background = '#ef4444';
-                    micBtn.style.borderColor = '#ef4444';
-                    micBtn.style.color = '#fff';
+                    micBtn.style.background = '#fecaca';
+                    micBtn.style.color = '#ef4444';
                     micBtn.innerHTML = '🛑';
                     micBtn.title = 'Stop listening';
                 }
             } else {
                 if (micBtn) {
-                    micBtn.style.background = '#f1f5f9';
-                    micBtn.style.borderColor = '#cbd5e1';
+                    micBtn.style.background = 'transparent';
                     micBtn.style.color = 'inherit';
                     micBtn.innerHTML = '🎙️';
                     micBtn.title = 'Start voice input';
@@ -760,12 +767,14 @@ class AIManager {
             // Handsfree button styling
             if (handsFreeBtn) {
                 if (window.voiceEngine && window.voiceEngine.settings.conversationMode) {
-                    handsFreeBtn.textContent = '🎙️ Hands-Free: On';
+                    handsFreeBtn.innerHTML = '🟢';
+                    handsFreeBtn.title = 'Hands-Free: On';
                     handsFreeBtn.style.background = '#dcfce7';
                     handsFreeBtn.style.color = '#15803d';
                     handsFreeBtn.style.borderColor = '#bbf7d0';
                 } else {
-                    handsFreeBtn.textContent = '🎙️ Hands-Free: Off';
+                    handsFreeBtn.innerHTML = '🎙️';
+                    handsFreeBtn.title = 'Hands-Free: Off';
                     handsFreeBtn.style.background = '#f1f5f9';
                     handsFreeBtn.style.color = 'inherit';
                     handsFreeBtn.style.borderColor = '#cbd5e1';
@@ -775,12 +784,14 @@ class AIManager {
             // TTS Read Aloud button styling
             if (ttsBtn) {
                 if (ttsEnabled) {
-                    ttsBtn.textContent = '🔊 Read Aloud: On';
+                    ttsBtn.innerHTML = '🔊';
+                    ttsBtn.title = 'Read Aloud: On';
                     ttsBtn.style.background = '#dbeafe';
                     ttsBtn.style.color = '#1d4ed8';
                     ttsBtn.style.borderColor = '#bfdbfe';
                 } else {
-                    ttsBtn.textContent = '🔇 Read Aloud: Off';
+                    ttsBtn.innerHTML = '🔇';
+                    ttsBtn.title = 'Read Aloud: Off';
                     ttsBtn.style.background = '#f1f5f9';
                     ttsBtn.style.color = 'inherit';
                     ttsBtn.style.borderColor = '#cbd5e1';
