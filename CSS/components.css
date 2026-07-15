@@ -823,3 +823,18 @@ body:not(.landing-page) .ai-chatbot-container .ai-send-btn {
         padding: 4px 10px !important;
     }
 }
+
+/* Stacking flex-between elements inside dashboard content areas on narrow viewports */
+@media (max-width: 480px) {
+    body:not(.landing-page) .content-area .flex-between {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+    }
+    body:not(.landing-page) .content-area .flex-between .text-right {
+        text-align: left !important;
+    }
+    body:not(.landing-page) .content-area .flex-between .button.w-auto {
+        width: 100% !important;
+    }
+}

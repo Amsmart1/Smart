@@ -10,6 +10,24 @@
     <script src="js/core.js"></script>
     <script src="js/ai-gateway.js"></script>
     <script src="js/kofi-ai-manager.js"></script>
+    <style>
+        .verification-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+        }
+        @media (max-width: 768px) {
+            .verification-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+        }
+        @media (max-width: 480px) {
+            body {
+                padding: 10px !important;
+            }
+        }
+    </style>
 </head>
 <body style="background: #f1f5f9; font-family: 'Inter', sans-serif; padding: 40px;">
     <div style="max-width: 1200px; margin: 0 auto;">
@@ -29,7 +47,7 @@
             </div>
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 40px;">
+        <div class="verification-grid">
             <!-- Column 1: AIManager (Enterprise Gateway Assistant) -->
             <div>
                 <h2 style="color: #475569; font-size: 1.25rem; margin-bottom: 15px; text-align: center;">Enterprise AI Tutor (AIManager)</h2>
