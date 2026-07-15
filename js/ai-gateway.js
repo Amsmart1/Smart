@@ -422,6 +422,12 @@ class AIManager {
      * Feature 6: Knowledge Base Indexing
      */
     static async indexCourse(courseId) {
+        if (typeof window !== 'undefined' && window.SupabaseDB && typeof window.SupabaseDB.invokeFunction === 'function') {
+            return await window.SupabaseDB.invokeFunction('ai-gateway', {
+                type: 'index_course',
+                payload: { course_id: courseId }
+            });
+        }
         return await this._invoke('index_course', { course_id: courseId });
     }
 
