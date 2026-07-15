@@ -882,4 +882,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+// Provide a safe, production-grade fallback for KofiAIManager to prevent reference errors under cache-first service worker loads
+if (typeof window.KofiAIManager === 'undefined') {
+    window.KofiAIManager = {
+        renderChatbot: (containerId, options) => AIManager.renderChatbot(containerId, options),
+        clearHistory: (key) => {},
+        askKofi: async (msg) => '',
+        askKofiStream: async (msg) => ''
+    };
+}
+
 window.AIManager = AIManager;
