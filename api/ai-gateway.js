@@ -241,7 +241,8 @@ module.exports = async function handler(req, res) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: `models/${cleanEmbeddingModel}`,
-              content: { parts: [{ text: message }] }
+              content: { parts: [{ text: message }] },
+              outputDimensionality: 768
             })
           });
 
@@ -676,7 +677,8 @@ async function handleIndexCourse(payload, res) {
         body: JSON.stringify({
           requests: batch.map(c => ({
             model: `models/${cleanEmbeddingModel}`,
-            content: { parts: [{ text: c.content }] }
+            content: { parts: [{ text: c.content }] },
+            outputDimensionality: 768
           }))
         })
       });
@@ -1137,7 +1139,8 @@ async function handleGenerateEmbedding(payload, res) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: `models/${cleanEmbeddingModel}`,
-        content: { parts: [{ text }] }
+        content: { parts: [{ text }] },
+        outputDimensionality: 768
       })
     });
 
@@ -1176,7 +1179,8 @@ async function handleGenerateBatchEmbeddings(payload, res) {
       body: JSON.stringify({
         requests: texts.map(text => ({
           model: `models/${cleanEmbeddingModel}`,
-          content: { parts: [{ text }] }
+          content: { parts: [{ text }] },
+          outputDimensionality: 768
         }))
       })
     });
