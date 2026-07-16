@@ -3893,23 +3893,54 @@ async function indexMaterialForAI(materialId, courseId) {
           <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
             <input type="checkbox" id="optLessons" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Lessons (Lesson 1, Lesson A...)
           </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optOther" style="margin: 0; width: 16px; height: 16px; cursor: pointer;" onchange="document.getElementById('otherInputContainer').style.display = this.checked ? 'block' : 'none'"> Other (Custom structural division)
+          </label>
+          <div id="otherInputContainer" style="display: none; margin-top: 5px; padding-left: 10px;">
+            <input type="text" id="txtOtherStructure" placeholder="e.g. Appendix, Annex, Part, Unit" style="margin: 0; padding: 8px 12px; font-size: 0.85rem; border-radius: 6px; border: 1px solid #cbd5e1; width: 100%; box-sizing: border-box;">
+          </div>
         </div>
       </div>
     `;
 
-    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true, 'Confirm & Index', 'button')) return;
+    let chunk_options = [];
+    const preConfirm = (backdrop) => {
+        chunk_options = [];
+        const optChapters = backdrop.querySelector('#optChapters')?.checked;
+        const optSections = backdrop.querySelector('#optSections')?.checked;
+        const optTopics = backdrop.querySelector('#optTopics')?.checked;
+        const optWeeks = backdrop.querySelector('#optWeeks')?.checked;
+        const optLessons = backdrop.querySelector('#optLessons')?.checked;
+        const optOther = backdrop.querySelector('#optOther')?.checked;
+        const txtOther = backdrop.querySelector('#txtOtherStructure')?.value.trim();
 
-    const chunk_options = [];
-    if (document.getElementById('optChapters')?.checked) chunk_options.push('chapter', 'chapters');
-    if (document.getElementById('optSections')?.checked) chunk_options.push('section', 'sections');
-    if (document.getElementById('optTopics')?.checked) chunk_options.push('topic', 'topics');
-    if (document.getElementById('optWeeks')?.checked) chunk_options.push('week', 'weeks');
-    if (document.getElementById('optLessons')?.checked) chunk_options.push('lesson', 'lessons');
+        if (optChapters) chunk_options.push('chapter', 'chapters');
+        if (optSections) chunk_options.push('section', 'sections');
+        if (optTopics) chunk_options.push('topic', 'topics');
+        if (optWeeks) chunk_options.push('week', 'weeks');
+        if (optLessons) chunk_options.push('lesson', 'lessons');
 
-    if (chunk_options.length === 0) {
-        UI.showNotification('You must select at least one document structure option.', 'warn');
-        return;
-    }
+        if (optOther) {
+            if (!txtOther) {
+                UI.showNotification('Please specify the preferred custom structure for "Other".', 'warn');
+                return false; // Prevent closing
+            }
+            const lowerOther = txtOther.toLowerCase();
+            chunk_options.push(lowerOther);
+            if (!lowerOther.endsWith('s')) {
+                chunk_options.push(lowerOther + 's');
+            }
+        }
+
+        if (chunk_options.length === 0) {
+            UI.showNotification('You must select at least one document structure option.', 'warn');
+            return false; // Prevent closing
+        }
+
+        return true; // Dismiss modal
+    };
+
+    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true, 'Confirm & Index', 'button', preConfirm)) return;
 
     UI.showNotification('Extracting and embedding PDF with custom structural boundaries. This may take a few moments...', 'info');
     try {

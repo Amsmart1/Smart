@@ -491,7 +491,7 @@ const UI = {
         `;
     },
 
-    confirm(message, title = 'Confirm Action', isHtml = false, confirmText = 'Confirm', confirmClass = 'button danger') {
+    confirm(message, title = 'Confirm Action', isHtml = false, confirmText = 'Confirm', confirmClass = 'button danger', preConfirm = null) {
         return new Promise((resolve) => {
             const backdrop = document.createElement('div');
             backdrop.className = 'modal-backdrop';
@@ -507,7 +507,16 @@ const UI = {
                 </div>
             `;
             document.body.appendChild(backdrop);
-            document.getElementById('confirmYes').onclick = () => { backdrop.remove(); resolve(true); };
+            document.getElementById('confirmYes').onclick = async () => {
+                let ok = true;
+                if (typeof preConfirm === 'function') {
+                    ok = await preConfirm(backdrop);
+                }
+                if (ok !== false) {
+                    backdrop.remove();
+                    resolve(true);
+                }
+            };
             document.getElementById('confirmNo').onclick = () => { backdrop.remove(); resolve(false); };
         });
     },
