@@ -25,9 +25,9 @@ serve(async (req) => {
     // Never fall back to SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY if not explicitly defined
     const gatewaySecret = Deno.env.get('AI_GATEWAY_SECRET');
 
-if (!gatewaySecret) {
-  throw new Error('Missing environment variable: AI_GATEWAY_SECRET');
-}
+    if (!gatewaySecret) {
+      throw new Error('Missing environment variable: AI_GATEWAY_SECRET');
+    }
     const { type, payload } = await req.json();
 
     if (!type || !payload) {
@@ -139,13 +139,23 @@ if (!gatewaySecret) {
           context = matches.map((m: any) => m.content).join('\n---\n');
       } else {
           // Fallback to basic retrieval if no semantic matches (e.g., Knowledge Base not indexed)
-          const [{ data: materials }, { data: lessons }] = await Promise.all([
+          const [
+              { data: materials },
+              { data: lessons },
+              { data: topics },
+              { data: course }
+          ] = await Promise.all([
               supabaseClient.from('materials').select('title, description').eq('course_id', course_id).limit(5),
-              supabaseClient.from('lessons').select('title, content').eq('course_id', course_id).limit(5)
+              supabaseClient.from('lessons').select('title, content').eq('course_id', course_id).limit(5),
+              supabaseClient.from('topics').select('title, description').eq('course_id', course_id).limit(5),
+              supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
           ]);
 
-          // Safe fallbacks for materials and lessons to prevent mapping errors if null
+          const courseCtx = course ? `Course: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}\n\n` : '';
+
           context = [
+              courseCtx,
+              ...(topics || []).map((t: any) => `Topic: ${t.title}\nDescription: ${t.description || ''}`),
               ...(materials || []).map((m: any) => `Material: ${m.title} - ${m.description}`),
               ...(lessons || []).map((l: any) => `Lesson: ${l.title}\nContent: ${l.content}`)
           ].join('\n\n');
@@ -160,24 +170,83 @@ if (!gatewaySecret) {
       const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('course_id', course_id);
       if (deleteError) throw new Error(`Failed to clear existing index: ${deleteError.message}`);
 
-      // Fetch all materials and lessons for the course
-      const [{ data: materials }, { data: lessons }] = await Promise.all([
-          supabaseClient.from('materials').select('id, title, description, file_url').eq('course_id', course_id),
-          supabaseClient.from('lessons').select('id, title, content').eq('course_id', course_id)
+      // Fetch all materials, lessons, topics, and course details
+      const [
+          { data: materials },
+          { data: lessons },
+          { data: topics },
+          { data: course }
+      ] = await Promise.all([
+          supabaseClient.from('materials').select('id, title, description, file_url, file_type').eq('course_id', course_id),
+          supabaseClient.from('lessons').select('id, title, content, topic_id').eq('course_id', course_id),
+          supabaseClient.from('topics').select('id, title, description').eq('course_id', course_id),
+          supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
       ]);
 
       const chunks: any[] = [];
 
+      // Index course info itself
+      if (course) {
+          chunks.push({
+              course_id: course_id,
+              content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+              metadata: { type: 'course', title: course.title }
+          });
+      }
+
+      // Index topics
+      if (topics) {
+          topics.forEach((t: any) => {
+              chunks.push({
+                  course_id: course_id,
+                  content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+                  metadata: { type: 'topic', title: t.title, topic_id: t.id }
+              });
+          });
+      }
+
+      // Index lessons
+      if (lessons) {
+          // Build topics map for lookup
+          const topicsMap: Record<string, string> = {};
+          if (topics) {
+              topics.forEach((t: any) => {
+                  topicsMap[t.id] = t.title;
+              });
+          }
+
+          lessons.forEach((l: any) => {
+              const content = l.content || '';
+              const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
+              const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
+              const chunkSize = 2000;
+              for (let i = 0; i < content.length; i += chunkSize) {
+                  chunks.push({
+                      lesson_id: l.id,
+                      course_id: course_id,
+                      content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+                      metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
+                  });
+              }
+          });
+      }
+
       if (materials) {
           for (const m of materials) {
               const fileUrl = m.file_url || '';
+              const fileType = m.file_type || '';
               let isPdf = false;
-              try {
-                  const urlObj = new URL(fileUrl);
-                  const pathOnly = urlObj.pathname.toLowerCase();
-                  isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf');
-              } catch (e) {
-                  isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+
+              if (fileType.toLowerCase().includes('pdf')) {
+                  isPdf = true;
+              } else {
+                  try {
+                      const urlObj = new URL(fileUrl);
+                      const pathOnly = urlObj.pathname.toLowerCase();
+                      isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf') || urlObj.search.toLowerCase().includes('.pdf');
+                  } catch (e) {
+                      isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+                  }
               }
 
               if (isPdf) {
@@ -200,31 +269,59 @@ if (!gatewaySecret) {
                           const pdfText = extractResult.text || '';
 
                           if (pdfText.trim().length > 0) {
-                              // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
-                              const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                              // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
+                              const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|chapters|section|sections|topic|topics|week|weeks|lesson|lessons)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
                               const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
                               const parsedChunks: string[] = [];
 
-                              let currentSegment = "";
                               for (const segment of rawSegments) {
-                                  if (currentSegment && (currentSegment.length + segment.length > 2500)) {
-                                      parsedChunks.push(currentSegment);
-                                      currentSegment = segment;
+                                  if (segment.length > 2500) {
+                                      // Split large segment cleanly
+                                      let start = 0;
+                                      while (start < segment.length) {
+                                          let end = start + 2500;
+                                          if (end < segment.length) {
+                                              const lastBreak = segment.lastIndexOf('\n', end);
+                                              if (lastBreak > start + 1000) {
+                                                  end = lastBreak;
+                                              } else {
+                                                  const lastPeriod = segment.lastIndexOf('. ', end);
+                                                  if (lastPeriod > start + 1000) {
+                                                      end = lastPeriod + 2;
+                                                  }
+                                              }
+                                          } else {
+                                              end = segment.length;
+                                          }
+                                          parsedChunks.push(segment.substring(start, end).trim());
+                                          start = end;
+                                      }
                                   } else {
-                                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                                      parsedChunks.push(segment);
                                   }
-                              }
-                              if (currentSegment) {
-                                  parsedChunks.push(currentSegment);
                               }
 
                               let chunkIndex = 0;
                               for (const chunkText of parsedChunks) {
+                                  // Detect structure type
+                                  let structureType = 'segment';
+                                  const firstWords = chunkText.substring(0, 50).toLowerCase();
+                                  if (firstWords.includes('chapter')) structureType = 'chapter';
+                                  else if (firstWords.includes('section')) structureType = 'section';
+                                  else if (firstWords.includes('topic')) structureType = 'topic';
+                                  else if (firstWords.includes('week')) structureType = 'week';
+                                  else if (firstWords.includes('lesson')) structureType = 'lesson';
+
                                   chunks.push({
                                       material_id: m.id,
                                       course_id: course_id,
-                                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
-                                      metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
+                                      content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                                      metadata: {
+                                          type: 'material_pdf',
+                                          title: m.title,
+                                          chunk_index: chunkIndex++,
+                                          structure_type: structureType
+                                      }
                                   });
                               }
                               continue; // Skip the metadata fallback since we successfully indexed the PDF content
@@ -244,19 +341,6 @@ if (!gatewaySecret) {
               });
           }
       }
-
-      lessons?.forEach((l: any) => {
-          const content = l.content || '';
-          const chunkSize = 2000;
-          for (let i = 0; i < content.length; i += chunkSize) {
-              chunks.push({
-                  lesson_id: l.id,
-                  course_id: course_id,
-                  content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-                  metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
-              });
-          }
-      });
 
       if (chunks.length === 0) {
           return new Response(JSON.stringify({ message: 'No content to index for this course.' }), {
