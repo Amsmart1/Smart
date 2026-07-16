@@ -479,6 +479,23 @@ module.exports = async function handler(req, res) {
       const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
       const { course_id, message } = payload;
 
+      // Query course title if not already provided to ensure the tutor is course-aware of its own subject and title
+      if (!payload.course_title) {
+        try {
+          const courseRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}`, {
+            headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          });
+          if (courseRes.ok) {
+            const courseData = await courseRes.json();
+            if (courseData && courseData.length > 0) {
+              payload.course_title = courseData[0].title;
+            }
+          }
+        } catch (courseError) {
+          console.warn('Failed to query course title in Vercel RAG step:', courseError);
+        }
+      }
+
       // 1. Generate embedding for user message using configured embedding model
       const apiKey = resolveApiKey('generate_embedding', payload);
       const embeddingModel = resolveModelId('generate_embedding', payload);
@@ -685,18 +702,16 @@ async function handleCourseTutor(payload, res) {
   const apiKey = resolveApiKey('tutor', payload);
   const tutorModel = resolveModelId('tutor', payload);
 
-  const systemPrompt = `You are an expert academic tutor supporting Ghanaian SHS learners for this course.
-  Your goal is to provide high-quality, conversational tutoring.
-   Explain concepts clearly.
-   Build learner understanding progressively.
-   Connect explanations to classroom and real wold or family contexts where applicable.
+  const courseTitle = payload.course_title || 'this course';
+  const systemPrompt = `You are an expert academic tutor supporting Ghanaian SHS learners for the course "${courseTitle}".
+  Your goal is to provide high-quality, conversational tutoring. Explain concepts clearly and build learner understanding progressively. Connect explanations to classroom, real-world, or family contexts where applicable.
 
   Your teaching approach must align with:
 - Ghana Education Service (GES) curriculum expectations.
-- SHS learning standard.
-- WASSCE examination preparations where relevant
-  Use the provided course context to answer student questions. If information is missing, state that the course material or lesson does not contain the answer and provide general academic guidance where appropriate.
-  Never invent course-specific facts.
+- SHS learning standards.
+- WASSCE examination preparations where relevant.
+
+  Use the provided course context to answer student questions. If information is missing, state that the course material or lesson does not contain the answer and provide general academic guidance where appropriate. Never invent course-specific facts.
 
   Key Tutoring Principles:
   1. Conversational Style: Be encouraging, clear, and professional.
@@ -707,12 +722,7 @@ async function handleCourseTutor(payload, res) {
   - You have absolutely NO access to quizzes, exams, assignments, student submissions, grades, secrets, personal or private data.
   - If a student asks about their grades, specific assignment answers, quiz solutions, submission statuses, secrets, personal or private data, you MUST politely explain that you do not have access to that information and can only assist them in learning and understanding the course concepts, lessons, and materials.
   - Do not make up answers. If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
-  - Strict Conversational Quality Check:
-    * Grammar and Sentence Structure: Always use flawless grammar, perfect spelling, precise punctuation, elegant sentence structure, consistent verb tenses, and correct subject-verb agreements.
-    * Removing Fillers and Repetitions: Never use filler words (such as "actually", "basically", "honestly", "literally", "essentially", "simply", "just", "you know"). Do not repeat words, phrases, or points.
-    * Conciseness and Tone: Keep your responses highly concise, direct, and focused. Maintain professional, friendly teacher tone suitable for students.
-    * Request vs Response Checking: Ensure that your response matches the user's request precisely without off-topic preamble or generic robotic intros. Always check your response draft against user's request before delivery.
-    * Precision Over Explanations: Prioritize precise, high-fidelity facts and direct guidance over long, verbose explanations.
+  - Strict Conversational Quality Check: Always use flawless grammar, perfect spelling, and elegant sentence structure. Maintain a professional, friendly teacher tone suitable for students. Keep your responses highly concise, direct, and focused. Match the user's request precisely without off-topic preambles or generic robotic intros. Prioritize precise, high-fidelity facts and direct guidance.
 
   Course Context:
   ${context.substring(0, 15000)}`;

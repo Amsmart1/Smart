@@ -1044,6 +1044,9 @@ class SupabaseDB {
 
     static async saveLesson(lesson) {
         const data = await this._upsert('lessons', lesson);
+        if (lesson && lesson.course_id && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(lesson.course_id).catch(err => console.warn('Background auto-indexing failed:', err));
+        }
         return data?.[0];
     }
 
@@ -1074,6 +1077,9 @@ class SupabaseDB {
     static async saveMaterial(material) {
         const data = await this._upsert('materials', material);
         _cache.invalidate('lessons');
+        if (material && material.course_id && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(material.course_id).catch(err => console.warn('Background auto-indexing failed:', err));
+        }
         return data?.[0];
     }
 
