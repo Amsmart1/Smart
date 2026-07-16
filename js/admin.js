@@ -2690,8 +2690,62 @@ async function renderSystem() {
             </ul>
           </div>
         </div>
+
+        <div class="card mt-20" id="adminNetworkStabilityCard">
+          <h4>Client Network Stability (Monitoring & Oversight)</h4>
+          <p class="small text-muted mb-15">Real-time indicators from the standalone network stability detection engine.</p>
+          <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+            <div class="stat-card p-10" style="padding: 12px; border-radius: 8px;">
+              <h5 class="m-0 text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Engine Status</h5>
+              <div class="value mt-5" id="admin-net-status" style="font-size: 1.1rem; font-weight: 700;">--</div>
+            </div>
+            <div class="stat-card p-10" style="padding: 12px; border-radius: 8px;">
+              <h5 class="m-0 text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Probe Latency</h5>
+              <div class="value mt-5" id="admin-net-latency" style="font-size: 1.1rem; font-weight: 700;">--</div>
+            </div>
+            <div class="stat-card p-10" style="padding: 12px; border-radius: 8px;">
+              <h5 class="m-0 text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Probe Jitter</h5>
+              <div class="value mt-5" id="admin-net-jitter" style="font-size: 1.1rem; font-weight: 700;">--</div>
+            </div>
+            <div class="stat-card p-10" style="padding: 12px; border-radius: 8px;">
+              <h5 class="m-0 text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Packet Loss</h5>
+              <div class="value mt-5" id="admin-net-loss" style="font-size: 1.1rem; font-weight: 700;">--</div>
+            </div>
+            <div class="stat-card p-10" style="padding: 12px; border-radius: 8px;">
+              <h5 class="m-0 text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Est. Bandwidth</h5>
+              <div class="value mt-5" id="admin-net-bandwidth" style="font-size: 1.1rem; font-weight: 700;">--</div>
+            </div>
+          </div>
+        </div>
       </section>
     `;
+
+    // Set up real-time live-update routine for system info network stability monitoring card
+    const updateAdminNetStabilityUI = () => {
+        const statusEl = document.getElementById('admin-net-status');
+        if (!statusEl) return; // Not on the system page anymore
+
+        const details = window.NetworkStabilityEngine ? window.NetworkStabilityEngine.getDetails() : null;
+        if (!details) return;
+
+        statusEl.textContent = details.status;
+        document.getElementById('admin-net-latency').textContent = details.navigatorOnLine ? `${details.latency} ms` : 'N/A';
+        document.getElementById('admin-net-jitter').textContent = details.navigatorOnLine ? `${details.jitter} ms` : 'N/A';
+        document.getElementById('admin-net-loss').textContent = `${details.packetLoss}%`;
+        document.getElementById('admin-net-bandwidth').textContent = typeof details.bandwidth === 'number' ? `${details.bandwidth} Mbps` : details.bandwidth;
+    };
+
+    // Update immediately and schedule periodic checks
+    setTimeout(updateAdminNetStabilityUI, 50);
+    const systemInterval = setInterval(() => {
+        const el = document.getElementById('adminNetworkStabilityCard');
+        if (!el) {
+            clearInterval(systemInterval);
+            return;
+        }
+        updateAdminNetStabilityUI();
+    }, 2000);
+
   } catch (error) {
     console.error('System Info error:', error);
     content.innerHTML = `<div class="card danger-border">
