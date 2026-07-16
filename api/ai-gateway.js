@@ -282,19 +282,32 @@ module.exports = async function handler(req, res) {
       if (!context) {
         // Fallback to basic retrieval using REST API endpoints
         try {
-          const [matRes, lesRes] = await Promise.all([
+          const [matRes, lesRes, topRes, courseRes] = await Promise.all([
             fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&limit=5`, {
               headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
             }),
             fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            }),
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&limit=5`, {
+              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+            }),
+            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}`, {
               headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
             })
           ]);
 
           const materials = matRes.ok ? await matRes.json() : [];
           const lessons = lesRes.ok ? await lesRes.json() : [];
+          const topics = topRes.ok ? await topRes.json() : [];
+          const courseData = courseRes.ok ? await courseRes.json() : [];
+          const course = courseData?.[0] || null;
+
+          const courseCtx = course ? `Course: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}\n\n` : '';
 
           context = [
+            courseCtx,
+            ...(topics || []).map(t => `Topic: ${t.title}\nDescription: ${t.description || ''}`),
             ...(materials || []).map(m => `Material: ${m.title} - ${m.description}`),
             ...(lessons || []).map(l => `Lesson: ${l.title}\nContent: ${l.content}`)
           ].join('\n\n');
@@ -427,11 +440,20 @@ async function handleCourseTutor(payload, res) {
   Your goal is to provide high-quality, conversational tutoring. Explain concepts clearly and build learner understanding progressively. Connect explanations to classroom, real-world, or family contexts where applicable.
 
   Your teaching approach must align with:
-- Ghana Education Service (GES) curriculum expectations.
-- SHS learning standards.
-- WASSCE examination preparations where relevant.
+  - Ghana Education Service (GES) curriculum expectations.
+  - SHS learning standards.
+  - WASSCE examination preparations where relevant.
 
   Use the provided course context to answer student questions. If information is missing, state that the course material or lesson does not contain the answer and provide general academic guidance where appropriate. Never invent course-specific facts.
+
+  Classroom Teacher Feedback Integration:
+  - If the student shares classroom teacher feedback, grade comments, or scores from an assignment or quiz, act as their supportive tutor explaining the feedback constructively. Highlight conceptual gaps, correct terminology errors, and provide step-by-step guidance to help them master the topics and improve.
+
+  Strict Token Bloat Prevention Rules:
+  - Do not repeat or restate the student's question or the provided teacher feedback in your response.
+  - Keep explanations highly direct, concise, and academically focused.
+  - Avoid wordy preambles, generic robotic intros, or repetitive summaries.
+  - Limit responses to a maximum of 3-4 highly informative paragraphs, utilizing bullet points for step-by-step clarity.
 
   Key Tutoring Principles:
   1. Conversational Style: Be encouraging, clear, and professional.
@@ -442,7 +464,7 @@ async function handleCourseTutor(payload, res) {
   - You have absolutely NO access to quizzes, exams, assignments, student submissions, grades, secrets, personal or private data.
   - If a student asks about their grades, specific assignment answers, quiz solutions, submission statuses, secrets, personal or private data, you MUST politely explain that you do not have access to that information and can only assist them in learning and understanding the course concepts, lessons, and materials.
   - Do not make up answers. If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
-  - Strict Conversational Quality Check: Always use flawless grammar, perfect spelling, and elegant sentence structure. Maintain a professional, friendly teacher tone suitable for students. Keep your responses highly concise, direct, and focused. Match the user's request precisely without off-topic preambles or generic robotic intros. Prioritize precise, high-fidelity facts and direct guidance.
+  - Strict Conversational Quality Check: Always use flawless grammar, perfect spelling, and elegant sentence structure. Maintain a professional, friendly teacher tone suitable suitable for students. Match the user's request precisely.
 
   Course Context:
   ${context.substring(0, 15000)}`;
@@ -509,34 +531,97 @@ async function handleIndexCourse(payload, res) {
       throw new Error(`Failed to clear existing index: ${await deleteRes.text()}`);
     }
 
-    // 2. Fetch all materials and lessons for the course
-    const [materialsRes, lessonsRes] = await Promise.all([
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url`, {
+    // 2. Fetch all materials, lessons, topics, and course details
+    const [materialsRes, lessonsRes, topicsRes, courseRes] = await Promise.all([
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url,file_type`, {
         headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
       }),
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content`, {
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content,topic_id`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&select=id,title,description`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}&select=title,description,semester`, {
         headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
       })
     ]);
 
     if (!materialsRes.ok) throw new Error(`Failed to fetch materials: ${await materialsRes.text()}`);
     if (!lessonsRes.ok) throw new Error(`Failed to fetch lessons: ${await lessonsRes.text()}`);
+    if (!topicsRes.ok) throw new Error(`Failed to fetch topics: ${await topicsRes.text()}`);
+    if (!courseRes.ok) throw new Error(`Failed to fetch course: ${await courseRes.text()}`);
 
     const materials = await materialsRes.json();
     const lessons = await lessonsRes.json();
+    const topics = await topicsRes.json();
+    const courseList = await courseRes.json();
+    const course = courseList?.[0] || null;
 
     const chunks = [];
+
+    // Index course info itself (to make Tutor fully course-aware)
+    if (course) {
+      chunks.push({
+        course_id: course_id,
+        content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+        metadata: { type: 'course', title: course.title }
+      });
+    }
+
+    // Index topics
+    if (topics && Array.isArray(topics)) {
+      topics.forEach((t) => {
+        chunks.push({
+          course_id: course_id,
+          content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+          metadata: { type: 'topic', title: t.title, topic_id: t.id }
+        });
+      });
+    }
+
+    // Index lessons
+    if (lessons && Array.isArray(lessons)) {
+      // Build topics map for lookup
+      const topicsMap = {};
+      if (topics && Array.isArray(topics)) {
+        topics.forEach(t => {
+          topicsMap[t.id] = t.title;
+        });
+      }
+
+      lessons.forEach((l) => {
+        const content = l.content || '';
+        const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
+        const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
+        const chunkSize = 2000;
+        for (let i = 0; i < content.length; i += chunkSize) {
+          chunks.push({
+            lesson_id: l.id,
+            course_id: course_id,
+            content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+            metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
+          });
+        }
+      });
+    }
 
     if (materials && Array.isArray(materials)) {
       for (const m of materials) {
         const fileUrl = m.file_url || '';
+        const fileType = m.file_type || '';
         let isPdf = false;
-        try {
-          const urlObj = new URL(fileUrl);
-          const pathOnly = urlObj.pathname.toLowerCase();
-          isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf');
-        } catch (e) {
-          isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+
+        if (fileType.toLowerCase().includes('pdf')) {
+          isPdf = true;
+        } else {
+          try {
+            const urlObj = new URL(fileUrl);
+            const pathOnly = urlObj.pathname.toLowerCase();
+            isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf') || urlObj.search.toLowerCase().includes('.pdf');
+          } catch (e) {
+            isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+          }
         }
 
         if (isPdf) {
@@ -579,31 +664,61 @@ async function handleIndexCourse(payload, res) {
                 const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
                 if (pdfText.trim().length > 0) {
-                  // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
-                  const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                  // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
+                  const allowedOptions = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+                  const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+                  const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
                   const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
                   const parsedChunks = [];
 
-                  let currentSegment = "";
                   for (const segment of rawSegments) {
-                    if (currentSegment && (currentSegment.length + segment.length > 2500)) {
-                      parsedChunks.push(currentSegment);
-                      currentSegment = segment;
+                    if (segment.length > 2500) {
+                      // Split large segment cleanly
+                      let start = 0;
+                      while (start < segment.length) {
+                        let end = start + 2500;
+                        if (end < segment.length) {
+                          const lastBreak = segment.lastIndexOf('\n', end);
+                          if (lastBreak > start + 1000) {
+                            end = lastBreak;
+                          } else {
+                            const lastPeriod = segment.lastIndexOf('. ', end);
+                            if (lastPeriod > start + 1000) {
+                              end = lastPeriod + 2;
+                            }
+                          }
+                        } else {
+                          end = segment.length;
+                        }
+                        parsedChunks.push(segment.substring(start, end).trim());
+                        start = end;
+                      }
                     } else {
-                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                      parsedChunks.push(segment);
                     }
-                  }
-                  if (currentSegment) {
-                    parsedChunks.push(currentSegment);
                   }
 
                   let chunkIndex = 0;
                   for (const chunkText of parsedChunks) {
+                    // Detect structure type
+                    let structureType = 'segment';
+                    const firstWords = chunkText.substring(0, 50).toLowerCase();
+                    if (firstWords.includes('chapter')) structureType = 'chapter';
+                    else if (firstWords.includes('section')) structureType = 'section';
+                    else if (firstWords.includes('topic')) structureType = 'topic';
+                    else if (firstWords.includes('week')) structureType = 'week';
+                    else if (firstWords.includes('lesson')) structureType = 'lesson';
+
                     chunks.push({
                       material_id: m.id,
                       course_id: course_id,
-                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
-                      metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
+                      content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                      metadata: {
+                        type: 'material_pdf',
+                        title: m.title,
+                        chunk_index: chunkIndex++,
+                        structure_type: structureType
+                      }
                     });
                   }
                   continue; // Skip the metadata fallback since we successfully indexed the PDF content
@@ -623,21 +738,6 @@ async function handleIndexCourse(payload, res) {
           metadata: { type: 'material', title: m.title }
         });
       }
-    }
-
-    if (lessons && Array.isArray(lessons)) {
-      lessons.forEach((l) => {
-        const content = l.content || '';
-        const chunkSize = 2000;
-        for (let i = 0; i < content.length; i += chunkSize) {
-          chunks.push({
-            lesson_id: l.id,
-            course_id: course_id,
-            content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-            metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
-          });
-        }
-      });
     }
 
     if (chunks.length === 0) {
