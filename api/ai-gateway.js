@@ -241,7 +241,8 @@ module.exports = async function handler(req, res) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: `models/${cleanEmbeddingModel}`,
-              content: { parts: [{ text: message }] }
+              content: { parts: [{ text: message }] },
+              outputDimensionality: 768
             })
           });
 
@@ -329,6 +330,9 @@ module.exports = async function handler(req, res) {
 
       case 'voice':
         return await handleVoiceAI(payload, res);
+
+      case 'index_course':
+        return await handleIndexCourse(payload, res);
 
       default:
         res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -481,6 +485,236 @@ async function handleCourseTutor(payload, res) {
       entities: classification.entities,
       action: 'fallback_tutor_gemini'
     }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
+ * Feature 6: Knowledge Base Indexing Support
+ */
+async function handleIndexCourse(payload, res) {
+  const { course_id } = payload;
+  if (!course_id) {
+    res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'course_id is required' }));
+    return;
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Server configuration error: missing SUPABASE_URL or SUPABASE_ANON_KEY' }));
+    return;
+  }
+
+  try {
+    // 1. Idempotency: Delete existing embeddings for this course before re-indexing
+    const deleteRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`
+      }
+    });
+
+    if (!deleteRes.ok) {
+      throw new Error(`Failed to clear existing index: ${await deleteRes.text()}`);
+    }
+
+    // 2. Fetch all materials and lessons for the course
+    const [materialsRes, lessonsRes] = await Promise.all([
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      })
+    ]);
+
+    if (!materialsRes.ok) throw new Error(`Failed to fetch materials: ${await materialsRes.text()}`);
+    if (!lessonsRes.ok) throw new Error(`Failed to fetch lessons: ${await lessonsRes.text()}`);
+
+    const materials = await materialsRes.json();
+    const lessons = await lessonsRes.json();
+
+    const chunks = [];
+
+    if (materials && Array.isArray(materials)) {
+      for (const m of materials) {
+        const fileUrl = m.file_url || '';
+        let isPdf = false;
+        try {
+          const urlObj = new URL(fileUrl);
+          const pathOnly = urlObj.pathname.toLowerCase();
+          isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf');
+        } catch (e) {
+          isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+        }
+
+        if (isPdf) {
+          try {
+            // Call PDF text extractor helper logic
+            const pdfResponse = await fetch(fileUrl);
+            if (pdfResponse.ok) {
+              const arrayBuffer = await pdfResponse.arrayBuffer();
+              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+              const apiKey = resolveApiKey('tutor', payload);
+              const model = 'gemini-1.5-flash';
+
+              const requestBody = {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        inline_data: {
+                          mime_type: 'application/pdf',
+                          data: base64Data
+                        }
+                      },
+                      {
+                        text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                      }
+                    ]
+                  }
+                ]
+              };
+
+              const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+                if (pdfText.trim().length > 0) {
+                  // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
+                  const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                  const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                  const parsedChunks = [];
+
+                  let currentSegment = "";
+                  for (const segment of rawSegments) {
+                    if (currentSegment && (currentSegment.length + segment.length > 2500)) {
+                      parsedChunks.push(currentSegment);
+                      currentSegment = segment;
+                    } else {
+                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                    }
+                  }
+                  if (currentSegment) {
+                    parsedChunks.push(currentSegment);
+                  }
+
+                  let chunkIndex = 0;
+                  for (const chunkText of parsedChunks) {
+                    chunks.push({
+                      material_id: m.id,
+                      course_id: course_id,
+                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
+                      metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
+                    });
+                  }
+                  continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                }
+              }
+            }
+          } catch (err) {
+            console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+          }
+        }
+
+        // Fallback to title and description for non-PDFs or failed extractions
+        chunks.push({
+          material_id: m.id,
+          course_id: course_id,
+          content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
+          metadata: { type: 'material', title: m.title }
+        });
+      }
+    }
+
+    if (lessons && Array.isArray(lessons)) {
+      lessons.forEach((l) => {
+        const content = l.content || '';
+        const chunkSize = 2000;
+        for (let i = 0; i < content.length; i += chunkSize) {
+          chunks.push({
+            lesson_id: l.id,
+            course_id: course_id,
+            content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+            metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
+          });
+        }
+      });
+    }
+
+    if (chunks.length === 0) {
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'No content to index for this course.' }));
+      return;
+    }
+
+    // Process in batches of 10
+    const batchSize = 10;
+    const apiKey = resolveApiKey('generate_batch_embeddings', payload);
+    const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
+    const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
+
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+
+      const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: batch.map(c => ({
+            model: `models/${cleanEmbeddingModel}`,
+            content: { parts: [{ text: c.content }] },
+            outputDimensionality: 768
+          }))
+        })
+      });
+
+      if (!embedResponse.ok) {
+        throw new Error(`Batch Embedding Generation failed: ${await embedResponse.text()}`);
+      }
+
+      const embedResult = await embedResponse.json();
+      const embeddings = embedResult.embeddings.map(e => e.values);
+
+      const records = batch.map((chunk, idx) => ({
+        ...chunk,
+        embedding: embeddings[idx]
+      }));
+
+      // Bulk insert records via Supabase REST API
+      const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation'
+        },
+        body: JSON.stringify(records)
+      });
+
+      if (!insertResponse.ok) {
+        throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
+      }
+    }
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }));
+
   } catch (error) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: error.message }));
@@ -905,7 +1139,8 @@ async function handleGenerateEmbedding(payload, res) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: `models/${cleanEmbeddingModel}`,
-        content: { parts: [{ text }] }
+        content: { parts: [{ text }] },
+        outputDimensionality: 768
       })
     });
 
@@ -944,7 +1179,8 @@ async function handleGenerateBatchEmbeddings(payload, res) {
       body: JSON.stringify({
         requests: texts.map(text => ({
           model: `models/${cleanEmbeddingModel}`,
-          content: { parts: [{ text }] }
+          content: { parts: [{ text }] },
+          outputDimensionality: 768
         }))
       })
     });

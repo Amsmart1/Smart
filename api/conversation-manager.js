@@ -628,19 +628,23 @@ function resolveModelId(type, payload = {}) {
   }
 
   if (type === 'generate_embedding' || type === 'generate_batch_embeddings') {
-    let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
+    let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
     const norm = embeddingModel.trim().toLowerCase();
     if (
       norm === 'gemini-embedding' ||
       norm === 'gemini_embedding' ||
       norm === 'gemini embedding' ||
+      norm === 'gemini-embedding-001' ||
       norm === 'gemini-embedding-004' ||
       norm === 'text-embedding-004' ||
+      norm === 'gemini embedding 001' ||
+      norm === 'gemini_embedding_001' ||
       norm === 'gemini embedding 004' ||
       norm === 'gemini_embedding_004' ||
+      norm === 'models/gemini-embedding-001' ||
       norm === 'models/text-embedding-004'
     ) {
-      return "text-embedding-004";
+      return "gemini-embedding-001";
     }
     return embeddingModel;
   }
