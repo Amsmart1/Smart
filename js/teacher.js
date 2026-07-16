@@ -3450,6 +3450,7 @@ async function renderMaterials() {
                   <div class="flex-between list-item">
                     <span class="small">${escapeHtml(m.title)}</span>
                     <div class="flex gap-5">
+                      <button class="button secondary tiny" style="background: #ecfdf5; color: #065f46; border-color: #a7f3d0" onclick="indexMaterialForAI('${escapeAttr(m.id)}', '${escapeAttr(m.course_id)}')">Index for AI</button>
                       <button class="button secondary tiny" onclick="UI.viewFile('${escapeAttr(m.file_url)}', '${escapeAttr(m.title)}')">View</button>
                       <button class="button danger tiny" onclick="deleteMaterial('${escapeAttr(m.id)}')">Delete</button>
                     </div>
@@ -3869,6 +3870,62 @@ window.updateAssignmentTotalPoints = updateAssignmentTotalPoints;
 window.openAIQuizGenerator = openAIQuizGenerator;
 window.openAIAssignmentGenerator = openAIAssignmentGenerator;
 window.indexCourseForAI = indexCourseForAI;
+window.indexMaterialForAI = indexMaterialForAI;
+
+async function indexMaterialForAI(materialId, courseId) {
+    const optionsHtml = `
+      <div style="text-align: left; margin-top: 15px; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;">
+        <strong style="color: var(--p, #5b2ea6); font-size: 0.85rem;">Document Chunking Structure Options:</strong>
+        <p class="small text-muted mt-5 mb-10" style="font-size: 0.75rem; margin-bottom: 10px;">Select which structural divisions inside the PDF are used to segment content into separate rows & embeddings:</p>
+        <div class="flex flex-column gap-5" style="display: flex; flex-direction: column; gap: 8px;">
+          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+            <input type="checkbox" id="optChapters" checked style="margin: 0;"> Chapters (Chapter 1, Chapter II...)
+          </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+            <input type="checkbox" id="optSections" checked style="margin: 0;"> Sections (Section A, Section 2...)
+          </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+            <input type="checkbox" id="optTopics" checked style="margin: 0;"> Topics (Topic 1, Topic B...)
+          </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+            <input type="checkbox" id="optWeeks" checked style="margin: 0;"> Weeks (Week 1, Week 2...)
+          </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+            <input type="checkbox" id="optLessons" checked style="margin: 0;"> Lessons (Lesson 1, Lesson A...)
+          </label>
+        </div>
+      </div>
+    `;
+
+    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true)) return;
+
+    const chunk_options = [];
+    if (document.getElementById('optChapters')?.checked) chunk_options.push('chapter', 'chapters');
+    if (document.getElementById('optSections')?.checked) chunk_options.push('section', 'sections');
+    if (document.getElementById('optTopics')?.checked) chunk_options.push('topic', 'topics');
+    if (document.getElementById('optWeeks')?.checked) chunk_options.push('week', 'weeks');
+    if (document.getElementById('optLessons')?.checked) chunk_options.push('lesson', 'lessons');
+
+    if (chunk_options.length === 0) {
+        UI.showNotification('You must select at least one document structure option.', 'warn');
+        return;
+    }
+
+    UI.showNotification('Extracting and embedding PDF with custom structural boundaries. This may take a few moments...', 'info');
+    try {
+        const result = await window.SupabaseDB.invokeFunction('ai-gateway', {
+            type: 'index_course',
+            payload: {
+                course_id: courseId,
+                chunk_options: chunk_options
+            }
+        });
+        UI.showNotification(result.message || 'Successfully indexed file/material with selected structures!', 'success');
+    } catch (e) {
+        console.error(e);
+        UI.showNotification('Indexing failed: ' + e.message, 'error');
+    }
+}
 
 async function indexCourseForAI(courseId) {
     if (!await UI.confirm('This will process all course lessons and materials to populate the AI Tutor\'s knowledge base. This may take a few moments. Continue?', 'Index Course for AI')) return;
