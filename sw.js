@@ -1,4 +1,4 @@
-const VERSION = "8";
+const VERSION = "9";
 const CACHE_NAME = `smartlms-${VERSION}`;
 
 const ASSETS = [
