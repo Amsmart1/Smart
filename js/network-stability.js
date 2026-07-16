@@ -62,6 +62,7 @@ class NetworkStabilityEngine {
             // Clears probes when transitioning back online to avoid misleading packet loss metrics from offline period
             this.probes = [];
         }
+        this.evaluateStatus();
     }
 
     cleanDisconnectHistory() {

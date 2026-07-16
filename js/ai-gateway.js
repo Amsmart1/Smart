@@ -421,14 +421,18 @@ class AIManager {
     /**
      * Feature 6: Knowledge Base Indexing
      */
-    static async indexCourse(courseId) {
+    static async indexCourse(courseId, chunkOptions = null) {
+        const payload = { course_id: courseId };
+        if (chunkOptions) {
+            payload.chunk_options = chunkOptions;
+        }
         if (typeof window !== 'undefined' && window.SupabaseDB && typeof window.SupabaseDB.invokeFunction === 'function') {
             return await window.SupabaseDB.invokeFunction('ai-gateway', {
                 type: 'index_course',
-                payload: { course_id: courseId }
+                payload: payload
             });
         }
-        return await this._invoke('index_course', { course_id: courseId });
+        return await this._invoke('index_course', payload);
     }
 
     /**

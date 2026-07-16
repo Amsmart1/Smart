@@ -491,23 +491,32 @@ const UI = {
         `;
     },
 
-    confirm(message, title = 'Confirm Action', isHtml = false) {
+    confirm(message, title = 'Confirm Action', isHtml = false, confirmText = 'Confirm', confirmClass = 'button danger', preConfirm = null) {
         return new Promise((resolve) => {
             const backdrop = document.createElement('div');
             backdrop.className = 'modal-backdrop';
             backdrop.style.display = 'flex';
             backdrop.innerHTML = `
-                <div class="modal" style="max-width:400px; text-align:center">
+                <div class="modal" style="max-width:450px; text-align:center">
                     <h3>${escapeHtml(title)}</h3>
-                    <p class="small">${isHtml ? message : escapeHtml(message)}</p>
-                    <div class="flex gap-10 mt-20">
-                        <button class="button danger" id="confirmYes">Confirm</button>
+                    <div class="small">${isHtml ? message : escapeHtml(message)}</div>
+                    <div class="flex gap-10 mt-20" style="justify-content: center">
+                        <button class="${escapeAttr(confirmClass)}" id="confirmYes">${escapeHtml(confirmText)}</button>
                         <button class="button secondary" id="confirmNo">Cancel</button>
                     </div>
                 </div>
             `;
             document.body.appendChild(backdrop);
-            document.getElementById('confirmYes').onclick = () => { backdrop.remove(); resolve(true); };
+            document.getElementById('confirmYes').onclick = async () => {
+                let ok = true;
+                if (typeof preConfirm === 'function') {
+                    ok = await preConfirm(backdrop);
+                }
+                if (ok !== false) {
+                    backdrop.remove();
+                    resolve(true);
+                }
+            };
             document.getElementById('confirmNo').onclick = () => { backdrop.remove(); resolve(false); };
         });
     },

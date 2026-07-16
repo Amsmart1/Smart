@@ -3874,52 +3874,77 @@ window.indexMaterialForAI = indexMaterialForAI;
 
 async function indexMaterialForAI(materialId, courseId) {
     const optionsHtml = `
-      <div style="text-align: left; margin-top: 15px; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0;">
-        <strong style="color: var(--p, #5b2ea6); font-size: 0.85rem;">Document Chunking Structure Options:</strong>
-        <p class="small text-muted mt-5 mb-10" style="font-size: 0.75rem; margin-bottom: 10px;">Select which structural divisions inside the PDF are used to segment content into separate rows & embeddings:</p>
-        <div class="flex flex-column gap-5" style="display: flex; flex-direction: column; gap: 8px;">
-          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-            <input type="checkbox" id="optChapters" checked style="margin: 0;"> Chapters (Chapter 1, Chapter II...)
+      <div style="text-align: left; margin-top: 15px; background: #f8fafc; padding: 15px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: inset 0 1px 3px rgba(0,0,0,0.02)">
+        <strong style="color: var(--p, #5b2ea6); font-size: 0.9rem; display: block; margin-bottom: 5px;">Document Chunking Structure Options:</strong>
+        <p class="small text-muted mt-5 mb-15" style="font-size: 0.75rem; margin-bottom: 15px; line-height: 1.4;">Select which structural divisions inside the PDF are used to segment content into separate rows & embeddings:</p>
+        <div class="flex flex-column gap-10" style="display: flex; flex-direction: column; gap: 10px;">
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optChapters" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Chapters (Chapter 1, Chapter II...)
           </label>
-          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-            <input type="checkbox" id="optSections" checked style="margin: 0;"> Sections (Section A, Section 2...)
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optSections" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Sections (Section A, Section 2...)
           </label>
-          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-            <input type="checkbox" id="optTopics" checked style="margin: 0;"> Topics (Topic 1, Topic B...)
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optTopics" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Topics (Topic 1, Topic B...)
           </label>
-          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-            <input type="checkbox" id="optWeeks" checked style="margin: 0;"> Weeks (Week 1, Week 2...)
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optWeeks" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Weeks (Week 1, Week 2...)
           </label>
-          <label class="flex gap-10 align-items-center" style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-            <input type="checkbox" id="optLessons" checked style="margin: 0;"> Lessons (Lesson 1, Lesson A...)
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optLessons" checked style="margin: 0; width: 16px; height: 16px; cursor: pointer;"> Lessons (Lesson 1, Lesson A...)
           </label>
+          <label class="flex gap-10 align-items-center" style="font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 6px 10px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; transition: background 0.2s, border-color 0.2s;">
+            <input type="checkbox" id="optOther" style="margin: 0; width: 16px; height: 16px; cursor: pointer;" onchange="document.getElementById('otherInputContainer').style.display = this.checked ? 'block' : 'none'"> Other (Custom structural division)
+          </label>
+          <div id="otherInputContainer" style="display: none; margin-top: 5px; padding-left: 10px;">
+            <input type="text" id="txtOtherStructure" placeholder="e.g. Appendix, Annex, Part, Unit" style="margin: 0; padding: 8px 12px; font-size: 0.85rem; border-radius: 6px; border: 1px solid #cbd5e1; width: 100%; box-sizing: border-box;">
+          </div>
         </div>
       </div>
     `;
 
-    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true)) return;
+    let chunk_options = [];
+    const preConfirm = (backdrop) => {
+        chunk_options = [];
+        const optChapters = backdrop.querySelector('#optChapters')?.checked;
+        const optSections = backdrop.querySelector('#optSections')?.checked;
+        const optTopics = backdrop.querySelector('#optTopics')?.checked;
+        const optWeeks = backdrop.querySelector('#optWeeks')?.checked;
+        const optLessons = backdrop.querySelector('#optLessons')?.checked;
+        const optOther = backdrop.querySelector('#optOther')?.checked;
+        const txtOther = backdrop.querySelector('#txtOtherStructure')?.value.trim();
 
-    const chunk_options = [];
-    if (document.getElementById('optChapters')?.checked) chunk_options.push('chapter', 'chapters');
-    if (document.getElementById('optSections')?.checked) chunk_options.push('section', 'sections');
-    if (document.getElementById('optTopics')?.checked) chunk_options.push('topic', 'topics');
-    if (document.getElementById('optWeeks')?.checked) chunk_options.push('week', 'weeks');
-    if (document.getElementById('optLessons')?.checked) chunk_options.push('lesson', 'lessons');
+        if (optChapters) chunk_options.push('chapter', 'chapters');
+        if (optSections) chunk_options.push('section', 'sections');
+        if (optTopics) chunk_options.push('topic', 'topics');
+        if (optWeeks) chunk_options.push('week', 'weeks');
+        if (optLessons) chunk_options.push('lesson', 'lessons');
 
-    if (chunk_options.length === 0) {
-        UI.showNotification('You must select at least one document structure option.', 'warn');
-        return;
-    }
+        if (optOther) {
+            if (!txtOther) {
+                UI.showNotification('Please specify the preferred custom structure for "Other".', 'warn');
+                return false; // Prevent closing
+            }
+            const lowerOther = txtOther.toLowerCase();
+            chunk_options.push(lowerOther);
+            if (!lowerOther.endsWith('s')) {
+                chunk_options.push(lowerOther + 's');
+            }
+        }
+
+        if (chunk_options.length === 0) {
+            UI.showNotification('You must select at least one document structure option.', 'warn');
+            return false; // Prevent closing
+        }
+
+        return true; // Dismiss modal
+    };
+
+    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true, 'Confirm & Index', 'button', preConfirm)) return;
 
     UI.showNotification('Extracting and embedding PDF with custom structural boundaries. This may take a few moments...', 'info');
     try {
-        const result = await window.SupabaseDB.invokeFunction('ai-gateway', {
-            type: 'index_course',
-            payload: {
-                course_id: courseId,
-                chunk_options: chunk_options
-            }
-        });
+        const result = await AIManager.indexCourse(courseId, chunk_options);
         UI.showNotification(result.message || 'Successfully indexed file/material with selected structures!', 'success');
     } catch (e) {
         console.error(e);
