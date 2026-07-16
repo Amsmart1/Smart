@@ -391,22 +391,6 @@ async function handleCourseTutor(payload, res) {
 
   const classification = classifyIntent(message);
 
-  const decision = routeConversation(message);
-  if (decision.action !== 'fallback') {
-    console.log(`[Tutor Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
-    const polishedText = runResponseQualityGuard(decision.content, 'tutor');
-    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      content: polishedText,
-      intent: decision.metadata.intent,
-      category: decision.metadata.category,
-      confidence: decision.metadata.confidence,
-      entities: decision.metadata.entities,
-      action: decision.action
-    }));
-    return;
-  }
-
   const filterRefusal = filterRequestIntent(message, 'tutor');
   if (filterRefusal) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
