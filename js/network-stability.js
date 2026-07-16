@@ -9,7 +9,10 @@
 
 class NetworkStabilityEngine {
     constructor() {
-        this.status = '🟢 Online'; // Default
+        this.status = '🟢 Online'; // Default legacy status for backward compatibility
+        this.connectionStatus = navigator.onLine ? "Online" : "Offline"; // Simple internet connection status
+        this.stabilityStatus = this.connectionStatus === "Offline" ? "Unknown" : "Stable"; // Separated network stability status
+
         this.probes = []; // Rolling window of recent latency metrics
         this.maxProbes = 6; // last 60 seconds (with 10s intervals)
         this.disconnects = []; // Timestamps of offline transitions
@@ -19,13 +22,21 @@ class NetworkStabilityEngine {
         this.listeners = new Set();
         this.containerElement = null;
 
+        this.activeController = null;
+        this.activeTimeoutId = null;
+
+        // Bind handlers as non-anonymous class members to enable complete and clean memory cleanup
+        this.boundOnlineHandler = () => this.handleConnectionChange(true);
+        this.boundOfflineHandler = () => this.handleConnectionChange(false);
+        this.boundDOMContentLoadedHandler = () => this.renderUI();
+
         this.init();
     }
 
     init() {
         // Track disconnects via window events
-        window.addEventListener('online', () => this.handleConnectionChange(true));
-        window.addEventListener('offline', () => this.handleConnectionChange(false));
+        window.addEventListener('online', this.boundOnlineHandler);
+        window.addEventListener('offline', this.boundOfflineHandler);
 
         // Start periodic active probing
         this.runProbe();
@@ -33,7 +44,7 @@ class NetworkStabilityEngine {
 
         // Inject UI
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => this.renderUI());
+            document.addEventListener('DOMContentLoaded', this.boundDOMContentLoadedHandler);
         } else {
             this.renderUI();
         }
@@ -47,6 +58,9 @@ class NetworkStabilityEngine {
             this.disconnects.push(Date.now());
             // Filter old disconnects out of the tracking window
             this.cleanDisconnectHistory();
+        } else {
+            // Clears probes when transitioning back online to avoid misleading packet loss metrics from offline period
+            this.probes = [];
         }
         this.evaluateStatus();
     }
@@ -62,12 +76,31 @@ class NetworkStabilityEngine {
     async runProbe() {
         // If navigator.onLine is false, don't even try to fetch
         if (navigator.onLine === false) {
-            this.recordProbeResult(null, false);
+            this.recordProbeResult(null, false, false);
             return;
         }
 
+        // Clean up previous active probe if any is running
+        if (this.activeController) {
+            try {
+                this.activeController.abort();
+            } catch (e) {}
+            this.activeController = null;
+        }
+        if (this.activeTimeoutId) {
+            clearTimeout(this.activeTimeoutId);
+            this.activeTimeoutId = null;
+        }
+
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.probeTimeoutMs);
+        this.activeController = controller;
+        const timeoutId = setTimeout(() => {
+            try {
+                controller.abort();
+            } catch (e) {}
+        }, this.probeTimeoutMs);
+        this.activeTimeoutId = timeoutId;
+
         const startTime = performance.now();
         const cacheBuster = Date.now();
 
@@ -80,18 +113,39 @@ class NetworkStabilityEngine {
                 mode: 'same-origin'
             });
 
-            clearTimeout(timeoutId);
+            if (this.activeTimeoutId === timeoutId) {
+                clearTimeout(timeoutId);
+                this.activeTimeoutId = null;
+                this.activeController = null;
+            }
+
+            // Genuinely online if we can request and fetch successfully
+            const wasOnline = navigator.onLine;
+
             const endTime = performance.now();
             const latency = endTime - startTime;
 
-            this.recordProbeResult(latency, response.ok || response.status < 400);
+            this.recordProbeResult(latency, response.ok || response.status < 400, wasOnline);
         } catch (error) {
-            clearTimeout(timeoutId);
-            // Fallback: If same-origin HEAD fetch fails but we're online, try a simple GET fetch
+            if (this.activeTimeoutId === timeoutId) {
+                clearTimeout(timeoutId);
+                this.activeTimeoutId = null;
+                this.activeController = null;
+            }
+
+            // If we were destroyed, stop executing
+            if (!this.boundOnlineHandler) return;
+
             let altTimeoutId;
             try {
                 const altController = new AbortController();
-                altTimeoutId = setTimeout(() => altController.abort(), this.probeTimeoutMs);
+                this.activeController = altController;
+                altTimeoutId = setTimeout(() => {
+                    try {
+                        altController.abort();
+                    } catch (e) {}
+                }, this.probeTimeoutMs);
+                this.activeTimeoutId = altTimeoutId;
                 const altStartTime = performance.now();
 
                 const response = await fetch(`${window.location.origin}/favicon.ico?_cb=${cacheBuster}`, {
@@ -101,24 +155,40 @@ class NetworkStabilityEngine {
                     mode: 'same-origin'
                 });
 
-                clearTimeout(altTimeoutId);
+                if (this.activeTimeoutId === altTimeoutId) {
+                    clearTimeout(altTimeoutId);
+                    this.activeTimeoutId = null;
+                    this.activeController = null;
+                }
+
+                const wasOnline = navigator.onLine;
                 const altEndTime = performance.now();
                 const latency = altEndTime - altStartTime;
 
-                this.recordProbeResult(latency, response.ok);
+                this.recordProbeResult(latency, response.ok, wasOnline);
             } catch (err) {
-                if (altTimeoutId) clearTimeout(altTimeoutId);
+                if (this.activeTimeoutId === altTimeoutId) {
+                    clearTimeout(altTimeoutId);
+                    this.activeTimeoutId = null;
+                    this.activeController = null;
+                }
+
+                // If we were destroyed, stop executing
+                if (!this.boundOnlineHandler) return;
+
+                const wasOnline = navigator.onLine;
                 // Genuinely failed to reach server
-                this.recordProbeResult(null, false);
+                this.recordProbeResult(null, false, wasOnline);
             }
         }
     }
 
-    recordProbeResult(latency, success) {
+    recordProbeResult(latency, success, wasOnline = true) {
         this.probes.push({
             timestamp: Date.now(),
             latency: success ? latency : null,
-            success
+            success,
+            wasOnline
         });
 
         // Maintain rolling sliding window
@@ -135,19 +205,64 @@ class NetworkStabilityEngine {
     evaluateStatus() {
         this.cleanDisconnectHistory();
 
-        // 1. Detect Offline
-        if (navigator.onLine === false) {
-            this.updateStatus('🔴 Offline');
-            return;
+        // Separate network stability status from simple internet connection status
+        let connectionStatus = navigator.onLine ? "Online" : "Offline";
+
+        // Filter probes to only those recorded while browser reported being online
+        const validProbes = this.probes.filter(p => p.wasOnline !== false);
+
+        // If the latest probes consecutively failed (e.g., last 2 attempts failed) or all failed, mark offline
+        if (validProbes.length >= 2 && validProbes.slice(-2).every(p => !p.success)) {
+            connectionStatus = "Offline";
         }
 
-        // If we have probes, analyze them
-        const validProbes = this.probes;
+        let stabilityStatus = "Unknown";
+
+        if (connectionStatus === "Offline") {
+            stabilityStatus = "Unknown";
+        } else if (connectionStatus === "Online") {
+            // Evaluate actual network quality
+            stabilityStatus = this.evaluateNetworkStability();
+        }
+
+        const previousConnectionStatus = this.connectionStatus;
+        this.connectionStatus = connectionStatus;
+        this.stabilityStatus = stabilityStatus;
+
+        // Transition check: clear probes on reconnection
+        if (previousConnectionStatus === "Offline" && this.connectionStatus === "Online") {
+            this.probes = [];
+            // Re-evaluate stability status with clean probes
+            this.stabilityStatus = this.evaluateNetworkStability();
+        }
+
+        // Map stabilityStatus and connectionStatus back to the legacy this.status for backward compatibility
+        let legacyStatus = '🟢 Online';
+        if (this.connectionStatus === "Offline") {
+            legacyStatus = '🔴 Offline';
+        } else {
+            if (this.stabilityStatus === 'Unstable Network') {
+                legacyStatus = '🟠 Unstable Network';
+            } else if (this.stabilityStatus === 'Poor Network') {
+                legacyStatus = '🟡 Poor Network';
+            } else {
+                legacyStatus = '🟢 Online';
+            }
+        }
+
+        this.updateStatus(legacyStatus);
+    }
+
+    /**
+     * Evaluates actual network quality when the simple connection status is "Online".
+     * Returns "Stable", "Poor Network", or "Unstable Network".
+     */
+    evaluateNetworkStability() {
+        const validProbes = this.probes.filter(p => p.wasOnline !== false);
         const totalProbes = validProbes.length;
 
         if (totalProbes === 0) {
-            this.updateStatus('🟢 Online');
-            return;
+            return 'Stable';
         }
 
         const successfulProbes = validProbes.filter(p => p.success);
@@ -155,13 +270,6 @@ class NetworkStabilityEngine {
         const failureCount = totalProbes - successCount;
         const packetLossRate = totalProbes > 0 ? (failureCount / totalProbes) : 0;
 
-        // If the latest probes consecutive failed (e.g., last 2 attempts failed) or all failed, mark offline
-        if (totalProbes >= 2 && validProbes.slice(-2).every(p => !p.success)) {
-            this.updateStatus('🔴 Offline');
-            return;
-        }
-
-        // 2. Detect Unstable Network
         // High packet loss, frequent disconnects (>= 2 in last 2m), or high jitter
         const disconnectCount = this.disconnects.length;
         const rttValues = successfulProbes.map(p => p.latency);
@@ -196,22 +304,19 @@ class NetworkStabilityEngine {
         const isFluctuatingLatency = jitter > 80 && avgLatency > 100;
 
         if (isPacketLossUnstable || isFrequentDisconnects || isFluctuatingLatency) {
-            this.updateStatus('🟠 Unstable Network');
-            return;
+            return 'Unstable Network';
         }
 
-        // 3. Detect Poor Network
+        // Detect Poor Network
         // High latency (avgLatency > 200ms or navRtt > 300ms) OR reduced bandwidth (downlink < 1.0 Mbps)
         const isHighLatency = avgLatency > 200 || (navRtt && navRtt > 300);
         const isReducedBandwidth = (navDownlink && navDownlink < 1.0);
 
         if (isHighLatency || isReducedBandwidth) {
-            this.updateStatus('🟡 Poor Network');
-            return;
+            return 'Poor Network';
         }
 
-        // 4. Online (connection available, low latency, stable packets)
-        this.updateStatus('🟢 Online');
+        return 'Stable';
     }
 
     updateStatus(newStatus) {
@@ -243,7 +348,8 @@ class NetworkStabilityEngine {
     }
 
     getDetails() {
-        const successfulProbes = this.probes.filter(p => p.success);
+        const onlineProbes = this.probes.filter(p => p.wasOnline !== false);
+        const successfulProbes = onlineProbes.filter(p => p.success);
         const rttValues = successfulProbes.map(p => p.latency);
 
         let avgLatency = 0;
@@ -260,7 +366,7 @@ class NetworkStabilityEngine {
             }
         }
 
-        const totalProbes = this.probes.length;
+        const totalProbes = onlineProbes.length;
         const packetLossRate = totalProbes > 0 ? ((totalProbes - successfulProbes.length) / totalProbes) * 100 : 0;
 
         let navRtt = null;
@@ -272,6 +378,8 @@ class NetworkStabilityEngine {
 
         return {
             status: this.status,
+            connectionStatus: this.connectionStatus,
+            stabilityStatus: this.stabilityStatus,
             latency: rttValues.length > 0 ? Math.round(avgLatency) : (navRtt || 0),
             jitter: Math.round(jitter),
             packetLoss: Math.round(packetLossRate),
@@ -401,6 +509,7 @@ class NetworkStabilityEngine {
         `;
 
         const styleSheet = document.createElement("style");
+        styleSheet.id = "network-stability-styles";
         styleSheet.innerText = styles;
         document.head.appendChild(styleSheet);
 
@@ -467,6 +576,52 @@ class NetworkStabilityEngine {
         this.containerElement.querySelector("#net-val-bandwidth").textContent = typeof details.bandwidth === "number" ? `${details.bandwidth} Mbps` : details.bandwidth;
         this.containerElement.querySelector("#net-val-disconnects").textContent = details.disconnects;
         this.containerElement.querySelector("#net-val-desc").textContent = desc;
+    }
+
+    /**
+     * Clean up resources, event listeners, intervals, and elements to prevent memory leaks.
+     */
+    destroy() {
+        // 1. Clear intervals and timeouts
+        if (this.probeInterval) {
+            clearInterval(this.probeInterval);
+            this.probeInterval = null;
+        }
+        if (this.activeTimeoutId) {
+            clearTimeout(this.activeTimeoutId);
+            this.activeTimeoutId = null;
+        }
+        if (this.activeController) {
+            try {
+                this.activeController.abort();
+            } catch (e) {}
+            this.activeController = null;
+        }
+
+        // 2. Remove window and document event listeners
+        window.removeEventListener('online', this.boundOnlineHandler);
+        window.removeEventListener('offline', this.boundOfflineHandler);
+        document.removeEventListener('DOMContentLoaded', this.boundDOMContentLoadedHandler);
+
+        // Mark handlers as null to indicate destroyed state
+        this.boundOnlineHandler = null;
+        this.boundOfflineHandler = null;
+        this.boundDOMContentLoadedHandler = null;
+
+        // 3. Remove injected CSS stylesheet and HTML element from DOM
+        const styleSheet = document.getElementById("network-stability-styles");
+        if (styleSheet) {
+            styleSheet.remove();
+        }
+        if (this.containerElement && this.containerElement.parentNode) {
+            this.containerElement.parentNode.removeChild(this.containerElement);
+            this.containerElement = null;
+        }
+
+        // 4. Clear internal listeners and state arrays
+        this.listeners.clear();
+        this.probes = [];
+        this.disconnects = [];
     }
 }
 
