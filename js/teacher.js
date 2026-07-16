@@ -3913,13 +3913,7 @@ async function indexMaterialForAI(materialId, courseId) {
 
     UI.showNotification('Extracting and embedding PDF with custom structural boundaries. This may take a few moments...', 'info');
     try {
-        const result = await window.SupabaseDB.invokeFunction('ai-gateway', {
-            type: 'index_course',
-            payload: {
-                course_id: courseId,
-                chunk_options: chunk_options
-            }
-        });
+        const result = await AIManager.indexCourse(courseId, chunk_options);
         UI.showNotification(result.message || 'Successfully indexed file/material with selected structures!', 'success');
     } catch (e) {
         console.error(e);
