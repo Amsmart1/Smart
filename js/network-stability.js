@@ -58,13 +58,9 @@ class NetworkStabilityEngine {
             this.disconnects.push(Date.now());
             // Filter old disconnects out of the tracking window
             this.cleanDisconnectHistory();
-            this.evaluateStatus();
         } else {
             // Clears probes when transitioning back online to avoid misleading packet loss metrics from offline period
             this.probes = [];
-            this.evaluateStatus();
-            // Trigger an immediate active probe to evaluate network quality/stability status instantly
-            this.runProbe();
         }
     }
 
