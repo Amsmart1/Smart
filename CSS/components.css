@@ -702,3 +702,139 @@ input:checked + .ac-slider:before {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* AI Chatbot Responsive Compatibility Style */
+body:not(.landing-page) .ai-chatbot-container .button {
+    width: auto !important;
+    flex-shrink: 0 !important;
+}
+
+body:not(.landing-page) .ai-chatbot-container .ai-input-field {
+    flex: 1 !important;
+    min-width: 0 !important;
+    width: auto !important;
+}
+
+body:not(.landing-page) .ai-chatbot-container .ai-send-btn {
+    flex-shrink: 0 !important;
+    width: auto !important;
+}
+
+@media (max-width: 1024px) {
+    body:not(.landing-page) .ai-chatbot-container {
+        height: 480px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    body:not(.landing-page) .ai-chatbot-container {
+        height: 450px !important;
+        max-height: 75vh !important;
+    }
+    body:not(.landing-page) .ai-chatbot-header {
+        padding: 10px 12px !important;
+    }
+    body:not(.landing-page) .ai-chat-messages {
+        padding: 12px !important;
+    }
+    body:not(.landing-page) .ai-chat-input {
+        padding: 8px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar {
+        gap: 6px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar button {
+        padding: 4px 8px !important;
+        font-size: 0.7rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+    body:not(.landing-page) .ai-chatbot-container {
+        height: 420px !important;
+        max-height: 70vh !important;
+    }
+    body:not(.landing-page) .ai-chatbot-header {
+        padding: 8px 10px !important;
+    }
+    body:not(.landing-page) .ai-chatbot-header strong {
+        font-size: 0.9rem !important;
+    }
+    body:not(.landing-page) .ai-chat-messages {
+        padding: 10px !important;
+    }
+    body:not(.landing-page) .ai-chat-messages .p-10 {
+        max-width: 90% !important;
+        font-size: 0.85rem !important;
+    }
+    body:not(.landing-page) .ai-chat-input {
+        padding: 6px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar {
+        gap: 4px !important;
+        margin-bottom: 6px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar button {
+        padding: 3px 6px !important;
+        font-size: 0.65rem !important;
+    }
+    body:not(.landing-page) .ai-chat-input input {
+        font-size: 0.8rem !important;
+        padding: 8px 12px !important;
+    }
+    body:not(.landing-page) .ai-chat-input .ai-send-btn {
+        font-size: 0.8rem !important;
+        padding: 6px 14px !important;
+    }
+}
+
+@media (max-width: 360px) {
+    body:not(.landing-page) .ai-chatbot-container {
+        height: 400px !important;
+        max-height: 65vh !important;
+    }
+    body:not(.landing-page) .ai-chatbot-header {
+        padding: 6px 8px !important;
+    }
+    body:not(.landing-page) .ai-chatbot-header strong {
+        font-size: 0.8rem !important;
+    }
+    body:not(.landing-page) .ai-chat-messages {
+        padding: 8px !important;
+    }
+    body:not(.landing-page) .ai-chat-input {
+        padding: 4px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar {
+        gap: 2px !important;
+        margin-bottom: 4px !important;
+    }
+    body:not(.landing-page) .ai-voice-toolbar button {
+        padding: 2px 4px !important;
+        font-size: 0.55rem !important;
+        border-radius: 8px !important;
+    }
+    body:not(.landing-page) .ai-chat-input input {
+        font-size: 0.75rem !important;
+        padding: 6px 10px !important;
+    }
+    body:not(.landing-page) .ai-chat-input .ai-send-btn {
+        font-size: 0.75rem !important;
+        padding: 4px 10px !important;
+    }
+}
+
+/* Stacking flex-between elements inside dashboard content areas on narrow viewports */
+@media (max-width: 480px) {
+    body:not(.landing-page) .content-area .flex-between {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+    }
+    body:not(.landing-page) .content-area .flex-between .text-right {
+        text-align: left !important;
+    }
+    body:not(.landing-page) .content-area .flex-between .button.w-auto {
+        width: 100% !important;
+    }
+}

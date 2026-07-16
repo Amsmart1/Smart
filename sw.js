@@ -1,4 +1,4 @@
-const VERSION = "6";
+const VERSION = "8";
 const CACHE_NAME = `smartlms-${VERSION}`;
 
 const ASSETS = [
@@ -8,6 +8,7 @@ const ASSETS = [
   './teacher.html',
   './student.html',
   './js/core.js',
+  './js/network-stability.js',
   './js/admin.js',
   './js/teacher.js',
   './js/student.js',

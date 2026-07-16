@@ -2,79 +2,20 @@
 // Handles downstream Gemini API content generation & embeddings.
 // Keeps secret keys secured inside the Vercel environment.
 
-const { classifyIntent, routeConversation } = require('./conversation-manager');
+const {
+  classifyIntent,
+  routeConversation,
+  filterRequestIntent,
+  runResponseQualityGuard,
+  resolveApiKey,
+  resolveModelId
+} = require('./conversation-manager');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-session-id, x-supabase-signature',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, PUT, DELETE',
 };
-
-/**
- * Scans user inputs to detect prompt injection, toxic keywords, or out-of-scope requests.
- * Returns a professional, friendly refusal response string if blocked, or null if allowed.
- */
-function filterTutorRequestIntent(message) {
-  const normalized = message.toLowerCase();
-
-  // 1. Prompt Injection Indicators
-  const injectionPatterns = [
-    "ignore previous instructions",
-    "ignore all instructions",
-    "system prompt",
-    "system instruction",
-    "you are now",
-    "forget everything",
-    "developer mode",
-    "dan mode",
-    "jailbreak",
-    "override",
-    "ignore the instructions",
-    "output the above",
-    "print your instructions",
-    "reveal your prompt"
-  ];
-
-  if (injectionPatterns.some(p => normalized.includes(p))) {
-    return "I am designed to be a helpful academic course tutor. I cannot bypass, reveal, or modify my system instructions, prompt configuration, or safety parameters. How can I assist you with your learning today?";
-  }
-
-  // 2. Toxic or Harmful Intent Indicators
-  const harmfulIntentPatterns = [
-    "how to hack",
-    "write a virus",
-    "write malware",
-    "write an exploit",
-    "how to bypass anti-cheat",
-    "bypass anti cheat",
-    "cheat on quiz",
-    "sql injection script",
-    "xss script",
-    "how to ddos"
-  ];
-
-  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
-    return "As your academic tutor, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain computer science or security concepts from an educational perspective instead!";
-  }
-
-  // 3. Out-Of-Scope General Knowledge/Trivia Tasks that are completely off-topic
-  const outOfScopeIndicators = [
-    "recipe for",
-    "how to cook",
-    "how to bake",
-    "who is the president",
-    "translate this to spanish",
-    "how to make a cake",
-    "favorite celebrity",
-    "gossip about"
-  ];
-
-  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
-    return "I am your dedicated academic course tutor. I specialize in helping you understand the lessons, materials, and concepts of this course. I am unable to answer general lifestyle, entertainment, or unrelated queries. Let me know if you have any questions about our course topics!";
-  }
-
-  return null;
-}
 
 /**
  * Provides instant, cost-efficient, high-fidelity predefined answers for common platform inquiries.
@@ -105,215 +46,6 @@ function findTutorPreciseResponse(message) {
   }
 
   return null;
-}
-
-/**
- * Post-processes the LLM response to guarantee safety, syntax sanity, and prevents system leaks.
- * Auto-closes unclosed markdown ticks and fences, and scrubs prompt instructions.
- */
-function runTutorResponseQualityGuard(response) {
-  if (!response || typeof response !== 'string') return "";
-
-  let cleaned = response;
-
-  // 1. Prevent System Prompt/Constraint Leakage
-  const leakWords = [
-    "You are a professional academic tutor",
-    "Key Tutoring Principles:",
-    "Strict Academic Guardrails:",
-    "systemPrompt",
-    "systemInstruction",
-    "Course Context:"
-  ];
-
-  for (const leak of leakWords) {
-    if (cleaned.includes(leak)) {
-      cleaned = cleaned.split(leak)[0];
-    }
-  }
-
-  // Ensure it doesn't mention private prompt variables
-  cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "tutor configuration");
-
-  // 2. Strict Conversational Polish & Enterprise-Grade Verification Checks
-  // A. Strip redundant robot/intro preambles for direct, off-topic-free responses
-  const preambles = [
-    /^sure,?\s*/i,
-    /^absolutely,?\s*/i,
-    /^i'd be happy to help with that,?\s*/i,
-    /^here is the information,?\s*/i,
-    /^as requested,?\s*/i,
-    /^certainly,?\s*/i,
-    /^no problem,?\s*/i
-  ];
-  for (const preamble of preambles) {
-    cleaned = cleaned.replace(preamble, "");
-  }
-
-  // B. Prune common filler phrases and words to make the response highly concise
-  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
-  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
-
-  // C. Dedup consecutive duplicated words ("the the", "and and", etc.) - Safely restricted to common filler words
-  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
-  for (const word of doubleWords) {
-    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
-    cleaned = cleaned.replace(doubleRegex, word);
-  }
-
-  // Temporary placeholders for URLs, decimals, and ellipsis to protect them from incorrect spacing cleanups
-  const urlPlaceholders = [];
-  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
-    const idx = urlPlaceholders.length;
-    urlPlaceholders.push(match);
-    return `___URL_PLACEHOLDER_${idx}___`;
-  });
-
-  const decimalPlaceholders = [];
-  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
-    const idx = decimalPlaceholders.length;
-    decimalPlaceholders.push(match);
-    return `___DECIMAL_PLACEHOLDER_${idx}___`;
-  });
-
-  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
-
-  // D. Collapse duplicate consecutive punctuation marks while preserving valid markdown ellipsis (...)
-  cleaned = cleaned.replace(/!{2,}/g, "!");
-  cleaned = cleaned.replace(/\?{2,}/g, "?");
-  cleaned = cleaned.replace(/,{2,}/g, ",");
-  cleaned = cleaned.replace(/\.{4,}/g, "...");
-  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
-
-  // E. Clean punctuation spacing: ensure space after punctuation and no trailing/leading space issues
-  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
-  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
-
-  // Restore ellipsis, decimals, and URLs safely
-  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
-
-  for (let i = 0; i < decimalPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
-  }
-
-  for (let i = 0; i < urlPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
-  }
-
-  // F. Flawless Sentence Structure: ensure sentences start with capital letters
-  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
-
-  // 3. Syntax Sanity: Auto-close incomplete or truncated Markdown tags
-  // Code Blocks (```)
-  const codeBlockCount = (cleaned.match(/```/g) || []).length;
-  if (codeBlockCount % 2 !== 0) {
-    cleaned += "\n```";
-  }
-
-  // Inline Code (`)
-  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
-  if (inlineCodeCount % 2 !== 0) {
-    cleaned += "`";
-  }
-
-  // Bold (**)
-  const boldCount = (cleaned.match(/\*\*/g) || []).length;
-  if (boldCount % 2 !== 0) {
-    cleaned += "**";
-  }
-
-  // Italic (_)
-  const italicCount = (cleaned.match(/_/g) || []).length;
-  if (italicCount % 2 !== 0) {
-    cleaned += "_";
-  }
-
-  // Simple Script Injection filter
-  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
-
-  return cleaned.trim();
-}
-
-/**
- * Resolves the appropriate Gemini API Key for a given request.
- * Supports project-specific overrides (via project_id or course_id) and feature-specific credentials,
- * falling back gracefully to unified defaults.
- */
-function resolveApiKey(type, payload = {}) {
-  const projectId = payload.project_id || payload.projectId || payload.course_id;
-  if (projectId) {
-    const projectEnvKey = `GEMINI_PROJECT_${String(projectId).toUpperCase().replace(/[^A-Z0-9_]/g, '_')}_API_KEY`;
-    if (process.env[projectEnvKey]) {
-      return process.env[projectEnvKey];
-    }
-  }
-
-  const featureKeys = {
-    tutor: process.env.GEMINI_COURSE_TUTOR_API_KEY,
-    generate_assessment: process.env.GEMINI_ASSESSMENT_API_KEY,
-    grading: process.env.GEMINI_GRADING_API_KEY,
-    analytics: process.env.GEMINI_ANALYTICS_API_KEY,
-    kofi: process.env.GEMINI_PLATFORM_API_KEY,
-    voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY,
-    generate_embedding: process.env.GEMINI_EMBEDDING_API_KEY,
-    generate_batch_embeddings: process.env.GEMINI_EMBEDDING_API_KEY
-  };
-
-  if (featureKeys[type]) {
-    return featureKeys[type];
-  }
-
-  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
-         process.env.GEMINI_COURSE_TUTOR_API_KEY ||
-         process.env.GEMINI_PLATFORM_API_KEY ||
-         process.env.GEMINI_API_KEY ||
-         process.env.GEMINI_VOICE_API_KEY ||
-         process.env.GEMINI_EMBEDDING_API_KEY;
-}
-
-/**
- * Resolves the confirmed, official, valid model ID for the request.
- * Centralizes all non-excluded project models to "gemini-3.1-flash-lite" by default.
- */
-function resolveModelId(type, payload = {}) {
-  if (type === 'voice') {
-    let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
-    const norm = voiceModel.trim().toLowerCase();
-    if (
-      norm === 'gemini 2.5 flash native audio' ||
-      norm === 'gemini-2.5-flash-native-audio' ||
-      norm === 'gemini_2.5_flash_native_audio' ||
-      norm === 'gemini 25 flash native audio' ||
-      norm === 'gemini-25-flash-native-audio' ||
-      norm === 'models/gemini-2.5-flash-native-audio'
-    ) {
-      return "gemini-2.5-flash-native-audio";
-    }
-    return voiceModel;
-  }
-
-  if (type === 'generate_embedding' || type === 'generate_batch_embeddings') {
-    let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "text-embedding-004";
-    const norm = embeddingModel.trim().toLowerCase();
-    if (
-      norm === 'gemini-embedding' ||
-      norm === 'gemini_embedding' ||
-      norm === 'gemini embedding' ||
-      norm === 'gemini-embedding-004' ||
-      norm === 'text-embedding-004' ||
-      norm === 'gemini embedding 004' ||
-      norm === 'gemini_embedding_004' ||
-      norm === 'models/text-embedding-004'
-    ) {
-      return "text-embedding-004";
-    }
-    return embeddingModel;
-  }
-
-  // The 5 core project models (Course Tutor, Assessment Generator, Grading Assistant, Analytics AI, and Kofi Assistant)
-  // are all strictly hardcoded to use the centralized official, valid, and supported Gemini 3.1 Flash Lite model ID.
-  return "gemini-3.1-flash-lite";
 }
 
 /**
@@ -509,7 +241,8 @@ module.exports = async function handler(req, res) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: `models/${cleanEmbeddingModel}`,
-              content: { parts: [{ text: message }] }
+              content: { parts: [{ text: message }] },
+              outputDimensionality: 768
             })
           });
 
@@ -598,6 +331,9 @@ module.exports = async function handler(req, res) {
       case 'voice':
         return await handleVoiceAI(payload, res);
 
+      case 'index_course':
+        return await handleIndexCourse(payload, res);
+
       default:
         res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Unsupported AI operation: ${type}` }));
@@ -655,23 +391,7 @@ async function handleCourseTutor(payload, res) {
 
   const classification = classifyIntent(message);
 
-  const decision = routeConversation(message);
-  if (decision.action !== 'fallback') {
-    console.log(`[Tutor Conversation Manager] Intercepted. Action: ${decision.action}, Intent: ${decision.metadata.intent}, Confidence: ${decision.metadata.confidence}`);
-    const polishedText = runTutorResponseQualityGuard(decision.content);
-    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      content: polishedText,
-      intent: decision.metadata.intent,
-      category: decision.metadata.category,
-      confidence: decision.metadata.confidence,
-      entities: decision.metadata.entities,
-      action: decision.action
-    }));
-    return;
-  }
-
-  const filterRefusal = filterTutorRequestIntent(message);
+  const filterRefusal = filterRequestIntent(message, 'tutor');
   if (filterRefusal) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -737,7 +457,7 @@ async function handleCourseTutor(payload, res) {
       temperature: 0.7
     });
 
-    const guardedText = runTutorResponseQualityGuard(rawText);
+    const guardedText = runResponseQualityGuard(rawText, 'tutor');
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -749,6 +469,236 @@ async function handleCourseTutor(payload, res) {
       entities: classification.entities,
       action: 'fallback_tutor_gemini'
     }));
+  } catch (error) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
+ * Feature 6: Knowledge Base Indexing Support
+ */
+async function handleIndexCourse(payload, res) {
+  const { course_id } = payload;
+  if (!course_id) {
+    res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'course_id is required' }));
+    return;
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Server configuration error: missing SUPABASE_URL or SUPABASE_ANON_KEY' }));
+    return;
+  }
+
+  try {
+    // 1. Idempotency: Delete existing embeddings for this course before re-indexing
+    const deleteRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`
+      }
+    });
+
+    if (!deleteRes.ok) {
+      throw new Error(`Failed to clear existing index: ${await deleteRes.text()}`);
+    }
+
+    // 2. Fetch all materials and lessons for the course
+    const [materialsRes, lessonsRes] = await Promise.all([
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      })
+    ]);
+
+    if (!materialsRes.ok) throw new Error(`Failed to fetch materials: ${await materialsRes.text()}`);
+    if (!lessonsRes.ok) throw new Error(`Failed to fetch lessons: ${await lessonsRes.text()}`);
+
+    const materials = await materialsRes.json();
+    const lessons = await lessonsRes.json();
+
+    const chunks = [];
+
+    if (materials && Array.isArray(materials)) {
+      for (const m of materials) {
+        const fileUrl = m.file_url || '';
+        let isPdf = false;
+        try {
+          const urlObj = new URL(fileUrl);
+          const pathOnly = urlObj.pathname.toLowerCase();
+          isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf');
+        } catch (e) {
+          isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+        }
+
+        if (isPdf) {
+          try {
+            // Call PDF text extractor helper logic
+            const pdfResponse = await fetch(fileUrl);
+            if (pdfResponse.ok) {
+              const arrayBuffer = await pdfResponse.arrayBuffer();
+              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+              const apiKey = resolveApiKey('tutor', payload);
+              const model = 'gemini-1.5-flash';
+
+              const requestBody = {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        inline_data: {
+                          mime_type: 'application/pdf',
+                          data: base64Data
+                        }
+                      },
+                      {
+                        text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                      }
+                    ]
+                  }
+                ]
+              };
+
+              const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+                if (pdfText.trim().length > 0) {
+                  // Dynamic Structure-Aware Segmenting (Chapter/Section/Topic/Week boundaries)
+                  const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|section|topic|week)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                  const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                  const parsedChunks = [];
+
+                  let currentSegment = "";
+                  for (const segment of rawSegments) {
+                    if (currentSegment && (currentSegment.length + segment.length > 2500)) {
+                      parsedChunks.push(currentSegment);
+                      currentSegment = segment;
+                    } else {
+                      currentSegment = currentSegment ? (currentSegment + "\n\n" + segment) : segment;
+                    }
+                  }
+                  if (currentSegment) {
+                    parsedChunks.push(currentSegment);
+                  }
+
+                  let chunkIndex = 0;
+                  for (const chunkText of parsedChunks) {
+                    chunks.push({
+                      material_id: m.id,
+                      course_id: course_id,
+                      content: `Document: ${m.title}\nContent Segment:\n${chunkText}`,
+                      metadata: { type: 'material_pdf', title: m.title, chunk_index: chunkIndex++ }
+                    });
+                  }
+                  continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                }
+              }
+            }
+          } catch (err) {
+            console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+          }
+        }
+
+        // Fallback to title and description for non-PDFs or failed extractions
+        chunks.push({
+          material_id: m.id,
+          course_id: course_id,
+          content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
+          metadata: { type: 'material', title: m.title }
+        });
+      }
+    }
+
+    if (lessons && Array.isArray(lessons)) {
+      lessons.forEach((l) => {
+        const content = l.content || '';
+        const chunkSize = 2000;
+        for (let i = 0; i < content.length; i += chunkSize) {
+          chunks.push({
+            lesson_id: l.id,
+            course_id: course_id,
+            content: `Lesson Title: ${l.title}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+            metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize) }
+          });
+        }
+      });
+    }
+
+    if (chunks.length === 0) {
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'No content to index for this course.' }));
+      return;
+    }
+
+    // Process in batches of 10
+    const batchSize = 10;
+    const apiKey = resolveApiKey('generate_batch_embeddings', payload);
+    const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
+    const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
+
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+
+      const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: batch.map(c => ({
+            model: `models/${cleanEmbeddingModel}`,
+            content: { parts: [{ text: c.content }] },
+            outputDimensionality: 768
+          }))
+        })
+      });
+
+      if (!embedResponse.ok) {
+        throw new Error(`Batch Embedding Generation failed: ${await embedResponse.text()}`);
+      }
+
+      const embedResult = await embedResponse.json();
+      const embeddings = embedResult.embeddings.map(e => e.values);
+
+      const records = batch.map((chunk, idx) => ({
+        ...chunk,
+        embedding: embeddings[idx]
+      }));
+
+      // Bulk insert records via Supabase REST API
+      const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation'
+        },
+        body: JSON.stringify(records)
+      });
+
+      if (!insertResponse.ok) {
+        throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
+      }
+    }
+
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }));
+
   } catch (error) {
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: error.message }));
@@ -832,7 +782,7 @@ Assessment Design Requirements:
 - Align questions with GES SHS curriculum expectations and WASSCE examination standards.
 - Match the cognitive demand to the specified proficiency level.
 - Use appropriate WASSCE command verbs.
-- Ensure questions assess knowledge, recal, understanding, skills, application, and reasoning where appropriate.
+- Ensure questions assess knowledge, recall, understanding, skills, application, and reasoning where appropriate.
 - Ensure questions have clear marking expectations.
 
   Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
@@ -879,11 +829,11 @@ Assessment Design Requirements:
     }
 
     parsed.forEach(q => {
-      if (q.text) q.text = runTutorResponseQualityGuard(q.text);
-      if (q.hint) q.hint = runTutorResponseQualityGuard(q.hint);
-      if (q.explanation) q.explanation = runTutorResponseQualityGuard(q.explanation);
+      if (q.text) q.text = runResponseQualityGuard(q.text, 'tutor');
+      if (q.hint) q.hint = runResponseQualityGuard(q.hint, 'tutor');
+      if (q.explanation) q.explanation = runResponseQualityGuard(q.explanation, 'tutor');
       if (Array.isArray(q.options)) {
-        q.options = q.options.map(opt => typeof opt === 'string' ? runTutorResponseQualityGuard(opt) : opt);
+        q.options = q.options.map(opt => typeof opt === 'string' ? runResponseQualityGuard(opt, 'tutor') : opt);
       }
       if (typeof q.points === 'string') {
         q.points = parseInt(q.points) || 5;
@@ -997,15 +947,15 @@ async function handleGradingAssistant(payload, res) {
     }
 
     if (parsed) {
-      if (parsed.report) parsed.report = runTutorResponseQualityGuard(parsed.report);
-      if (parsed.overall_feedback) parsed.overall_feedback = runTutorResponseQualityGuard(parsed.overall_feedback);
+      if (parsed.report) parsed.report = runResponseQualityGuard(parsed.report, 'tutor');
+      if (parsed.overall_feedback) parsed.overall_feedback = runResponseQualityGuard(parsed.overall_feedback, 'tutor');
       if (Array.isArray(parsed.questions)) {
         parsed.questions.forEach(q => {
-          if (q.feedback) q.feedback = runTutorResponseQualityGuard(q.feedback);
+          if (q.feedback) q.feedback = runResponseQualityGuard(q.feedback, 'tutor');
         });
       }
     } else {
-      const guardedText = runTutorResponseQualityGuard(rawText);
+      const guardedText = runResponseQualityGuard(rawText, 'tutor');
       parsed = {
         report: guardedText,
         overall_feedback: "Please review the detailed AI Insights report for grading suggestions.",
@@ -1049,7 +999,7 @@ async function handleAnalyticsAI(payload, res) {
     Since you are an administrator, focus on high-level administrative insights, platform-wide trends, system-wide metrics (such as active users, courses, enrollments, submissions), and potential security, proctoring, or academic integrity risk summaries across the entire institution.`;
   } else if (role === 'teacher') {
     systemPrompt += `
-    Since you are a teacher, focus on course-level performance, tracking student completion rates, average scores, identifying low-performing or "at-risk" students, recommending targeted academic interventions, and suggesting updates or adjustments to lesson materials or assignments based on performance gaps.`;
+    Since you are a teacher, focus on course-level performance, tracking student completion rates, average scores, identifying low-performing or \"at-risk\" students, recommending targeted academic interventions, and suggesting updates or adjustments to lesson materials or assignments based on performance gaps.`;
   } else {
     systemPrompt += `
     Since you are a student, focus on personal progress tutoring. Highlight strengths, identify areas of improvement based on recent grades, suggest helpful study habits, and provide encouragement. Be a supportive personal study assistant.`;
@@ -1076,7 +1026,7 @@ Strict Feedback Quality Check:
       temperature: 0.7
     });
 
-    const guardedText = runTutorResponseQualityGuard(rawText);
+    const guardedText = runResponseQualityGuard(rawText, 'tutor');
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -1173,7 +1123,8 @@ async function handleGenerateEmbedding(payload, res) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: `models/${cleanEmbeddingModel}`,
-        content: { parts: [{ text }] }
+        content: { parts: [{ text }] },
+        outputDimensionality: 768
       })
     });
 
@@ -1212,7 +1163,8 @@ async function handleGenerateBatchEmbeddings(payload, res) {
       body: JSON.stringify({
         requests: texts.map(text => ({
           model: `models/${cleanEmbeddingModel}`,
-          content: { parts: [{ text }] }
+          content: { parts: [{ text }] },
+          outputDimensionality: 768
         }))
       })
     });
@@ -1285,7 +1237,7 @@ async function handleVoiceAI(payload, res) {
 
     const data = await response.json();
     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const guardedText = runTutorResponseQualityGuard(rawText);
+    const guardedText = runResponseQualityGuard(rawText, 'tutor');
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({

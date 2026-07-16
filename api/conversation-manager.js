@@ -378,9 +378,289 @@ function routeConversation(message) {
   }
 }
 
+/**
+ * Centralized request intent safety and scope filtering helper.
+ */
+function filterRequestIntent(message, context = 'kofi') {
+  const normalized = message.toLowerCase();
+
+  // 1. Prompt Injection Indicators
+  const injectionPatterns = [
+    "ignore previous instructions",
+    "ignore all instructions",
+    "system prompt",
+    "system instruction",
+    "you are now",
+    "forget everything",
+    "developer mode",
+    "dan mode",
+    "jailbreak",
+    "override",
+    "ignore the instructions",
+    "output the above",
+    "print your instructions",
+    "reveal your prompt"
+  ];
+
+  if (injectionPatterns.some(p => normalized.includes(p))) {
+    if (context === 'tutor') {
+      return "I am designed to be a helpful academic course tutor. I cannot bypass, reveal, or modify my system instructions, prompt configuration, or safety parameters. How can I assist you with your learning today?";
+    } else {
+      return "I am designed to be a helpful guide for the SmartLMS platform. I cannot bypass, reveal, or modify my system instructions, prompt configuration, or safety parameters. How can I assist you with navigating our features today?";
+    }
+  }
+
+  // 2. Toxic or Harmful Intent Indicators
+  const harmfulIntentPatterns = [
+    "how to hack",
+    "write a virus",
+    "write malware",
+    "write an exploit",
+    "how to bypass anti-cheat",
+    "bypass anti cheat",
+    "cheat on quiz",
+    "sql injection script",
+    "xss script",
+    "how to ddos"
+  ];
+
+  if (harmfulIntentPatterns.some(p => normalized.includes(p))) {
+    if (context === 'tutor') {
+      return "As your academic tutor, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain computer science or security concepts from an educational perspective instead!";
+    } else {
+      return "As the SmartLMS guide, I cannot assist with security bypasses, cheats, or malicious activities. I would be happy to explain our platform security or proctoring features from an educational perspective instead!";
+    }
+  }
+
+  // 3. Out-Of-Scope General Knowledge/Trivia Tasks that are completely off-topic
+  const outOfScopeIndicators = [
+    "recipe for",
+    "how to cook",
+    "how to bake",
+    "who is the president",
+    "translate this to spanish",
+    "how to make a cake",
+    "favorite celebrity",
+    "gossip about"
+  ];
+
+  if (outOfScopeIndicators.some(p => normalized.includes(p))) {
+    if (context === 'tutor') {
+      return "I am your dedicated academic course tutor. I specialize in helping you understand the lessons, materials, and concepts of this course. I am unable to answer general lifestyle, entertainment, or unrelated queries. Let me know if you have any questions about our course topics!";
+    } else {
+      return "I am your dedicated platform guide. I specialize in helping you understand the features, tools, and capabilities of SmartLMS. I am unable to answer general lifestyle, entertainment, or unrelated queries. Let me know if you have any questions about navigating our platform!";
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Centralized post-processing quality guard to ensure safety, formatting correctness, and grammar.
+ */
+function runResponseQualityGuard(response, context = 'kofi') {
+  if (!response || typeof response !== 'string') return "";
+
+  let cleaned = response;
+
+  const leakWords = [
+    "You are a professional academic tutor",
+    "Key Tutoring Principles:",
+    "Strict Academic Guardrails:",
+    "systemPrompt",
+    "systemInstruction",
+    "Course Context:",
+    "Key Platform Features",
+    "Important Constraints:",
+    "Strict Conversational Quality Check:"
+  ];
+
+  for (const leak of leakWords) {
+    if (cleaned.includes(leak)) {
+      cleaned = cleaned.split(leak)[0];
+    }
+  }
+
+  if (context === 'tutor') {
+    cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "tutor configuration");
+  } else {
+    cleaned = cleaned.replace(/systemPrompt|system_instruction|generationConfig/gi, "configuration");
+  }
+
+  const preambles = [
+    /^sure,?\s*/i,
+    /^absolutely,?\s*/i,
+    /^i'd be happy to help with that,?\s*/i,
+    /^here is the information,?\s*/i,
+    /^as requested,?\s*/i,
+    /^certainly,?\s*/i,
+    /^no problem,?\s*/i
+  ];
+  for (const preamble of preambles) {
+    cleaned = cleaned.replace(preamble, "");
+  }
+
+  cleaned = cleaned.replace(/\b(actually|basically|honestly|literally|essentially|simply)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\b(you know|kind of|sort of)\b[,]?\s*/gi, "");
+  cleaned = cleaned.replace(/\bin order to\b/gi, "to");
+
+  const doubleWords = ["the", "and", "of", "to", "is", "in", "that", "a", "an", "with", "for", "on", "at", "by", "this", "it"];
+  for (const word of doubleWords) {
+    const doubleRegex = new RegExp(`\\b${word}\\s+${word}\\b`, 'gi');
+    cleaned = cleaned.replace(doubleRegex, word);
+  }
+
+  const urlPlaceholders = [];
+  cleaned = cleaned.replace(/(https?:\/\/[^\s]+)/gi, (match) => {
+    const idx = urlPlaceholders.length;
+    urlPlaceholders.push(match);
+    return `___URL_PLACEHOLDER_${idx}___`;
+  });
+
+  const decimalPlaceholders = [];
+  cleaned = cleaned.replace(/(\d+[\.,]\d+)/g, (match) => {
+    const idx = decimalPlaceholders.length;
+    decimalPlaceholders.push(match);
+    return `___DECIMAL_PLACEHOLDER_${idx}___`;
+  });
+
+  cleaned = cleaned.replace(/\.\.\./g, "___ELLIPSIS_PLACEHOLDER___");
+
+  cleaned = cleaned.replace(/!{2,}/g, "!");
+  cleaned = cleaned.replace(/\?{2,}/g, "?");
+  cleaned = cleaned.replace(/,{2,}/g, ",");
+  cleaned = cleaned.replace(/\.{4,}/g, "...");
+  cleaned = cleaned.replace(/(?<!\.)\.{2}(?!\.)/g, ".");
+
+  cleaned = cleaned.replace(/([,.!?])([A-Za-z0-9])/g, "$1 $2");
+  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+
+  cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
+
+  for (let i = 0; i < decimalPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
+  }
+
+  for (let i = 0; i < urlPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
+  }
+
+  cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
+
+  const codeBlockCount = (cleaned.match(/```/g) || []).length;
+  if (codeBlockCount % 2 !== 0) {
+    cleaned += "\n```";
+  }
+
+  const inlineCodeCount = (cleaned.match(/`/g) || []).length;
+  if (inlineCodeCount % 2 !== 0) {
+    cleaned += "`";
+  }
+
+  const boldCount = (cleaned.match(/\*\*/g) || []).length;
+  if (boldCount % 2 !== 0) {
+    cleaned += "**";
+  }
+
+  const italicCount = (cleaned.match(/_/g) || []).length;
+  if (italicCount % 2 !== 0) {
+    cleaned += "_";
+  }
+
+  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+
+  return cleaned.trim();
+}
+
+/**
+ * Centralized API key resolution helper.
+ */
+function resolveApiKey(type, payload = {}) {
+  const projectId = payload.project_id || payload.projectId || payload.course_id;
+  if (projectId) {
+    const projectEnvKey = `GEMINI_PROJECT_${String(projectId).toUpperCase().replace(/[^A-Z0-9_]/g, '_')}_API_KEY`;
+    if (process.env[projectEnvKey]) {
+      return process.env[projectEnvKey];
+    }
+  }
+
+  const featureKeys = {
+    tutor: process.env.GEMINI_COURSE_TUTOR_API_KEY,
+    generate_assessment: process.env.GEMINI_ASSESSMENT_API_KEY,
+    grading: process.env.GEMINI_GRADING_API_KEY,
+    analytics: process.env.GEMINI_ANALYTICS_API_KEY,
+    kofi: process.env.GEMINI_PLATFORM_API_KEY,
+    voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY,
+    generate_embedding: process.env.GEMINI_EMBEDDING_API_KEY,
+    generate_batch_embeddings: process.env.GEMINI_EMBEDDING_API_KEY
+  };
+
+  if (featureKeys[type]) {
+    return featureKeys[type];
+  }
+
+  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
+         process.env.GEMINI_COURSE_TUTOR_API_KEY ||
+         process.env.GEMINI_PLATFORM_API_KEY ||
+         process.env.GEMINI_API_KEY ||
+         process.env.GEMINI_VOICE_API_KEY ||
+         process.env.GEMINI_EMBEDDING_API_KEY;
+}
+
+/**
+ * Centralized model ID resolution helper.
+ */
+function resolveModelId(type, payload = {}) {
+  if (type === 'voice') {
+    let voiceModel = process.env.GEMINI_VOICE_MODEL || "gemini-2.5-flash-native-audio";
+    const norm = voiceModel.trim().toLowerCase();
+    if (
+      norm === 'gemini 2.5 flash native audio' ||
+      norm === 'gemini-2.5-flash-native-audio' ||
+      norm === 'gemini_2.5_flash_native_audio' ||
+      norm === 'gemini 25 flash native audio' ||
+      norm === 'gemini-25-flash-native-audio' ||
+      norm === 'models/gemini-2.5-flash-native-audio'
+    ) {
+      return "gemini-2.5-flash-native-audio";
+    }
+    return voiceModel;
+  }
+
+  if (type === 'generate_embedding' || type === 'generate_batch_embeddings') {
+    let embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+    const norm = embeddingModel.trim().toLowerCase();
+    if (
+      norm === 'gemini-embedding' ||
+      norm === 'gemini_embedding' ||
+      norm === 'gemini embedding' ||
+      norm === 'gemini-embedding-001' ||
+      norm === 'gemini-embedding-004' ||
+      norm === 'text-embedding-004' ||
+      norm === 'gemini embedding 001' ||
+      norm === 'gemini_embedding_001' ||
+      norm === 'gemini embedding 004' ||
+      norm === 'gemini_embedding_004' ||
+      norm === 'models/gemini-embedding-001' ||
+      norm === 'models/text-embedding-004'
+    ) {
+      return "gemini-embedding-001";
+    }
+    return embeddingModel;
+  }
+
+  // The 5 core project models (Course Tutor, Assessment Generator, Grading Assistant, Analytics AI, and Kofi Assistant)
+  // are all strictly hardcoded to use the centralized official, valid, and supported Gemini 3.1 Flash Lite model ID.
+  return "gemini-3.1-flash-lite";
+}
+
 module.exports = {
   classifyIntent,
   routeConversation,
   predefinedResponses,
-  intentLabels
+  intentLabels,
+  filterRequestIntent,
+  runResponseQualityGuard,
+  resolveApiKey,
+  resolveModelId
 };

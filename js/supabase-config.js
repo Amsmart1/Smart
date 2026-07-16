@@ -1044,19 +1044,31 @@ class SupabaseDB {
 
     static async saveLesson(lesson) {
         const data = await this._upsert('lessons', lesson);
-        if (lesson && lesson.course_id && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
-            window.AIManager.indexCourse(lesson.course_id).catch(err => console.warn('Background auto-indexing failed:', err));
+        if (data?.[0]?.course_id && typeof window !== 'undefined' && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(data[0].course_id).catch(err => console.error('Auto-indexing lesson failed:', err));
         }
         return data?.[0];
     }
 
     static async deleteLesson(id) {
+        let courseId = null;
+        try {
+            const { data } = await supabaseClient.from('lessons').select('course_id').eq('id', id).maybeSingle();
+            if (data) courseId = data.course_id;
+        } catch (e) {
+            console.warn('Failed to retrieve course_id for re-indexing during lesson deletion:', e);
+        }
+
         const { error } = await supabaseClient
             .from('lessons')
             .delete()
             .eq('id', id);
         if (error) throw error;
         _cache.invalidate('lessons');
+
+        if (courseId && typeof window !== 'undefined' && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(courseId).catch(err => console.error('Auto-indexing lesson deletion failed:', err));
+        }
     }
 
     // Discussion operations
@@ -1077,25 +1089,33 @@ class SupabaseDB {
     static async saveMaterial(material) {
         const data = await this._upsert('materials', material);
         _cache.invalidate('lessons');
-        if (material && material.course_id && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
-            window.AIManager.indexCourse(material.course_id).catch(err => console.warn('Background auto-indexing failed:', err));
+        if (data?.[0]?.course_id && typeof window !== 'undefined' && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(data[0].course_id).catch(err => console.error('Auto-indexing material failed:', err));
         }
         return data?.[0];
     }
 
     static async deleteMaterial(id) {
+        let courseId = null;
         try {
-            const { data: material } = await supabaseClient.from('materials').select('file_url').eq('id', id).single();
-            if (material && material.file_url) {
-                await this.deleteFileByUrl(material.file_url);
+            const { data: material } = await supabaseClient.from('materials').select('course_id, file_url').eq('id', id).maybeSingle();
+            if (material) {
+                courseId = material.course_id;
+                if (material.file_url) {
+                    await this.deleteFileByUrl(material.file_url);
+                }
             }
-        } catch (e) { console.warn('Failed to cleanup material file:', e); }
+        } catch (e) { console.warn('Failed to cleanup material file or get course_id:', e); }
 
         const { error } = await supabaseClient
             .from('materials')
             .delete()
             .eq('id', id);
         if (error) throw error;
+
+        if (courseId && typeof window !== 'undefined' && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
+            window.AIManager.indexCourse(courseId).catch(err => console.error('Auto-indexing material deletion failed:', err));
+        }
     }
 
     // Discussion operations
@@ -1296,6 +1316,8 @@ class SupabaseDB {
         const updatedUser = {
             ...user,
             password: hashedTemp,
+            failed_attempts: 0,
+            locked_until: null,
             reset_request: {
                 ...user.reset_request,
                 status: 'approved',
@@ -1353,6 +1375,13 @@ class SupabaseDB {
             session_id: sid || '',
             sessionId: sid || ''
         };
+
+        // Also enrich the nested payload object if present to prevent any destructuring mismatches
+        if (enrichedPayload.payload && typeof enrichedPayload.payload === 'object') {
+            enrichedPayload.payload.session_id = sid || '';
+            enrichedPayload.payload.sessionId = sid || '';
+        }
+
         const { data, error } = await supabaseClient.functions.invoke(name, {
             body: enrichedPayload
         });
