@@ -308,11 +308,30 @@ serve(async (req) => {
                                   // Detect structure type
                                   let structureType = 'segment';
                                   const firstWords = chunkText.substring(0, 50).toLowerCase();
-                                  if (firstWords.includes('chapter')) structureType = 'chapter';
-                                  else if (firstWords.includes('section')) structureType = 'section';
-                                  else if (firstWords.includes('topic')) structureType = 'topic';
-                                  else if (firstWords.includes('week')) structureType = 'week';
-                                  else if (firstWords.includes('lesson')) structureType = 'lesson';
+
+                                  // Match against allowedOptions (supports custom keywords dynamically)
+                                  for (const opt of allowedOptions) {
+                                      const cleanOpt = opt.toLowerCase().trim();
+                                      if (firstWords.includes(cleanOpt)) {
+                                          // Canonicalize plural to singular if possible
+                                          if (cleanOpt.endsWith('s')) {
+                                              const singular = cleanOpt.slice(0, -1);
+                                              structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                                          } else {
+                                              structureType = cleanOpt;
+                                          }
+                                          break;
+                                      }
+                                  }
+
+                                  // Fallback to standard hardcoded checks to guarantee zero-regression
+                                  if (structureType === 'segment') {
+                                      if (firstWords.includes('chapter')) structureType = 'chapter';
+                                      else if (firstWords.includes('section')) structureType = 'section';
+                                      else if (firstWords.includes('topic')) structureType = 'topic';
+                                      else if (firstWords.includes('week')) structureType = 'week';
+                                      else if (firstWords.includes('lesson')) structureType = 'lesson';
+                                  }
 
                                   chunks.push({
                                       material_id: m.id,
