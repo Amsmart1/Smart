@@ -270,7 +270,9 @@ serve(async (req) => {
 
                           if (pdfText.trim().length > 0) {
                               // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-                              const boundaryRegex = /(?:\r?\n|^)(?=(?:chapter|chapters|section|sections|topic|topics|week|weeks|lesson|lessons)\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\b|(?:\r?\n){2,}(?=[a-z\s]{3,100}:))/i;
+                              const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+                              const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+                              const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
                               const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
                               const parsedChunks: string[] = [];
 
