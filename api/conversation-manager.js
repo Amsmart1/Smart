@@ -592,14 +592,16 @@ function resolveApiKey(type, payload = {}) {
     kofi: process.env.GEMINI_PLATFORM_API_KEY,
     voice: process.env.GEMINI_VOICE_API_KEY || process.env.GEMINI_COURSE_TUTOR_API_KEY,
     generate_embedding: process.env.GEMINI_EMBEDDING_API_KEY,
-    generate_batch_embeddings: process.env.GEMINI_EMBEDDING_API_KEY
+    generate_batch_embeddings: process.env.GEMINI_EMBEDDING_API_KEY,
+    extract_pdf_text: process.env.GEMINI_EXTRACTION_API_KEY
   };
 
   if (featureKeys[type]) {
     return featureKeys[type];
   }
 
-  return process.env.GEMINI_31_FLASH_LITE_API_KEY ||
+  return process.env.GEMINI_EXTRACTION_API_KEY ||
+         process.env.GEMINI_31_FLASH_LITE_API_KEY ||
          process.env.GEMINI_COURSE_TUTOR_API_KEY ||
          process.env.GEMINI_PLATFORM_API_KEY ||
          process.env.GEMINI_API_KEY ||

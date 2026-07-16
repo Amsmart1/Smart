@@ -652,8 +652,8 @@ async function handleIndexCourse(payload, res) {
             const arrayBuffer = await pdfResponse.arrayBuffer();
             const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
-            const apiKey = resolveApiKey('tutor', payload);
-            const model = 'gemini-1.5-flash';
+            const apiKey = resolveApiKey('extract_pdf_text', payload);
+            const model = resolveModelId('extract_pdf_text', payload);
 
             const requestBody = {
               contents: [
@@ -1205,8 +1205,8 @@ async function handleExtractPdfText(payload, res) {
     const arrayBuffer = await pdfResponse.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
-    const apiKey = resolveApiKey('tutor', payload);
-    const model = 'gemini-1.5-flash';
+    const apiKey = resolveApiKey('extract_pdf_text', payload);
+    const model = resolveModelId('extract_pdf_text', payload);
 
     const requestBody = {
       contents: [
