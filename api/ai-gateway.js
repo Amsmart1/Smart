@@ -501,7 +501,7 @@ async function handleCourseTutor(payload, res) {
  * Feature 6: Knowledge Base Indexing Support
  */
 async function handleIndexCourse(payload, res) {
-  const { course_id } = payload;
+  const { course_id, material_id } = payload;
   if (!course_id) {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'course_id is required' }));
@@ -518,8 +518,12 @@ async function handleIndexCourse(payload, res) {
   }
 
   try {
-    // 1. Idempotency: Delete existing embeddings for this course before re-indexing
-    const deleteRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}`, {
+    // 1. Idempotency: Delete existing embeddings for this course or material before re-indexing
+    const deleteUrl = material_id
+      ? `${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?material_id=eq.${material_id}`
+      : `${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}`;
+
+    const deleteRes = await fetch(deleteUrl, {
       method: 'DELETE',
       headers: {
         'apikey': supabaseAnonKey,
@@ -531,32 +535,46 @@ async function handleIndexCourse(payload, res) {
       throw new Error(`Failed to clear existing index: ${await deleteRes.text()}`);
     }
 
-    // 2. Fetch all materials, lessons, topics, and course details
-    const [materialsRes, lessonsRes, topicsRes, courseRes] = await Promise.all([
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url,file_type`, {
-        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-      }),
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content,topic_id`, {
-        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-      }),
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&select=id,title,description`, {
-        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-      }),
-      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}&select=title,description,semester`, {
-        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-      })
-    ]);
+    let materials = [];
+    let lessons = [];
+    let topics = [];
+    let course = null;
 
-    if (!materialsRes.ok) throw new Error(`Failed to fetch materials: ${await materialsRes.text()}`);
-    if (!lessonsRes.ok) throw new Error(`Failed to fetch lessons: ${await lessonsRes.text()}`);
-    if (!topicsRes.ok) throw new Error(`Failed to fetch topics: ${await topicsRes.text()}`);
-    if (!courseRes.ok) throw new Error(`Failed to fetch course: ${await courseRes.text()}`);
+    if (material_id) {
+      // Indexing a single, specific material
+      const materialsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?id=eq.${material_id}&select=id,title,description,file_url,file_type`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      });
+      if (!materialsRes.ok) throw new Error(`Failed to fetch material: ${await materialsRes.text()}`);
+      materials = await materialsRes.json();
+    } else {
+      // Full course level indexing
+      const [materialsRes, lessonsRes, topicsRes, courseRes] = await Promise.all([
+        fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url,file_type`, {
+          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+        }),
+        fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content,topic_id`, {
+          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+        }),
+        fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&select=id,title,description`, {
+          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+        }),
+        fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}&select=title,description,semester`, {
+          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+        })
+      ]);
 
-    const materials = await materialsRes.json();
-    const lessons = await lessonsRes.json();
-    const topics = await topicsRes.json();
-    const courseList = await courseRes.json();
-    const course = courseList?.[0] || null;
+      if (!materialsRes.ok) throw new Error(`Failed to fetch materials: ${await materialsRes.text()}`);
+      if (!lessonsRes.ok) throw new Error(`Failed to fetch lessons: ${await lessonsRes.text()}`);
+      if (!topicsRes.ok) throw new Error(`Failed to fetch topics: ${await topicsRes.text()}`);
+      if (!courseRes.ok) throw new Error(`Failed to fetch course: ${await courseRes.text()}`);
+
+      materials = await materialsRes.json();
+      lessons = await lessonsRes.json();
+      topics = await topicsRes.json();
+      const courseList = await courseRes.json();
+      course = courseList?.[0] || null;
+    }
 
     const chunks = [];
 
@@ -628,105 +646,133 @@ async function handleIndexCourse(payload, res) {
           try {
             // Call PDF text extractor helper logic
             const pdfResponse = await fetch(fileUrl);
-            if (pdfResponse.ok) {
-              const arrayBuffer = await pdfResponse.arrayBuffer();
-              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+            if (!pdfResponse.ok) {
+              throw new Error(`Failed to download PDF from storage: ${pdfResponse.statusText}`);
+            }
+            const arrayBuffer = await pdfResponse.arrayBuffer();
+            const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
-              const apiKey = resolveApiKey('tutor', payload);
-              const model = 'gemini-1.5-flash';
+            const apiKey = resolveApiKey('tutor', payload);
+            const model = 'gemini-1.5-flash';
 
-              const requestBody = {
-                contents: [
-                  {
-                    parts: [
-                      {
-                        inline_data: {
-                          mime_type: 'application/pdf',
-                          data: base64Data
-                        }
-                      },
-                      {
-                        text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+            const requestBody = {
+              contents: [
+                {
+                  parts: [
+                    {
+                      inline_data: {
+                        mime_type: 'application/pdf',
+                        data: base64Data
                       }
-                    ]
-                  }
-                ]
-              };
-
-              const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-              });
-
-              if (response.ok) {
-                const data = await response.json();
-                const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-                if (pdfText.trim().length > 0) {
-                  // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-                  const allowedOptions = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
-                  const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-                  const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
-                  const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-                  const parsedChunks = [];
-
-                  for (const segment of rawSegments) {
-                    if (segment.length > 2500) {
-                      // Split large segment cleanly
-                      let start = 0;
-                      while (start < segment.length) {
-                        let end = start + 2500;
-                        if (end < segment.length) {
-                          const lastBreak = segment.lastIndexOf('\n', end);
-                          if (lastBreak > start + 1000) {
-                            end = lastBreak;
-                          } else {
-                            const lastPeriod = segment.lastIndexOf('. ', end);
-                            if (lastPeriod > start + 1000) {
-                              end = lastPeriod + 2;
-                            }
-                          }
-                        } else {
-                          end = segment.length;
-                        }
-                        parsedChunks.push(segment.substring(start, end).trim());
-                        start = end;
-                      }
-                    } else {
-                      parsedChunks.push(segment);
+                    },
+                    {
+                      text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
                     }
-                  }
-
-                  let chunkIndex = 0;
-                  for (const chunkText of parsedChunks) {
-                    // Detect structure type
-                    let structureType = 'segment';
-                    const firstWords = chunkText.substring(0, 50).toLowerCase();
-                    if (firstWords.includes('chapter')) structureType = 'chapter';
-                    else if (firstWords.includes('section')) structureType = 'section';
-                    else if (firstWords.includes('topic')) structureType = 'topic';
-                    else if (firstWords.includes('week')) structureType = 'week';
-                    else if (firstWords.includes('lesson')) structureType = 'lesson';
-
-                    chunks.push({
-                      material_id: m.id,
-                      course_id: course_id,
-                      content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                      metadata: {
-                        type: 'material_pdf',
-                        title: m.title,
-                        chunk_index: chunkIndex++,
-                        structure_type: structureType
-                      }
-                    });
-                  }
-                  continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                  ]
                 }
+              ]
+            };
+
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+            if (!pdfText || pdfText.trim().length === 0) {
+              throw new Error("Gemini extracted zero text from this PDF document.");
+            }
+
+            // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
+            const allowedOptions = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+            const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+            const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+            const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+            const parsedChunks = [];
+
+            for (const segment of rawSegments) {
+              if (segment.length > 2500) {
+                // Split large segment cleanly
+                let start = 0;
+                while (start < segment.length) {
+                  let end = start + 2500;
+                  if (end < segment.length) {
+                    const lastBreak = segment.lastIndexOf('\n', end);
+                    if (lastBreak > start + 1000) {
+                      end = lastBreak;
+                    } else {
+                      const lastPeriod = segment.lastIndexOf('. ', end);
+                      if (lastPeriod > start + 1000) {
+                        end = lastPeriod + 2;
+                      }
+                    }
+                  } else {
+                    end = segment.length;
+                  }
+                  parsedChunks.push(segment.substring(start, end).trim());
+                  start = end;
+                }
+              } else {
+                parsedChunks.push(segment);
               }
             }
+
+            let chunkIndex = 0;
+            for (const chunkText of parsedChunks) {
+              // Detect structure type
+              let structureType = 'segment';
+              const firstWords = chunkText.substring(0, 50).toLowerCase();
+
+              // Match against allowedOptions (supports custom keywords dynamically)
+              for (const opt of allowedOptions) {
+                const cleanOpt = opt.toLowerCase().trim();
+                if (firstWords.includes(cleanOpt)) {
+                  // Canonicalize plural to singular if possible
+                  if (cleanOpt.endsWith('s')) {
+                    const singular = cleanOpt.slice(0, -1);
+                    structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                  } else {
+                    structureType = cleanOpt;
+                  }
+                  break;
+                }
+              }
+
+              // Fallback to standard hardcoded checks to guarantee zero-regression
+              if (structureType === 'segment') {
+                if (firstWords.includes('chapter')) structureType = 'chapter';
+                else if (firstWords.includes('section')) structureType = 'section';
+                else if (firstWords.includes('topic')) structureType = 'topic';
+                else if (firstWords.includes('week')) structureType = 'week';
+                else if (firstWords.includes('lesson')) structureType = 'lesson';
+              }
+
+              chunks.push({
+                material_id: m.id,
+                course_id: course_id,
+                content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                metadata: {
+                  type: 'material_pdf',
+                  title: m.title,
+                  chunk_index: chunkIndex++,
+                  structure_type: structureType
+                }
+              });
+            }
+            continue; // Skip the metadata fallback since we successfully indexed the PDF content
           } catch (err) {
             console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+            if (material_id) {
+              throw new Error(`PDF extraction failed: ${err.message}`);
+            }
           }
         }
 
