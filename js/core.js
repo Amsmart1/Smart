@@ -491,7 +491,7 @@ const UI = {
         `;
     },
 
-    confirm(message, title = 'Confirm Action') {
+    confirm(message, title = 'Confirm Action', isHtml = false) {
         return new Promise((resolve) => {
             const backdrop = document.createElement('div');
             backdrop.className = 'modal-backdrop';
@@ -499,7 +499,7 @@ const UI = {
             backdrop.innerHTML = `
                 <div class="modal" style="max-width:400px; text-align:center">
                     <h3>${escapeHtml(title)}</h3>
-                    <p class="small">${escapeHtml(message)}</p>
+                    <p class="small">${isHtml ? message : escapeHtml(message)}</p>
                     <div class="flex gap-10 mt-20">
                         <button class="button danger" id="confirmYes">Confirm</button>
                         <button class="button secondary" id="confirmNo">Cancel</button>

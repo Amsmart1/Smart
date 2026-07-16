@@ -3897,7 +3897,7 @@ async function indexMaterialForAI(materialId, courseId) {
       </div>
     `;
 
-    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor')) return;
+    if (!await UI.confirm(`Would you like to dynamically extract, segment, and index this material for the AI Tutor?${optionsHtml}`, 'Index Material for AI Tutor', true)) return;
 
     const chunk_options = [];
     if (document.getElementById('optChapters')?.checked) chunk_options.push('chapter', 'chapters');
