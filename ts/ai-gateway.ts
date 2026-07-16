@@ -163,29 +163,53 @@ serve(async (req) => {
 
       vercelPayload.context = context;
     } else if (type === 'index_course') {
-      const { course_id } = payload;
+      const { course_id, material_id } = payload;
       if (!course_id) throw new Error('course_id is required');
 
-      // Idempotency: Delete existing embeddings for this course before re-indexing
-      const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('course_id', course_id);
-      if (deleteError) throw new Error(`Failed to clear existing index: ${deleteError.message}`);
+      // Idempotency: Delete existing embeddings before re-indexing
+      if (material_id) {
+          const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('material_id', material_id);
+          if (deleteError) throw new Error(`Failed to clear existing material index: ${deleteError.message}`);
+      } else {
+          const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('course_id', course_id);
+          if (deleteError) throw new Error(`Failed to clear existing course index: ${deleteError.message}`);
+      }
 
-      // Fetch all materials, lessons, topics, and course details
-      const [
-          { data: materials },
-          { data: lessons },
-          { data: topics },
-          { data: course }
-      ] = await Promise.all([
-          supabaseClient.from('materials').select('id, title, description, file_url, file_type').eq('course_id', course_id),
-          supabaseClient.from('lessons').select('id, title, content, topic_id').eq('course_id', course_id),
-          supabaseClient.from('topics').select('id, title, description').eq('course_id', course_id),
-          supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
-      ]);
+      let materials: any[] = [];
+      let lessons: any[] = [];
+      let topics: any[] = [];
+      let course: any = null;
+
+      if (material_id) {
+          // Indexing a single, specific material
+          const { data: mats, error: matsErr } = await supabaseClient
+              .from('materials')
+              .select('id, title, description, file_url, file_type')
+              .eq('id', material_id);
+          if (matsErr) throw new Error(`Failed to fetch material: ${matsErr.message}`);
+          materials = mats || [];
+      } else {
+          // Fetch everything for course-level indexing
+          const [
+              { data: mats },
+              { data: les },
+              { data: tops },
+              { data: crs }
+          ] = await Promise.all([
+              supabaseClient.from('materials').select('id, title, description, file_url, file_type').eq('course_id', course_id),
+              supabaseClient.from('lessons').select('id, title, content, topic_id').eq('course_id', course_id),
+              supabaseClient.from('topics').select('id, title, description').eq('course_id', course_id),
+              supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
+          ]);
+          materials = mats || [];
+          lessons = les || [];
+          topics = tops || [];
+          course = crs;
+      }
 
       const chunks: any[] = [];
 
-      // Index course info itself
+      // Index course info itself (only if course-level indexing)
       if (course) {
           chunks.push({
               course_id: course_id,
@@ -194,8 +218,8 @@ serve(async (req) => {
           });
       }
 
-      // Index topics
-      if (topics) {
+      // Index topics (only if course-level indexing)
+      if (topics && topics.length > 0) {
           topics.forEach((t: any) => {
               chunks.push({
                   course_id: course_id,
@@ -205,8 +229,8 @@ serve(async (req) => {
           });
       }
 
-      // Index lessons
-      if (lessons) {
+      // Index lessons (only if course-level indexing)
+      if (lessons && lessons.length > 0) {
           // Build topics map for lookup
           const topicsMap: Record<string, string> = {};
           if (topics) {
@@ -260,77 +284,106 @@ serve(async (req) => {
                           },
                           body: JSON.stringify({
                               type: 'extract_pdf_text',
-                              payload: { file_url: fileUrl, course_id }
+                              payload: { file_url: fileUrl, course_id, material_id }
                           })
                       });
 
-                      if (extractResponse.ok) {
-                          const extractResult = await extractResponse.json();
-                          const pdfText = extractResult.text || '';
+                      if (!extractResponse.ok) {
+                          throw new Error(`Text extraction service returned status ${extractResponse.status}: ${await extractResponse.text()}`);
+                      }
 
-                          if (pdfText.trim().length > 0) {
-                              // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-                              const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
-                              const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-                              const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
-                              const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-                              const parsedChunks: string[] = [];
+                      const extractResult = await extractResponse.json();
+                      if (extractResult.error) {
+                          throw new Error(extractResult.error);
+                      }
 
-                              for (const segment of rawSegments) {
-                                  if (segment.length > 2500) {
-                                      // Split large segment cleanly
-                                      let start = 0;
-                                      while (start < segment.length) {
-                                          let end = start + 2500;
-                                          if (end < segment.length) {
-                                              const lastBreak = segment.lastIndexOf('\n', end);
-                                              if (lastBreak > start + 1000) {
-                                                  end = lastBreak;
-                                              } else {
-                                                  const lastPeriod = segment.lastIndexOf('. ', end);
-                                                  if (lastPeriod > start + 1000) {
-                                                      end = lastPeriod + 2;
-                                                  }
-                                              }
-                                          } else {
-                                              end = segment.length;
+                      const pdfText = extractResult.text || '';
+                      if (pdfText.trim().length === 0) {
+                          throw new Error("No text content could be extracted from this PDF.");
+                      }
+
+                      // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
+                      const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+                      const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+                      const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+                      const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                      const parsedChunks: string[] = [];
+
+                      for (const segment of rawSegments) {
+                          if (segment.length > 2500) {
+                              // Split large segment cleanly
+                              let start = 0;
+                              while (start < segment.length) {
+                                  let end = start + 2500;
+                                  if (end < segment.length) {
+                                      const lastBreak = segment.lastIndexOf('\n', end);
+                                      if (lastBreak > start + 1000) {
+                                          end = lastBreak;
+                                      } else {
+                                          const lastPeriod = segment.lastIndexOf('. ', end);
+                                          if (lastPeriod > start + 1000) {
+                                              end = lastPeriod + 2;
                                           }
-                                          parsedChunks.push(segment.substring(start, end).trim());
-                                          start = end;
                                       }
                                   } else {
-                                      parsedChunks.push(segment);
+                                      end = segment.length;
                                   }
+                                  parsedChunks.push(segment.substring(start, end).trim());
+                                  start = end;
                               }
-
-                              let chunkIndex = 0;
-                              for (const chunkText of parsedChunks) {
-                                  // Detect structure type
-                                  let structureType = 'segment';
-                                  const firstWords = chunkText.substring(0, 50).toLowerCase();
-                                  if (firstWords.includes('chapter')) structureType = 'chapter';
-                                  else if (firstWords.includes('section')) structureType = 'section';
-                                  else if (firstWords.includes('topic')) structureType = 'topic';
-                                  else if (firstWords.includes('week')) structureType = 'week';
-                                  else if (firstWords.includes('lesson')) structureType = 'lesson';
-
-                                  chunks.push({
-                                      material_id: m.id,
-                                      course_id: course_id,
-                                      content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                                      metadata: {
-                                          type: 'material_pdf',
-                                          title: m.title,
-                                          chunk_index: chunkIndex++,
-                                          structure_type: structureType
-                                      }
-                                  });
-                              }
-                              continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                          } else {
+                              parsedChunks.push(segment);
                           }
                       }
-                  } catch (err) {
+
+                      let chunkIndex = 0;
+                      for (const chunkText of parsedChunks) {
+                          // Detect structure type
+                          let structureType = 'segment';
+                          const firstWords = chunkText.substring(0, 50).toLowerCase();
+
+                          // Match against allowedOptions (supports custom keywords dynamically)
+                          for (const opt of allowedOptions) {
+                              const cleanOpt = opt.toLowerCase().trim();
+                              if (firstWords.includes(cleanOpt)) {
+                                  // Canonicalize plural to singular if possible
+                                  if (cleanOpt.endsWith('s')) {
+                                      const singular = cleanOpt.slice(0, -1);
+                                      structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                                  } else {
+                                      structureType = cleanOpt;
+                                  }
+                                  break;
+                              }
+                          }
+
+                          // Fallback to standard hardcoded checks to guarantee zero-regression
+                          if (structureType === 'segment') {
+                              if (firstWords.includes('chapter')) structureType = 'chapter';
+                              else if (firstWords.includes('section')) structureType = 'section';
+                              else if (firstWords.includes('topic')) structureType = 'topic';
+                              else if (firstWords.includes('week')) structureType = 'week';
+                              else if (firstWords.includes('lesson')) structureType = 'lesson';
+                          }
+
+                          chunks.push({
+                              material_id: m.id,
+                              course_id: course_id,
+                              content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                              metadata: {
+                                  type: 'material_pdf',
+                                  title: m.title,
+                                  chunk_index: chunkIndex++,
+                                  structure_type: structureType
+                              }
+                          });
+                      }
+                      continue; // Skip the metadata fallback since we successfully indexed the PDF content
+                  } catch (err: any) {
                       console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+                      if (material_id) {
+                          throw new Error(`PDF extraction failed: ${err.message}`);
+                      }
                   }
               }
 
