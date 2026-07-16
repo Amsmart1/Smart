@@ -3944,7 +3944,7 @@ async function indexMaterialForAI(materialId, courseId) {
 
     UI.showNotification('Extracting and embedding PDF with custom structural boundaries. This may take a few moments...', 'info');
     try {
-        const result = await AIManager.indexCourse(courseId, chunk_options);
+        const result = await AIManager.indexCourse(courseId, chunk_options, materialId);
         UI.showNotification(result.message || 'Successfully indexed file/material with selected structures!', 'success');
     } catch (e) {
         console.error(e);

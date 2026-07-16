@@ -421,10 +421,13 @@ class AIManager {
     /**
      * Feature 6: Knowledge Base Indexing
      */
-    static async indexCourse(courseId, chunkOptions = null) {
+    static async indexCourse(courseId, chunkOptions = null, materialId = null) {
         const payload = { course_id: courseId };
         if (chunkOptions) {
             payload.chunk_options = chunkOptions;
+        }
+        if (materialId) {
+            payload.material_id = materialId;
         }
         if (typeof window !== 'undefined' && window.SupabaseDB && typeof window.SupabaseDB.invokeFunction === 'function') {
             return await window.SupabaseDB.invokeFunction('ai-gateway', {
