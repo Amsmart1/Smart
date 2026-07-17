@@ -650,8 +650,8 @@ serve(async (req) => {
                   }
 
                   try {
-                      // Stage 1: Download & Text Extraction
-                      if (extractedText && (status === 'extracted' || status === 'completed')) {
+                      // Stage 1: Download & Text Extraction (Skip if extractedText is already truthy and populated to support full resumption)
+                      if (extractedText && extractedText.trim().length > 0) {
                           console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
                       } else {
                           console.log(`Starting PDF download and extraction for: ${m.title}`);
