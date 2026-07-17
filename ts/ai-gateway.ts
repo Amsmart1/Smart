@@ -263,14 +263,27 @@ async function indexText({
 
     const chunks = chunkText(normalizedText);
 
-    const embeddings = await generateEmbeddings(chunks);
+    // Fetch already indexed chunk indexes from DB to prevent duplicate embedding generation and insertion
+    const existingChunkIndexes = await getExistingChunkIndexes(supabaseClient, sourceId);
+
+    // Filter chunks to keep only those not already indexed
+    const missingChunks = chunks.filter((c: any) => !existingChunkIndexes.has(c.metadata?.chunk_index));
+
+    if (missingChunks.length === 0) {
+        console.log(`✓ All chunks for ${sourceType} ${sourceId} are already fully indexed. Skipping.`);
+        return;
+    }
+
+    console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunks.length} total) for ${sourceType} ${sourceId}.`);
+
+    const embeddings = await generateEmbeddings(missingChunks);
 
     await upsertKnowledgeEmbeddings({
         sourceType,
         sourceId,
         courseId,
         title,
-        chunks,
+        chunks: missingChunks,
         embeddings
     });
 }
@@ -392,7 +405,7 @@ serve(async (req) => {
       // Perform Semantic Search using match_knowledge RPC
       const { data: matches, error: matchError } = await supabaseClient.rpc('match_knowledge', {
           query_embedding: userMessageEmbedding,
-          match_threshold: 0.3, // Tunable
+          match_threshold: 0.6, // Tunable
           match_count: 5,
           p_course_id: course_id
       });
