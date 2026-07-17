@@ -550,6 +550,24 @@ CREATE TABLE IF NOT EXISTS material_embeddings (
 -- Index for semantic search
 CREATE INDEX IF NOT EXISTS idx_material_embeddings_vector ON material_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
+-- Track indexing state of materials to manage lifecycle and support resume/skip functionality
+CREATE TABLE IF NOT EXISTS material_indexing_states (
+  material_id UUID PRIMARY KEY REFERENCES materials(id) ON DELETE CASCADE,
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  file_url TEXT, -- Store the URL of the PDF at the time of indexing
+  extracted_text TEXT,
+  chunks JSONB, -- Array of chunk objects [{content, metadata, structure_type, chunk_index}]
+  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'extracting', 'extracted', 'chunking', 'chunked', 'embedding', 'completed', 'failed')),
+  current_step VARCHAR(50) DEFAULT 'none',
+  error_message TEXT,
+  timing_logs JSONB DEFAULT '{}'::jsonb,
+  retry_count INTEGER DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_material_indexing_states_course ON material_indexing_states(course_id);
+
 -- RPC for Semantic Search
 -- RPC for Semantic Search (Internal RAG Use)
 CREATE OR REPLACE FUNCTION match_materials (
@@ -1055,7 +1073,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_indexing_states')
     LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS update_%I_updated_at ON %I', t, t);
         EXECUTE format('CREATE TRIGGER update_%I_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()', t, t);
@@ -3200,7 +3218,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_embeddings')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_embeddings', 'material_indexing_states')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -3215,7 +3233,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_indexing_states')
     LOOP
         EXECUTE format('DROP POLICY IF EXISTS "Migration: Admin ALL" ON %I', t);
         EXECUTE format('CREATE POLICY "Migration: Admin ALL" ON %I FOR ALL USING (_is_migration_mode())', t);
@@ -3531,6 +3549,20 @@ CREATE POLICY "Embeddings: Select" ON material_embeddings FOR SELECT USING (
 DROP POLICY IF EXISTS "Embeddings: Teachers Manage" ON material_embeddings;
 CREATE POLICY "Embeddings: Teachers Manage" ON material_embeddings FOR ALL USING (
   is_admin() OR EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND teacher_email = get_auth_email())
+);
+
+-- 16.6 Material Indexing States Table RLS Policies
+DROP POLICY IF EXISTS "Indexing States: Select" ON material_indexing_states;
+CREATE POLICY "Indexing States: Select" ON material_indexing_states FOR SELECT USING (
+  is_admin() OR
+  EXISTS (SELECT 1 FROM courses WHERE id = material_indexing_states.course_id AND teacher_email = get_auth_email()) OR
+  (EXISTS (SELECT 1 FROM enrollments WHERE course_id = material_indexing_states.course_id AND student_email = get_auth_email()) AND
+   EXISTS (SELECT 1 FROM courses WHERE id = material_indexing_states.course_id AND status = 'published'))
+);
+
+DROP POLICY IF EXISTS "Indexing States: Teachers Manage" ON material_indexing_states;
+CREATE POLICY "Indexing States: Teachers Manage" ON material_indexing_states FOR ALL USING (
+  is_admin() OR EXISTS (SELECT 1 FROM courses WHERE id = material_indexing_states.course_id AND teacher_email = get_auth_email())
 );
 
 -- 17. Violations Table

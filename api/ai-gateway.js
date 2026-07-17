@@ -498,6 +498,76 @@ async function handleCourseTutor(payload, res) {
 }
 
 /**
+ * Bounded Concurrency Helper
+ */
+async function parallelLimit(items, concurrency, processor) {
+  const results = [];
+  const executing = new Set();
+
+  for (const item of items) {
+    const p = Promise.resolve().then(() => processor(item));
+    results.push(p);
+    executing.add(p);
+
+    const clean = () => executing.delete(p);
+    p.then(clean, clean);
+
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+
+  return Promise.all(results);
+}
+
+async function getIndexingState(supabaseUrl, supabaseAnonKey, materialId) {
+  try {
+    const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_indexing_states?material_id=eq.${materialId}`, {
+      headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data?.[0] || null;
+    }
+  } catch (err) {
+    console.error(`Error fetching indexing state for ${materialId}:`, err);
+  }
+  return null;
+}
+
+async function upsertIndexingState(supabaseUrl, supabaseAnonKey, state) {
+  try {
+    await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_indexing_states`, {
+      method: 'POST',
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(state)
+    });
+  } catch (err) {
+    console.error(`Error upserting indexing state for ${state.material_id}:`, err);
+  }
+}
+
+async function getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, materialId) {
+  try {
+    const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?material_id=eq.${materialId}&select=metadata`, {
+      headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return new Set(data.map(d => d.metadata?.chunk_index).filter(idx => idx !== undefined && idx !== null));
+    }
+  } catch (err) {
+    console.error(`Error fetching existing chunk indexes for ${materialId}:`, err);
+  }
+  return new Set();
+}
+
+/**
  * Feature 6: Knowledge Base Indexing Support
  */
 async function handleIndexCourse(payload, res) {
@@ -518,23 +588,6 @@ async function handleIndexCourse(payload, res) {
   }
 
   try {
-    // 1. Idempotency: Delete existing embeddings for this course or material before re-indexing
-    const deleteUrl = material_id
-      ? `${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?material_id=eq.${material_id}`
-      : `${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}`;
-
-    const deleteRes = await fetch(deleteUrl, {
-      method: 'DELETE',
-      headers: {
-        'apikey': supabaseAnonKey,
-        'Authorization': `Bearer ${supabaseAnonKey}`
-      }
-    });
-
-    if (!deleteRes.ok) {
-      throw new Error(`Failed to clear existing index: ${await deleteRes.text()}`);
-    }
-
     let materials = [];
     let lessons = [];
     let topics = [];
@@ -578,28 +631,66 @@ async function handleIndexCourse(payload, res) {
 
     const chunks = [];
 
-    // Index course info itself (to make Tutor fully course-aware)
+    // 1. Index course info itself (only if course-level indexing)
     if (course) {
-      chunks.push({
-        course_id: course_id,
-        content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
-        metadata: { type: 'course', title: course.title }
+      // Skip if course info embedding already exists
+      const courseEmbedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}&lesson_id=is.null&material_id=is.null&select=id`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
       });
-    }
+      const exists = courseEmbedsRes.ok && (await courseEmbedsRes.json()).length > 0;
 
-    // Index topics
-    if (topics && Array.isArray(topics)) {
-      topics.forEach((t) => {
+      if (!exists) {
         chunks.push({
           course_id: course_id,
-          content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
-          metadata: { type: 'topic', title: t.title, topic_id: t.id }
+          content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+          metadata: { type: 'course', title: course.title }
         });
+      } else {
+        console.log(`✓ Course info embedding already exists for course ${course_id}. Skipping.`);
+      }
+    }
+
+    // 2. Index topics (only if course-level indexing)
+    if (topics && Array.isArray(topics)) {
+      // Query existing topic embeddings for this course to skip duplicates
+      const topicEmbedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}&material_id=is.null&lesson_id=is.null&select=metadata`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      });
+      const existingTopics = new Set();
+      if (topicEmbedsRes.ok) {
+        const data = await topicEmbedsRes.json();
+        data.forEach(d => {
+          if (d.metadata?.type === 'topic' && d.metadata?.topic_id) {
+            existingTopics.add(d.metadata.topic_id);
+          }
+        });
+      }
+
+      topics.forEach((t) => {
+        if (!existingTopics.has(t.id)) {
+          chunks.push({
+            course_id: course_id,
+            content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+            metadata: { type: 'topic', title: t.title, topic_id: t.id }
+          });
+        } else {
+          console.log(`✓ Topic embedding already exists for topic ${t.title} (${t.id}). Skipping.`);
+        }
       });
     }
 
-    // Index lessons
+    // 3. Index lessons (only if course-level indexing)
     if (lessons && Array.isArray(lessons)) {
+      // Query existing lesson embeddings to skip duplicates
+      const lessonEmbedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?course_id=eq.${course_id}&lesson_id=not.is.null&select=lesson_id`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      });
+      const existingLessons = new Set();
+      if (lessonEmbedsRes.ok) {
+        const data = await lessonEmbedsRes.json();
+        data.forEach(d => existingLessons.add(d.lesson_id));
+      }
+
       // Build topics map for lookup
       const topicsMap = {};
       if (topics && Array.isArray(topics)) {
@@ -609,21 +700,26 @@ async function handleIndexCourse(payload, res) {
       }
 
       lessons.forEach((l) => {
-        const content = l.content || '';
-        const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
-        const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
-        const chunkSize = 2000;
-        for (let i = 0; i < content.length; i += chunkSize) {
-          chunks.push({
-            lesson_id: l.id,
-            course_id: course_id,
-            content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-            metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
-          });
+        if (!existingLessons.has(l.id)) {
+          const content = l.content || '';
+          const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
+          const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
+          const chunkSize = 2000;
+          for (let i = 0; i < content.length; i += chunkSize) {
+            chunks.push({
+              lesson_id: l.id,
+              course_id: course_id,
+              content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+              metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
+            });
+          }
+        } else {
+          console.log(`✓ Lesson embedding already exists for lesson ${l.title} (${l.id}). Skipping.`);
         }
       });
     }
 
+    // 4. Index materials (using full robust state machine for PDFs)
     if (materials && Array.isArray(materials)) {
       for (const m of materials) {
         const fileUrl = m.file_url || '';
@@ -643,137 +739,343 @@ async function handleIndexCourse(payload, res) {
         }
 
         if (isPdf) {
-          try {
-            // Call PDF text extractor helper logic
-            const pdfResponse = await fetch(fileUrl);
-            if (!pdfResponse.ok) {
-              throw new Error(`Failed to download PDF from storage: ${pdfResponse.statusText}`);
-            }
-            const arrayBuffer = await pdfResponse.arrayBuffer();
-            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+          const mStart = Date.now();
+          let state = await getIndexingState(supabaseUrl, supabaseAnonKey, m.id);
 
-            const apiKey = resolveApiKey('extract_pdf_text', payload);
-            const model = resolveModelId('extract_pdf_text', payload);
+          let extractedText = '';
+          let chunksJson = null;
+          let status = 'pending';
+          let currentStep = 'none';
+          let retryCount = 0;
+          let timingLogs = {};
 
-            const requestBody = {
-              contents: [
-                {
-                  parts: [
-                    {
-                      inline_data: {
-                        mime_type: 'application/pdf',
-                        data: base64Data
-                      }
-                    },
-                    {
-                      text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
-                    }
-                  ]
-                }
-              ]
-            };
+          if (state) {
+            extractedText = state.extracted_text || '';
+            chunksJson = state.chunks || null;
+            status = state.status || 'pending';
+            currentStep = state.current_step || 'none';
+            retryCount = state.retry_count || 0;
+            timingLogs = state.timing_logs || {};
+          }
 
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(requestBody)
+          // If PDF file URL changed or no state exists, do a fresh start for this material
+          if (!state || state.file_url !== fileUrl) {
+            console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
+            // Delete existing embeddings for this material
+            const deleteUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings?material_id=eq.${m.id}`;
+            await fetch(deleteUrl, {
+              method: 'DELETE',
+              headers: {
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`
+              }
             });
 
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
-            }
+            extractedText = '';
+            chunksJson = null;
+            status = 'pending';
+            currentStep = 'none';
+            retryCount = 0;
+            timingLogs = {};
 
-            const data = await response.json();
-            const pdfText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            state = {
+              material_id: m.id,
+              course_id: course_id,
+              file_url: fileUrl,
+              extracted_text: null,
+              chunks: null,
+              status: 'pending',
+              current_step: 'none',
+              timing_logs: {},
+              retry_count: 0
+            };
+            await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
+          }
 
-            if (!pdfText || pdfText.trim().length === 0) {
-              throw new Error("Gemini extracted zero text from this PDF document.");
-            }
+          // If already completed, skip processing
+          if (status === 'completed') {
+            console.log(`✓ PDF material ${m.title} is already fully indexed. Skipping.`);
+            continue;
+          }
 
-            // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-            const allowedOptions = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
-            const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-            const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
-            const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-            const parsedChunks = [];
+          try {
+            // Stage 1: Download & Text Extraction
+            if (extractedText && (status === 'extracted' || status === 'chunked' || status === 'embedding')) {
+              console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
+            } else {
+              console.log(`Starting PDF download and extraction for: ${m.title}`);
+              const extStart = Date.now();
 
-            for (const segment of rawSegments) {
-              if (segment.length > 2500) {
-                // Split large segment cleanly
-                let start = 0;
-                while (start < segment.length) {
-                  let end = start + 2500;
-                  if (end < segment.length) {
-                    const lastBreak = segment.lastIndexOf('\n', end);
-                    if (lastBreak > start + 1000) {
-                      end = lastBreak;
-                    } else {
-                      const lastPeriod = segment.lastIndexOf('. ', end);
-                      if (lastPeriod > start + 1000) {
-                        end = lastPeriod + 2;
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                status: 'extracting',
+                current_step: 'extraction'
+              });
+
+              const pdfResponse = await fetch(fileUrl);
+              if (!pdfResponse.ok) {
+                throw new Error(`Failed to download PDF from storage: ${pdfResponse.statusText}`);
+              }
+              const arrayBuffer = await pdfResponse.arrayBuffer();
+              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+              const apiKey = resolveApiKey('extract_pdf_text', payload);
+              const model = resolveModelId('extract_pdf_text', payload);
+
+              const requestBody = {
+                contents: [
+                  {
+                    parts: [
+                      {
+                        inline_data: {
+                          mime_type: 'application/pdf',
+                          data: base64Data
+                        }
+                      },
+                      {
+                        text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
                       }
-                    }
-                  } else {
-                    end = segment.length;
+                    ]
                   }
-                  parsedChunks.push(segment.substring(start, end).trim());
-                  start = end;
-                }
-              } else {
-                parsedChunks.push(segment);
+                ]
+              };
+
+              const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+              });
+
+              if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
               }
+
+              const data = await response.json();
+              extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+              if (!extractedText || extractedText.trim().length === 0) {
+                throw new Error("Gemini extracted zero text from this PDF document.");
+              }
+
+              timingLogs.extraction = Date.now() - extStart;
+              status = 'extracted';
+              currentStep = 'extraction';
+
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                extracted_text: extractedText,
+                status,
+                current_step: currentStep,
+                timing_logs: timingLogs
+              });
+              console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
             }
 
-            let chunkIndex = 0;
-            for (const chunkText of parsedChunks) {
-              // Detect structure type
-              let structureType = 'segment';
-              const firstWords = chunkText.substring(0, 50).toLowerCase();
+            // Stage 2: Dynamic Chunking
+            if (chunksJson && (status === 'chunked' || status === 'embedding')) {
+              console.log(`✓ Chunks already parsed for ${m.title}. Skipping chunking.`);
+            } else {
+              console.log(`Starting chunking for: ${m.title}`);
+              const chunkStart = Date.now();
 
-              // Match against allowedOptions (supports custom keywords dynamically)
-              for (const opt of allowedOptions) {
-                const cleanOpt = opt.toLowerCase().trim();
-                if (firstWords.includes(cleanOpt)) {
-                  // Canonicalize plural to singular if possible
-                  if (cleanOpt.endsWith('s')) {
-                    const singular = cleanOpt.slice(0, -1);
-                    structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
-                  } else {
-                    structureType = cleanOpt;
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                status: 'chunking',
+                current_step: 'chunking'
+              });
+
+              // Dynamic Structure-Aware Segmenting
+              const allowedOptions = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+              const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+              const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+              const rawSegments = extractedText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+              const parsedChunks = [];
+
+              for (const segment of rawSegments) {
+                if (segment.length > 2500) {
+                  let start = 0;
+                  while (start < segment.length) {
+                    let end = start + 2500;
+                    if (end < segment.length) {
+                      const lastBreak = segment.lastIndexOf('\n', end);
+                      if (lastBreak > start + 1000) {
+                        end = lastBreak;
+                      } else {
+                        const lastPeriod = segment.lastIndexOf('. ', end);
+                        if (lastPeriod > start + 1000) {
+                          end = lastPeriod + 2;
+                        }
+                      }
+                    } else {
+                      end = segment.length;
+                    }
+                    parsedChunks.push(segment.substring(start, end).trim());
+                    start = end;
                   }
-                  break;
+                } else {
+                  parsedChunks.push(segment);
                 }
               }
 
-              // Fallback to standard hardcoded checks to guarantee zero-regression
-              if (structureType === 'segment') {
-                if (firstWords.includes('chapter')) structureType = 'chapter';
-                else if (firstWords.includes('section')) structureType = 'section';
-                else if (firstWords.includes('topic')) structureType = 'topic';
-                else if (firstWords.includes('week')) structureType = 'week';
-                else if (firstWords.includes('lesson')) structureType = 'lesson';
+              const localChunks = [];
+              let chunkIndex = 0;
+              for (const chunkText of parsedChunks) {
+                let structureType = 'segment';
+                const firstWords = chunkText.substring(0, 50).toLowerCase();
+
+                for (const opt of allowedOptions) {
+                  const cleanOpt = opt.toLowerCase().trim();
+                  if (firstWords.includes(cleanOpt)) {
+                    if (cleanOpt.endsWith('s')) {
+                      const singular = cleanOpt.slice(0, -1);
+                      structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                    } else {
+                      structureType = cleanOpt;
+                    }
+                    break;
+                  }
+                }
+
+                if (structureType === 'segment') {
+                  if (firstWords.includes('chapter')) structureType = 'chapter';
+                  else if (firstWords.includes('section')) structureType = 'section';
+                  else if (firstWords.includes('topic')) structureType = 'topic';
+                  else if (firstWords.includes('week')) structureType = 'week';
+                  else if (firstWords.includes('lesson')) structureType = 'lesson';
+                }
+
+                localChunks.push({
+                  material_id: m.id,
+                  course_id: course_id,
+                  content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                  metadata: {
+                    type: 'material_pdf',
+                    title: m.title,
+                    chunk_index: chunkIndex++,
+                    structure_type: structureType
+                  }
+                });
               }
 
-              chunks.push({
-                material_id: m.id,
-                course_id: course_id,
-                content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                metadata: {
-                  type: 'material_pdf',
-                  title: m.title,
-                  chunk_index: chunkIndex++,
-                  structure_type: structureType
+              chunksJson = localChunks;
+              timingLogs.chunking = Date.now() - chunkStart;
+              status = 'chunked';
+              currentStep = 'chunking';
+
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                chunks: chunksJson,
+                status,
+                current_step: currentStep,
+                timing_logs: timingLogs
+              });
+              console.log(`✓ Chunking completed for ${m.title} in ${timingLogs.chunking}ms (${chunksJson.length} chunks generated)`);
+            }
+
+            // Stage 3: Embedding and Storage with Bounded Concurrency Pool
+            console.log(`Embedding chunks for: ${m.title}`);
+            const embedStart = Date.now();
+
+            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+              ...state,
+              status: 'embedding',
+              current_step: 'embedding'
+            });
+
+            // Fetch already indexed chunk indexes from DB
+            const existingChunkIndexes = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, m.id);
+            const missingChunks = chunksJson.filter(c => !existingChunkIndexes.has(c.metadata?.chunk_index));
+
+            if (missingChunks.length === 0) {
+              console.log(`✓ All ${chunksJson.length} chunks already embedded and stored in DB. Skipping.`);
+            } else {
+              console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunksJson.length} total).`);
+
+              const batchSize = 10;
+              const batches = [];
+              for (let i = 0; i < missingChunks.length; i += batchSize) {
+                batches.push(missingChunks.slice(i, i + batchSize));
+              }
+
+              const apiKey = resolveApiKey('generate_batch_embeddings', payload);
+              const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
+              const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
+
+              // Bounded concurrency processor (3-5 simultaneous batch requests)
+              await parallelLimit(batches, 4, async (batch) => {
+                const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    requests: batch.map(c => ({
+                      model: `models/${cleanEmbeddingModel}`,
+                      content: { parts: [{ text: c.content }] },
+                      outputDimensionality: 768
+                    }))
+                  })
+                });
+
+                if (!embedResponse.ok) {
+                  throw new Error(`Batch Embedding Generation failed: ${await embedResponse.text()}`);
+                }
+
+                const embedResult = await embedResponse.json();
+                const embeddings = embedResult.embeddings.map(e => e.values);
+
+                const records = batch.map((chunk, idx) => ({
+                  ...chunk,
+                  embedding: embeddings[idx]
+                }));
+
+                const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings`, {
+                  method: 'POST',
+                  headers: {
+                    'apikey': supabaseAnonKey,
+                    'Authorization': `Bearer ${supabaseAnonKey}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=representation'
+                  },
+                  body: JSON.stringify(records)
+                });
+
+                if (!insertResponse.ok) {
+                  throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
                 }
               });
             }
-            continue; // Skip the metadata fallback since we successfully indexed the PDF content
-          } catch (err) {
-            console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+
+            timingLogs.embedding = Date.now() - embedStart;
+            timingLogs.total = Date.now() - mStart;
+            status = 'completed';
+            currentStep = 'completed';
+
+            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+              ...state,
+              status,
+              current_step: currentStep,
+              error_message: null,
+              timing_logs: timingLogs
+            });
+            console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
+
+          } catch (materialError) {
+            console.error(`Error during processing material ${m.title}:`, materialError);
+            const errStr = materialError.message || String(materialError);
+
+            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+              ...state,
+              status: 'failed',
+              current_step: currentStep,
+              error_message: errStr,
+              retry_count: retryCount + 1
+            });
+
             if (material_id) {
-              throw new Error(`PDF extraction failed: ${err.message}`);
+              throw materialError;
             }
           }
+          continue; // Skip the metadata fallback since we processed the PDF content
         }
 
         // Fallback to title and description for non-PDFs or failed extractions
@@ -786,68 +1088,68 @@ async function handleIndexCourse(payload, res) {
       }
     }
 
-    if (chunks.length === 0) {
-      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, message: 'No content to index for this course.' }));
-      return;
-    }
-
-    // Process in batches of 10
-    const batchSize = 10;
-    const apiKey = resolveApiKey('generate_batch_embeddings', payload);
-    const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
-    const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
-
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-
-      const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requests: batch.map(c => ({
-            model: `models/${cleanEmbeddingModel}`,
-            content: { parts: [{ text: c.content }] },
-            outputDimensionality: 768
-          }))
-        })
-      });
-
-      if (!embedResponse.ok) {
-        throw new Error(`Batch Embedding Generation failed: ${await embedResponse.text()}`);
+    // 5. Embed and store remaining non-PDF chunks (lessons, topics, course info, non-PDF materials)
+    if (chunks.length > 0) {
+      console.log(`Processing ${chunks.length} non-PDF metadata chunks...`);
+      const batchSize = 10;
+      const batches = [];
+      for (let i = 0; i < chunks.length; i += batchSize) {
+        batches.push(chunks.slice(i, i + batchSize));
       }
 
-      const embedResult = await embedResponse.json();
-      const embeddings = embedResult.embeddings.map(e => e.values);
+      const apiKey = resolveApiKey('generate_batch_embeddings', payload);
+      const embeddingModel = resolveModelId('generate_batch_embeddings', payload);
+      const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
-      const records = batch.map((chunk, idx) => ({
-        ...chunk,
-        embedding: embeddings[idx]
-      }));
+      await parallelLimit(batches, 4, async (batch) => {
+        const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: batch.map(c => ({
+              model: `models/${cleanEmbeddingModel}`,
+              content: { parts: [{ text: c.content }] },
+              outputDimensionality: 768
+            }))
+          })
+        });
 
-      // Bulk insert records via Supabase REST API
-      const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings`, {
-        method: 'POST',
-        headers: {
-          'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${supabaseAnonKey}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=representation'
-        },
-        body: JSON.stringify(records)
+        if (!embedResponse.ok) {
+          throw new Error(`Batch Embedding Generation failed for non-PDF chunk: ${await embedResponse.text()}`);
+        }
+
+        const embedResult = await embedResponse.json();
+        const embeddings = embedResult.embeddings.map(e => e.values);
+
+        const records = batch.map((chunk, idx) => ({
+          ...chunk,
+          embedding: embeddings[idx]
+        }));
+
+        const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_embeddings`, {
+          method: 'POST',
+          headers: {
+            'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify(records)
+        });
+
+        if (!insertResponse.ok) {
+          throw new Error(`Failed to insert non-PDF batch embeddings: ${await insertResponse.text()}`);
+        }
       });
-
-      if (!insertResponse.ok) {
-        throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
-      }
     }
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }));
+    res.end(JSON.stringify({ success: true, message: `Successfully completed indexing for course ${course_id}` }));
 
   } catch (error) {
+    console.error('Indexing failed:', error);
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: error.message }));
+    res.end(JSON.stringify({ error: error.message || String(error) }));
   }
 }
 
