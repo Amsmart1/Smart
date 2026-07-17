@@ -536,19 +536,21 @@ CREATE TABLE IF NOT EXISTS violations (
 );
 
 -- Feature 6: Knowledge Base / Semantic Search
-CREATE TABLE IF NOT EXISTS material_embeddings (
+CREATE TABLE IF NOT EXISTS knowledge_embeddings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  source_type VARCHAR(50) NOT NULL,
+  source_id UUID NOT NULL,
   material_id UUID REFERENCES materials(id) ON DELETE CASCADE,
   lesson_id UUID REFERENCES lessons(id) ON DELETE CASCADE,
   course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
-  embedding vector(768), -- Optimized for Gemini embedding-004
+  embedding vector(768), -- Optimized for Gemini embedding-001/004
   metadata JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Index for semantic search
-CREATE INDEX IF NOT EXISTS idx_material_embeddings_vector ON material_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_knowledge_embeddings_vector ON knowledge_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- Track indexing state of materials to manage lifecycle and support resume/skip functionality
 CREATE TABLE IF NOT EXISTS material_indexing_states (
@@ -568,9 +570,8 @@ CREATE TABLE IF NOT EXISTS material_indexing_states (
 
 CREATE INDEX IF NOT EXISTS idx_material_indexing_states_course ON material_indexing_states(course_id);
 
--- RPC for Semantic Search
 -- RPC for Semantic Search (Internal RAG Use)
-CREATE OR REPLACE FUNCTION match_materials (
+CREATE OR REPLACE FUNCTION match_knowledge (
   query_embedding vector(768),
   match_threshold float,
   match_count int,
@@ -578,6 +579,8 @@ CREATE OR REPLACE FUNCTION match_materials (
 )
 RETURNS TABLE (
   id uuid,
+  source_type varchar,
+  source_id uuid,
   content text,
   metadata jsonb,
   similarity float
@@ -603,19 +606,21 @@ BEGIN
   END IF;
 
   IF NOT v_is_authorized THEN
-      RAISE EXCEPTION 'Access Denied: match_materials authorization failed';
+      RAISE EXCEPTION 'Access Denied: match_knowledge authorization failed';
   END IF;
 
   RETURN QUERY
   SELECT
-    me.id,
-    me.content,
-    me.metadata,
-    1 - (me.embedding <=> query_embedding) AS similarity
-  FROM material_embeddings me
-  WHERE me.course_id = p_course_id
-    AND 1 - (me.embedding <=> query_embedding) > match_threshold
-  ORDER BY me.embedding <=> query_embedding
+    ke.id,
+    ke.source_type,
+    ke.source_id,
+    ke.content,
+    ke.metadata,
+    (1 - (ke.embedding <=> query_embedding))::float AS similarity
+  FROM knowledge_embeddings ke
+  WHERE ke.course_id = p_course_id
+    AND 1 - (ke.embedding <=> query_embedding) > match_threshold
+  ORDER BY ke.embedding <=> query_embedding
   LIMIT match_count;
 END;
 $$;
@@ -3218,7 +3223,7 @@ BEGIN
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'material_embeddings', 'material_indexing_states')
+        AND table_name IN ('users', 'user_secrets', 'courses', 'topics', 'lessons', 'enrollments', 'assignments', 'submissions', 'live_classes', 'attendance', 'quizzes', 'quiz_submissions', 'materials', 'discussions', 'discussion_views', 'notifications', 'broadcasts', 'maintenance', 'planner', 'certificates', 'study_sessions', 'invites', 'violations', 'support_tickets', 'knowledge_embeddings', 'material_indexing_states')
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     END LOOP;
@@ -3538,17 +3543,18 @@ CREATE POLICY "Maintenance: Manage for Admins" ON maintenance FOR ALL USING (is_
 -- 16. System Logs Table
 
 -- 16.5 Material Embeddings Table
-DROP POLICY IF EXISTS "Embeddings: Select" ON material_embeddings;
-CREATE POLICY "Embeddings: Select" ON material_embeddings FOR SELECT USING (
+-- 16.5 Knowledge Embeddings Table
+DROP POLICY IF EXISTS "Embeddings: Select" ON knowledge_embeddings;
+CREATE POLICY "Embeddings: Select" ON knowledge_embeddings FOR SELECT USING (
   is_admin() OR
-  EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND teacher_email = get_auth_email()) OR
-  (EXISTS (SELECT 1 FROM enrollments WHERE course_id = material_embeddings.course_id AND student_email = get_auth_email()) AND
-   EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND status = 'published'))
+  EXISTS (SELECT 1 FROM courses WHERE id = knowledge_embeddings.course_id AND teacher_email = get_auth_email()) OR
+  (EXISTS (SELECT 1 FROM enrollments WHERE course_id = knowledge_embeddings.course_id AND student_email = get_auth_email()) AND
+   EXISTS (SELECT 1 FROM courses WHERE id = knowledge_embeddings.course_id AND status = 'published'))
 );
 
-DROP POLICY IF EXISTS "Embeddings: Teachers Manage" ON material_embeddings;
-CREATE POLICY "Embeddings: Teachers Manage" ON material_embeddings FOR ALL USING (
-  is_admin() OR EXISTS (SELECT 1 FROM courses WHERE id = material_embeddings.course_id AND teacher_email = get_auth_email())
+DROP POLICY IF EXISTS "Embeddings: Teachers Manage" ON knowledge_embeddings;
+CREATE POLICY "Embeddings: Teachers Manage" ON knowledge_embeddings FOR ALL USING (
+  is_admin() OR EXISTS (SELECT 1 FROM courses WHERE id = knowledge_embeddings.course_id AND teacher_email = get_auth_email())
 );
 
 -- 16.6 Material Indexing States Table RLS Policies
