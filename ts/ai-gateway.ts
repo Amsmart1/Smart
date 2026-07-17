@@ -8,6 +8,69 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS, PUT, DELETE',
 }
 
+async function parallelLimit<T, R>(
+  items: T[],
+  concurrency: number,
+  processor: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: Promise<R>[] = [];
+  const executing = new Set<Promise<R>>();
+
+  for (const item of items) {
+    const p = Promise.resolve().then(() => processor(item));
+    results.push(p);
+    executing.add(p);
+
+    const clean = () => executing.delete(p);
+    p.then(clean, clean);
+
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+
+  return Promise.all(results);
+}
+
+async function getIndexingState(supabaseClient: any, materialId: string) {
+  try {
+    const { data } = await supabaseClient
+      .from('material_indexing_states')
+      .select('*')
+      .eq('material_id', materialId)
+      .maybeSingle();
+    return data || null;
+  } catch (err) {
+    console.error(`Error fetching indexing state for ${materialId}:`, err);
+  }
+  return null;
+}
+
+async function upsertIndexingState(supabaseClient: any, state: any) {
+  try {
+    await supabaseClient
+      .from('material_indexing_states')
+      .upsert(state);
+  } catch (err) {
+    console.error(`Error upserting indexing state for ${state.material_id}:`, err);
+  }
+}
+
+async function getExistingChunkIndexes(supabaseClient: any, materialId: string) {
+  try {
+    const { data } = await supabaseClient
+      .from('material_embeddings')
+      .select('metadata')
+      .eq('material_id', materialId);
+    if (data) {
+      return new Set(data.map((d: any) => d.metadata?.chunk_index).filter((idx: any) => idx !== undefined && idx !== null));
+    }
+  } catch (err) {
+    console.error(`Error fetching existing chunk indexes for ${materialId}:`, err);
+  }
+  return new Set();
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -166,15 +229,6 @@ serve(async (req) => {
       const { course_id, material_id } = payload;
       if (!course_id) throw new Error('course_id is required');
 
-      // Idempotency: Delete existing embeddings before re-indexing
-      if (material_id) {
-          const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('material_id', material_id);
-          if (deleteError) throw new Error(`Failed to clear existing material index: ${deleteError.message}`);
-      } else {
-          const { error: deleteError } = await supabaseClient.from('material_embeddings').delete().eq('course_id', course_id);
-          if (deleteError) throw new Error(`Failed to clear existing course index: ${deleteError.message}`);
-      }
-
       let materials: any[] = [];
       let lessons: any[] = [];
       let topics: any[] = [];
@@ -209,28 +263,77 @@ serve(async (req) => {
 
       const chunks: any[] = [];
 
-      // Index course info itself (only if course-level indexing)
+      // 1. Index course info itself (only if course-level indexing)
       if (course) {
-          chunks.push({
-              course_id: course_id,
-              content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
-              metadata: { type: 'course', title: course.title }
-          });
-      }
+          // Skip if course info embedding already exists
+          const { data: courseEmbeds, error: courseEmbedsErr } = await supabaseClient
+              .from('material_embeddings')
+              .select('id')
+              .eq('course_id', course_id)
+              .is('lesson_id', null)
+              .is('material_id', null);
 
-      // Index topics (only if course-level indexing)
-      if (topics && topics.length > 0) {
-          topics.forEach((t: any) => {
+          const exists = !courseEmbedsErr && courseEmbeds && courseEmbeds.length > 0;
+
+          if (!exists) {
               chunks.push({
                   course_id: course_id,
-                  content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
-                  metadata: { type: 'topic', title: t.title, topic_id: t.id }
+                  content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+                  metadata: { type: 'course', title: course.title }
               });
+          } else {
+              console.log(`✓ Course info embedding already exists for course ${course_id}. Skipping.`);
+          }
+      }
+
+      // 2. Index topics (only if course-level indexing)
+      if (topics && topics.length > 0) {
+          // Query existing topic embeddings for this course to skip duplicates
+          const { data: topicEmbeds } = await supabaseClient
+              .from('material_embeddings')
+              .select('metadata')
+              .eq('course_id', course_id)
+              .is('material_id', null)
+              .is('lesson_id', null);
+
+          const existingTopics = new Set<string>();
+          if (topicEmbeds) {
+              topicEmbeds.forEach((d: any) => {
+                  if (d.metadata?.type === 'topic' && d.metadata?.topic_id) {
+                      existingTopics.add(d.metadata.topic_id);
+                  }
+              });
+          }
+
+          topics.forEach((t: any) => {
+              if (!existingTopics.has(t.id)) {
+                  chunks.push({
+                      course_id: course_id,
+                      content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+                      metadata: { type: 'topic', title: t.title, topic_id: t.id }
+                  });
+              } else {
+                  console.log(`✓ Topic embedding already exists for topic ${t.title} (${t.id}). Skipping.`);
+              }
           });
       }
 
-      // Index lessons (only if course-level indexing)
+      // 3. Index lessons (only if course-level indexing)
       if (lessons && lessons.length > 0) {
+          // Query existing lesson embeddings to skip duplicates
+          const { data: lessonEmbeds } = await supabaseClient
+              .from('material_embeddings')
+              .select('lesson_id')
+              .eq('course_id', course_id)
+              .not('lesson_id', 'is', null);
+
+          const existingLessons = new Set<string>();
+          if (lessonEmbeds) {
+              lessonEmbeds.forEach((d: any) => {
+                  if (d.lesson_id) existingLessons.add(d.lesson_id);
+              });
+          }
+
           // Build topics map for lookup
           const topicsMap: Record<string, string> = {};
           if (topics) {
@@ -240,17 +343,21 @@ serve(async (req) => {
           }
 
           lessons.forEach((l: any) => {
-              const content = l.content || '';
-              const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
-              const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
-              const chunkSize = 2000;
-              for (let i = 0; i < content.length; i += chunkSize) {
-                  chunks.push({
-                      lesson_id: l.id,
-                      course_id: course_id,
-                      content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-                      metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
-                  });
+              if (!existingLessons.has(l.id)) {
+                  const content = l.content || '';
+                  const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
+                  const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
+                  const chunkSize = 2000;
+                  for (let i = 0; i < content.length; i += chunkSize) {
+                      chunks.push({
+                          lesson_id: l.id,
+                          course_id: course_id,
+                          content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
+                          metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
+                      });
+                  }
+              } else {
+                  console.log(`✓ Lesson embedding already exists for lesson ${l.title} (${l.id}). Skipping.`);
               }
           });
       }
@@ -274,117 +381,310 @@ serve(async (req) => {
               }
 
               if (isPdf) {
+                  const mStart = Date.now();
+                  let state = await getIndexingState(supabaseClient, m.id);
+
+                  let extractedText = '';
+                  let chunksJson: any[] | null = null;
+                  let status = 'pending';
+                  let currentStep = 'none';
+                  let retryCount = 0;
+                  let timingLogs: Record<string, number> = {};
+
+                  if (state) {
+                      extractedText = state.extracted_text || '';
+                      chunksJson = state.chunks || null;
+                      status = state.status || 'pending';
+                      currentStep = state.current_step || 'none';
+                      retryCount = state.retry_count || 0;
+                      timingLogs = state.timing_logs || {};
+                  }
+
+                  // If PDF file URL changed or no state exists, do a fresh start for this material
+                  if (!state || state.file_url !== fileUrl) {
+                      console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
+                      // Delete existing embeddings for this material
+                      const { error: deleteError } = await supabaseClient
+                          .from('material_embeddings')
+                          .delete()
+                          .eq('material_id', m.id);
+                      if (deleteError) throw new Error(`Failed to clear existing material index: ${deleteError.message}`);
+
+                      extractedText = '';
+                      chunksJson = null;
+                      status = 'pending';
+                      currentStep = 'none';
+                      retryCount = 0;
+                      timingLogs = {};
+
+                      state = {
+                        material_id: m.id,
+                        course_id: course_id,
+                        file_url: fileUrl,
+                        extracted_text: null,
+                        chunks: null,
+                        status: 'pending',
+                        current_step: 'none',
+                        timing_logs: {},
+                        retry_count: 0
+                      };
+                      await upsertIndexingState(supabaseClient, state);
+                  }
+
+                  // If already completed, skip processing
+                  if (status === 'completed') {
+                      console.log(`✓ PDF material ${m.title} is already fully indexed. Skipping.`);
+                      continue;
+                  }
+
                   try {
-                      // Call the Vercel helper to extract PDF text
-                      const extractResponse = await fetch(vercelTarget, {
-                          method: 'POST',
-                          headers: {
-                              'Content-Type': 'application/json',
-                              'x-supabase-signature': gatewaySecret
-                          },
-                          body: JSON.stringify({
-                              type: 'extract_pdf_text',
-                              payload: { file_url: fileUrl, course_id, material_id }
-                          })
+                      // Stage 1: Download & Text Extraction
+                      if (extractedText && (status === 'extracted' || status === 'chunked' || status === 'embedding')) {
+                          console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
+                      } else {
+                          console.log(`Starting PDF download and extraction for: ${m.title}`);
+                          const extStart = Date.now();
+
+                          await upsertIndexingState(supabaseClient, {
+                              ...state,
+                              status: 'extracting',
+                              current_step: 'extraction'
+                          });
+
+                          // Call the Vercel helper to extract PDF text
+                          const extractResponse = await fetch(vercelTarget, {
+                              method: 'POST',
+                              headers: {
+                                  'Content-Type': 'application/json',
+                                  'x-supabase-signature': gatewaySecret
+                              },
+                              body: JSON.stringify({
+                                  type: 'extract_pdf_text',
+                                  payload: { file_url: fileUrl, course_id, material_id: m.id }
+                              })
+                          });
+
+                          if (!extractResponse.ok) {
+                              throw new Error(`Text extraction service returned status ${extractResponse.status}: ${await extractResponse.text()}`);
+                          }
+
+                          const extractResult = await extractResponse.json();
+                          if (extractResult.error) {
+                              throw new Error(extractResult.error);
+                          }
+
+                          extractedText = extractResult.text || '';
+                          if (extractedText.trim().length === 0) {
+                              throw new Error("No text content could be extracted from this PDF.");
+                          }
+
+                          timingLogs.extraction = Date.now() - extStart;
+                          status = 'extracted';
+                          currentStep = 'extraction';
+
+                          await upsertIndexingState(supabaseClient, {
+                              ...state,
+                              extracted_text: extractedText,
+                              status,
+                              current_step: currentStep,
+                              timing_logs: timingLogs
+                          });
+                          console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
+                      }
+
+                      // Stage 2: Dynamic Chunking
+                      if (chunksJson && (status === 'chunked' || status === 'embedding')) {
+                          console.log(`✓ Chunks already parsed for ${m.title}. Skipping chunking.`);
+                      } else {
+                          console.log(`Starting chunking for: ${m.title}`);
+                          const chunkStart = Date.now();
+
+                          await upsertIndexingState(supabaseClient, {
+                              ...state,
+                              status: 'chunking',
+                              current_step: 'chunking'
+                          });
+
+                          // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
+                          const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+                          const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+                          const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+                          const rawSegments = extractedText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+                          const parsedChunks: string[] = [];
+
+                          for (const segment of rawSegments) {
+                              if (segment.length > 2500) {
+                                  // Split large segment cleanly
+                                  let start = 0;
+                                  while (start < segment.length) {
+                                      let end = start + 2500;
+                                      if (end < segment.length) {
+                                          const lastBreak = segment.lastIndexOf('\n', end);
+                                          if (lastBreak > start + 1000) {
+                                              end = lastBreak;
+                                          } else {
+                                              const lastPeriod = segment.lastIndexOf('. ', end);
+                                              if (lastPeriod > start + 1000) {
+                                                  end = lastPeriod + 2;
+                                              }
+                                          }
+                                      } else {
+                                          end = segment.length;
+                                      }
+                                      parsedChunks.push(segment.substring(start, end).trim());
+                                      start = end;
+                                  }
+                              } else {
+                                  parsedChunks.push(segment);
+                              }
+                          }
+
+                          const localChunks: any[] = [];
+                          let chunkIndex = 0;
+                          for (const chunkText of parsedChunks) {
+                              // Detect structure type
+                              let structureType = 'segment';
+                              const firstWords = chunkText.substring(0, 50).toLowerCase();
+
+                              // Match against allowedOptions (supports custom keywords dynamically)
+                              for (const opt of allowedOptions) {
+                                  const cleanOpt = opt.toLowerCase().trim();
+                                  if (firstWords.includes(cleanOpt)) {
+                                      // Canonicalize plural to singular if possible
+                                      if (cleanOpt.endsWith('s')) {
+                                          const singular = cleanOpt.slice(0, -1);
+                                          structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                                      } else {
+                                          structureType = cleanOpt;
+                                      }
+                                      break;
+                                  }
+                              }
+
+                              // Fallback to standard hardcoded checks to guarantee zero-regression
+                              if (structureType === 'segment') {
+                                  if (firstWords.includes('chapter')) structureType = 'chapter';
+                                  else if (firstWords.includes('section')) structureType = 'section';
+                                  else if (firstWords.includes('topic')) structureType = 'topic';
+                                  else if (firstWords.includes('week')) structureType = 'week';
+                                  else if (firstWords.includes('lesson')) structureType = 'lesson';
+                              }
+
+                              localChunks.push({
+                                  material_id: m.id,
+                                  course_id: course_id,
+                                  content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                                  metadata: {
+                                      type: 'material_pdf',
+                                      title: m.title,
+                                      chunk_index: chunkIndex++,
+                                      structure_type: structureType
+                                  }
+                              });
+                          }
+
+                          chunksJson = localChunks;
+                          timingLogs.chunking = Date.now() - chunkStart;
+                          status = 'chunked';
+                          currentStep = 'chunking';
+
+                          await upsertIndexingState(supabaseClient, {
+                              ...state,
+                              chunks: chunksJson,
+                              status,
+                              current_step: currentStep,
+                              timing_logs: timingLogs
+                          });
+                          console.log(`✓ Chunking completed for ${m.title} in ${timingLogs.chunking}ms (${chunksJson.length} chunks generated)`);
+                      }
+
+                      // Stage 3: Embedding and Storage with Bounded Concurrency Pool
+                      console.log(`Embedding chunks for: ${m.title}`);
+                      const embedStart = Date.now();
+
+                      await upsertIndexingState(supabaseClient, {
+                          ...state,
+                          status: 'embedding',
+                          current_step: 'embedding'
                       });
 
-                      if (!extractResponse.ok) {
-                          throw new Error(`Text extraction service returned status ${extractResponse.status}: ${await extractResponse.text()}`);
-                      }
+                      // Fetch already indexed chunk indexes from DB
+                      const existingChunkIndexes = await getExistingChunkIndexes(supabaseClient, m.id);
+                      const missingChunks = chunksJson.filter((c: any) => !existingChunkIndexes.has(c.metadata?.chunk_index));
 
-                      const extractResult = await extractResponse.json();
-                      if (extractResult.error) {
-                          throw new Error(extractResult.error);
-                      }
+                      if (missingChunks.length === 0) {
+                          console.log(`✓ All ${chunksJson.length} chunks already embedded and stored in DB. Skipping.`);
+                      } else {
+                          console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunksJson.length} total).`);
 
-                      const pdfText = extractResult.text || '';
-                      if (pdfText.trim().length === 0) {
-                          throw new Error("No text content could be extracted from this PDF.");
-                      }
-
-                      // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-                      const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
-                      const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-                      const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
-                      const rawSegments = pdfText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-                      const parsedChunks: string[] = [];
-
-                      for (const segment of rawSegments) {
-                          if (segment.length > 2500) {
-                              // Split large segment cleanly
-                              let start = 0;
-                              while (start < segment.length) {
-                                  let end = start + 2500;
-                                  if (end < segment.length) {
-                                      const lastBreak = segment.lastIndexOf('\n', end);
-                                      if (lastBreak > start + 1000) {
-                                          end = lastBreak;
-                                      } else {
-                                          const lastPeriod = segment.lastIndexOf('. ', end);
-                                          if (lastPeriod > start + 1000) {
-                                              end = lastPeriod + 2;
-                                          }
-                                      }
-                                  } else {
-                                      end = segment.length;
-                                  }
-                                  parsedChunks.push(segment.substring(start, end).trim());
-                                  start = end;
-                              }
-                          } else {
-                              parsedChunks.push(segment);
-                          }
-                      }
-
-                      let chunkIndex = 0;
-                      for (const chunkText of parsedChunks) {
-                          // Detect structure type
-                          let structureType = 'segment';
-                          const firstWords = chunkText.substring(0, 50).toLowerCase();
-
-                          // Match against allowedOptions (supports custom keywords dynamically)
-                          for (const opt of allowedOptions) {
-                              const cleanOpt = opt.toLowerCase().trim();
-                              if (firstWords.includes(cleanOpt)) {
-                                  // Canonicalize plural to singular if possible
-                                  if (cleanOpt.endsWith('s')) {
-                                      const singular = cleanOpt.slice(0, -1);
-                                      structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
-                                  } else {
-                                      structureType = cleanOpt;
-                                  }
-                                  break;
-                              }
+                          const batchSize = 10;
+                          const batches = [];
+                          for (let i = 0; i < missingChunks.length; i += batchSize) {
+                              batches.push(missingChunks.slice(i, i + batchSize));
                           }
 
-                          // Fallback to standard hardcoded checks to guarantee zero-regression
-                          if (structureType === 'segment') {
-                              if (firstWords.includes('chapter')) structureType = 'chapter';
-                              else if (firstWords.includes('section')) structureType = 'section';
-                              else if (firstWords.includes('topic')) structureType = 'topic';
-                              else if (firstWords.includes('week')) structureType = 'week';
-                              else if (firstWords.includes('lesson')) structureType = 'lesson';
-                          }
+                          // Bounded concurrency processor (3-5 simultaneous batch requests)
+                          await parallelLimit(batches, 4, async (batch) => {
+                              const embeddingResponse = await fetch(vercelTarget, {
+                                  method: 'POST',
+                                  headers: {
+                                      'Content-Type': 'application/json',
+                                      'x-supabase-signature': gatewaySecret
+                                  },
+                                  body: JSON.stringify({
+                                      type: 'generate_batch_embeddings',
+                                      payload: { texts: batch.map(c => c.content) }
+                                  })
+                              });
 
-                          chunks.push({
-                              material_id: m.id,
-                              course_id: course_id,
-                              content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                              metadata: {
-                                  type: 'material_pdf',
-                                  title: m.title,
-                                  chunk_index: chunkIndex++,
-                                  structure_type: structureType
+                              if (!embeddingResponse.ok) {
+                                  throw new Error(`Batch Embedding Proxy failed: ${await embeddingResponse.text()}`);
                               }
+
+                              const embeddingResult = await embeddingResponse.json();
+                              const embeddings = embeddingResult.embeddings;
+
+                              const records = batch.map((chunk, idx) => ({
+                                  ...chunk,
+                                  embedding: embeddings[idx]
+                              }));
+
+                              const { error } = await supabaseClient.from('material_embeddings').insert(records);
+                              if (error) throw error;
                           });
                       }
-                      continue; // Skip the metadata fallback since we successfully indexed the PDF content
-                  } catch (err: any) {
-                      console.warn(`Failed to extract text for PDF ${m.title}:`, err);
+
+                      timingLogs.embedding = Date.now() - embedStart;
+                      timingLogs.total = Date.now() - mStart;
+                      status = 'completed';
+                      currentStep = 'completed';
+
+                      await upsertIndexingState(supabaseClient, {
+                          ...state,
+                          status,
+                          current_step: currentStep,
+                          error_message: null,
+                          timing_logs: timingLogs
+                      });
+                      console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
+
+                  } catch (materialError: any) {
+                      console.error(`Error during processing material ${m.title}:`, materialError);
+                      const errStr = materialError.message || String(materialError);
+
+                      await upsertIndexingState(supabaseClient, {
+                          ...state,
+                          status: 'failed',
+                          current_step: currentStep,
+                          error_message: errStr,
+                          retry_count: retryCount + 1
+                      });
+
                       if (material_id) {
-                          throw new Error(`PDF extraction failed: ${err.message}`);
+                          throw materialError;
                       }
                   }
+                  continue; // Skip the metadata fallback since we successfully indexed the PDF content
               }
 
               // Fallback to title and description for non-PDFs or failed extractions
@@ -397,46 +697,46 @@ serve(async (req) => {
           }
       }
 
-      if (chunks.length === 0) {
-          return new Response(JSON.stringify({ message: 'No content to index for this course.' }), {
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-              status: 200,
-          });
-      }
-
-      // Process in batches of 10
-      const batchSize = 10;
-      for (let i = 0; i < chunks.length; i += batchSize) {
-          const batch = chunks.slice(i, i + batchSize);
-          const embeddingResponse = await fetch(vercelTarget, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-supabase-signature': gatewaySecret
-            },
-            body: JSON.stringify({
-              type: 'generate_batch_embeddings',
-              payload: { texts: batch.map(c => c.content) }
-            })
-          });
-
-          if (!embeddingResponse.ok) {
-            throw new Error(`Batch Embedding Proxy failed: ${await embeddingResponse.text()}`);
+      // 5. Embed and store remaining non-PDF chunks (lessons, topics, course info, non-PDF materials)
+      if (chunks.length > 0) {
+          console.log(`Processing ${chunks.length} non-PDF metadata chunks...`);
+          const batchSize = 10;
+          const batches = [];
+          for (let i = 0; i < chunks.length; i += batchSize) {
+              batches.push(chunks.slice(i, i + batchSize));
           }
 
-          const embeddingResult = await embeddingResponse.json();
-          const embeddings = embeddingResult.embeddings;
+          await parallelLimit(batches, 4, async (batch) => {
+              const embeddingResponse = await fetch(vercelTarget, {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'x-supabase-signature': gatewaySecret
+                  },
+                  body: JSON.stringify({
+                      type: 'generate_batch_embeddings',
+                      payload: { texts: batch.map(c => c.content) }
+                  })
+              });
 
-          const records = batch.map((chunk, idx) => ({
-              ...chunk,
-              embedding: embeddings[idx]
-          }));
+              if (!embeddingResponse.ok) {
+                  throw new Error(`Batch Embedding Proxy failed for non-PDF chunks: ${await embeddingResponse.text()}`);
+              }
 
-          const { error } = await supabaseClient.from('material_embeddings').insert(records);
-          if (error) throw error;
+              const embeddingResult = await embeddingResponse.json();
+              const embeddings = embeddingResult.embeddings;
+
+              const records = batch.map((chunk, idx) => ({
+                  ...chunk,
+                  embedding: embeddings[idx]
+              }));
+
+              const { error } = await supabaseClient.from('material_embeddings').insert(records);
+              if (error) throw error;
+          });
       }
 
-      return new Response(JSON.stringify({ success: true, message: `Successfully indexed ${chunks.length} chunks for course ${course_id}` }), {
+      return new Response(JSON.stringify({ success: true, message: `Successfully completed indexing for course ${course_id}` }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 200,
       });
