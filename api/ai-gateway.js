@@ -575,19 +575,30 @@ async function upsertIndexingState(supabaseUrl, supabaseAnonKey, state) {
   }
 }
 
-async function getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, materialId) {
+async function getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, materialId, activeVersion) {
   try {
-    const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${materialId}&select=metadata`, {
+    const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${materialId}&select=metadata,embedding_version`, {
       headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
     });
     if (res.ok) {
       const data = await res.json();
-      return new Set(data.map(d => d.metadata?.chunk_index).filter(idx => idx !== undefined && idx !== null));
+      if (data && data.length > 0) {
+        // Mismatch check triggers re-indexing when embedding models change
+        const mismatch = data.some(d => d.embedding_version !== activeVersion);
+        if (mismatch) {
+          console.warn(`Embedding model version mismatch for ${materialId}. Re-indexing required.`);
+          return { chunkIndexes: new Set(), versionMismatch: true };
+        }
+        return {
+          chunkIndexes: new Set(data.map(d => d.metadata?.chunk_index).filter(idx => idx !== undefined && idx !== null)),
+          versionMismatch: false
+        };
+      }
     }
   } catch (err) {
     console.error(`Error fetching existing chunk indexes for ${materialId}:`, err);
   }
-  return new Set();
+  return { chunkIndexes: new Set(), versionMismatch: false };
 }
 
 /**
@@ -610,98 +621,150 @@ async function indexText({
     };
 
     const chunkText = (normalizedText) => {
-        if (sourceType === 'lesson') {
-            const chunkSize = 2000;
-            const localChunks = [];
-            for (let i = 0; i < normalizedText.length; i += chunkSize) {
-                localChunks.push({
-                    content: `Lesson Title: ${title}\nContent Chunk: ${normalizedText.substring(i, i + chunkSize)}`,
-                    metadata: { type: 'lesson', title: title, chunk_index: Math.floor(i / chunkSize) }
-                });
+        const splitSemantically = (rawText, limit) => {
+            const paragraphs = rawText.split(/\r?\n{2,}/);
+            const subChunks = [];
+            let currentBlock = "";
+
+            for (const para of paragraphs) {
+                const cleanPara = para.trim();
+                if (!cleanPara) continue;
+
+                if ((currentBlock + "\n\n" + cleanPara).length <= limit) {
+                    currentBlock = currentBlock ? currentBlock + "\n\n" + cleanPara : cleanPara;
+                } else {
+                    if (currentBlock) {
+                        subChunks.push(currentBlock);
+                        currentBlock = "";
+                    }
+
+                    if (cleanPara.length <= limit) {
+                        currentBlock = cleanPara;
+                    } else {
+                        const sentences = cleanPara.match(/[^.!?]+[.!?]+(\s+|$)/g) || [cleanPara];
+                        for (const sentence of sentences) {
+                            const cleanSentence = sentence.trim();
+                            if (!cleanSentence) continue;
+
+                            if ((currentBlock + " " + cleanSentence).length <= limit) {
+                                currentBlock = currentBlock ? currentBlock + " " + cleanSentence : cleanSentence;
+                            } else {
+                                if (currentBlock) {
+                                    subChunks.push(currentBlock);
+                                }
+                                currentBlock = cleanSentence;
+                            }
+                        }
+                    }
+                }
             }
-            return localChunks;
+            if (currentBlock) {
+                subChunks.push(currentBlock);
+            }
+            return subChunks;
+        };
+
+        if (sourceType === 'lesson') {
+            const parts = splitSemantically(normalizedText, 2000);
+            return parts.map((chunk, idx) => ({
+                content: `Lesson Title: ${title}\nContent Chunk: ${chunk}`,
+                metadata: { type: 'lesson', title: title, chunk_index: idx }
+            }));
         } else if (sourceType === 'material') {
             const allowedOptions = chunkOptions || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
             const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-            const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+            const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n(?=[a-z\\s]{3,100}:))`, 'i');
             const rawSegments = normalizedText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-            const parsedChunks = [];
-
-            for (const segment of rawSegments) {
-                if (segment.length > 2500) {
-                    let start = 0;
-                    while (start < segment.length) {
-                        let end = start + 2500;
-                        if (end < segment.length) {
-                            const lastBreak = segment.lastIndexOf('\n', end);
-                            if (lastBreak > start + 1000) {
-                                end = lastBreak;
-                            } else {
-                                const lastPeriod = segment.lastIndexOf('. ', end);
-                                if (lastPeriod > start + 1000) {
-                                    end = lastPeriod + 2;
-                                }
-                            }
-                        } else {
-                            end = segment.length;
-                        }
-                        parsedChunks.push(segment.substring(start, end).trim());
-                        start = end;
-                    }
-                } else {
-                    parsedChunks.push(segment);
-                }
-            }
 
             const localChunks = [];
             let chunkIndex = 0;
-            for (const chunkText of parsedChunks) {
-                let structureType = 'segment';
-                const firstWords = chunkText.substring(0, 50).toLowerCase();
 
-                for (const opt of allowedOptions) {
-                    const cleanOpt = opt.toLowerCase().trim();
-                    if (firstWords.includes(cleanOpt)) {
-                        if (cleanOpt.endsWith('s')) {
-                            const singular = cleanOpt.slice(0, -1);
-                            structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
-                        } else {
-                            structureType = cleanOpt;
+            // Track hierarchy state across segments
+            let currentChapter = "";
+            let currentSection = "";
+            let currentTopic = "";
+
+            for (const segment of rawSegments) {
+                const firstWords = segment.substring(0, 100).toLowerCase();
+
+                // Update hierarchy context
+                if (/\b(?:chapter|chapters)\b/i.test(firstWords)) {
+                    const match = segment.match(/^(?:chapter|chapters)\s+([^\r\n:]+)/i);
+                    if (match) currentChapter = match[1].trim();
+                } else if (/\b(?:section|sections)\b/i.test(firstWords)) {
+                    const match = segment.match(/^(?:section|sections)\s+([^\r\n:]+)/i);
+                    if (match) currentSection = match[1].trim();
+                } else if (/\b(?:topic|topics)\b/i.test(firstWords)) {
+                    const match = segment.match(/^(?:topic|topics)\s+([^\r\n:]+)/i);
+                    if (match) currentTopic = match[1].trim();
+                }
+
+                // Split large segments semantically (2500 max characters)
+                const parts = splitSemantically(segment, 2500);
+
+                for (const part of parts) {
+                    let structureType = 'segment';
+                    const partFirstWords = part.substring(0, 100).toLowerCase();
+
+                    // Detect document elements (Definitions, Examples, Exercises)
+                    if (/\b(?:definition|definitions|define)\b/i.test(partFirstWords)) {
+                        structureType = 'definition';
+                    } else if (/\b(?:example|examples|eg\.?)\b/i.test(partFirstWords)) {
+                        structureType = 'example';
+                    } else if (/\b(?:exercise|exercises|practice|question|quiz)\b/i.test(partFirstWords)) {
+                        structureType = 'exercise';
+                    } else {
+                        // Check standard or custom option keys
+                        for (const opt of allowedOptions) {
+                            const cleanOpt = opt.toLowerCase().trim();
+                            if (partFirstWords.includes(cleanOpt)) {
+                                if (cleanOpt.endsWith('s')) {
+                                    const singular = cleanOpt.slice(0, -1);
+                                    structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                                } else {
+                                    structureType = cleanOpt;
+                                }
+                                break;
+                            }
                         }
-                        break;
                     }
-                }
 
-                if (structureType === 'segment') {
-                    if (firstWords.includes('chapter')) structureType = 'chapter';
-                    else if (firstWords.includes('section')) structureType = 'section';
-                    else if (firstWords.includes('topic')) structureType = 'topic';
-                    else if (firstWords.includes('week')) structureType = 'week';
-                    else if (firstWords.includes('lesson')) structureType = 'lesson';
-                }
-
-                localChunks.push({
-                    content: `Document: ${title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                    metadata: {
-                        type: 'material_pdf',
-                        title: title,
-                        chunk_index: chunkIndex++,
-                        structure_type: structureType
+                    if (structureType === 'segment') {
+                        if (partFirstWords.includes('chapter')) structureType = 'chapter';
+                        else if (partFirstWords.includes('section')) structureType = 'section';
+                        else if (partFirstWords.includes('topic')) structureType = 'topic';
+                        else if (partFirstWords.includes('week')) structureType = 'week';
+                        else if (partFirstWords.includes('lesson')) structureType = 'lesson';
                     }
-                });
+
+                    // Build full path-based hierarchical context path header
+                    let pathHeader = `Document: ${title}`;
+                    if (currentChapter) pathHeader += ` > Chapter: ${currentChapter}`;
+                    if (currentSection) pathHeader += ` > Section: ${currentSection}`;
+                    if (currentTopic) pathHeader += ` > Topic: ${currentTopic}`;
+
+                    localChunks.push({
+                        content: `Hierarchy Context: ${pathHeader}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${part}`,
+                        metadata: {
+                            type: 'material_pdf',
+                            title: title,
+                            chunk_index: chunkIndex++,
+                            structure_type: structureType,
+                            chapter: currentChapter || null,
+                            section: currentSection || null,
+                            topic: currentTopic || null
+                        }
+                    });
+                }
             }
             return localChunks;
         } else {
-            // Course or topic or fallback generic
-            const chunkSize = 2000;
-            const localChunks = [];
-            for (let i = 0; i < normalizedText.length; i += chunkSize) {
-                localChunks.push({
-                    content: normalizedText.substring(i, i + chunkSize),
-                    metadata: { type: sourceType, title: title, chunk_index: Math.floor(i / chunkSize) }
-                });
-            }
-            return localChunks;
+            // Course, topic, or generic fallback
+            const parts = splitSemantically(normalizedText, 2000);
+            return parts.map((chunk, idx) => ({
+                content: chunk,
+                metadata: { type: sourceType, title: title, chunk_index: idx }
+            }));
         }
     };
 
@@ -717,22 +780,48 @@ async function indexText({
         const embeddingModel = resolveModelId('generate_batch_embeddings', payload || {});
         const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
 
-        const batchResults = await parallelLimit(batches, 4, async (batch) => {
-            const embedResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKeyVal}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    requests: batch.map(c => ({
-                        model: `models/${cleanEmbeddingModel}`,
-                        content: { parts: [{ text: c.content }] },
-                        outputDimensionality: 768
-                    }))
-                })
-            });
-
-            if (!embedResponse.ok) {
-                throw new Error(`Batch Embedding Generation failed: ${await embedResponse.text()}`);
+        const fetchWithBackoff = async (url, options, maxRetries = 5, initialDelay = 1000) => {
+            let attempt = 0;
+            while (true) {
+                try {
+                    const res = await fetch(url, options);
+                    if (res.ok) {
+                        return res;
+                    }
+                    if (res.status === 429 || res.status >= 500) {
+                        if (attempt >= maxRetries) {
+                            throw new Error(`Failed after ${attempt} retries. Status: ${res.status}. Text: ${await res.text()}`);
+                        }
+                    } else {
+                        throw new Error(`Non-retriable error. Status: ${res.status}. Text: ${await res.text()}`);
+                    }
+                } catch (err) {
+                    if (attempt >= maxRetries) {
+                        throw err;
+                    }
+                }
+                const delay = initialDelay * Math.pow(2, attempt) + Math.random() * 500;
+                console.warn(`Retry attempt ${attempt + 1} for embedding call. Waiting ${Math.round(delay)}ms due to rate limit/server error.`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                attempt++;
             }
+        };
+
+        const batchResults = await parallelLimit(batches, 4, async (batch) => {
+            const embedResponse = await fetchWithBackoff(
+                `https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKeyVal}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        requests: batch.map(c => ({
+                            model: `models/${cleanEmbeddingModel}`,
+                            content: { parts: [{ text: c.content }] },
+                            outputDimensionality: 768
+                        }))
+                    })
+                }
+            );
 
             const embedResult = await embedResponse.json();
             return embedResult.embeddings.map(e => e.values);
@@ -741,39 +830,71 @@ async function indexText({
         return batchResults.flat();
     };
 
+    const activeVersion = resolveModelId('generate_batch_embeddings', payload || {});
+
     const upsertKnowledgeEmbeddings = async ({
         sourceType,
         sourceId,
         courseId,
         title,
         chunks,
-        embeddings
+        embeddings,
+        isAtomicReplace = false
     }) => {
         if (chunks.length === 0) return;
-        const records = chunks.map((chunk, idx) => ({
-            source_type: sourceType,
-            source_id: sourceId,
-            course_id: courseId,
-            content: chunk.content,
-            embedding: embeddings[idx],
-            metadata: chunk.metadata,
-            material_id: sourceType === 'material' ? sourceId : null,
-            lesson_id: sourceType === 'lesson' ? sourceId : null
-        }));
 
-        const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings`, {
-            method: 'POST',
-            headers: {
-                'apikey': supabaseAnonKey,
-                'Authorization': `Bearer ${supabaseAnonKey}`,
-                'Content-Type': 'application/json',
-                'Prefer': 'return=representation'
-            },
-            body: JSON.stringify(records)
-        });
+        if (isAtomicReplace) {
+            const records = chunks.map((chunk, idx) => ({
+                content: chunk.content,
+                embedding: embeddings[idx],
+                metadata: chunk.metadata
+            }));
 
-        if (!insertResponse.ok) {
-            throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
+            console.log(`Performing ATOMIC delete-and-insert for ${sourceType} ${sourceId}`);
+            const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/atomic_update_embeddings`, {
+                method: 'POST',
+                headers: {
+                    'apikey': supabaseAnonKey,
+                    'Authorization': `Bearer ${supabaseAnonKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    p_source_type: sourceType,
+                    p_source_id: sourceId,
+                    p_course_id: courseId,
+                    p_embedding_version: activeVersion,
+                    p_records: records
+                })
+            });
+            if (!response.ok) {
+                throw new Error(`Atomic update RPC failed: ${await response.text()}`);
+            }
+        } else {
+            const fullRecords = chunks.map((chunk, idx) => ({
+                source_type: sourceType,
+                source_id: sourceId,
+                course_id: courseId,
+                content: chunk.content,
+                embedding: embeddings[idx],
+                metadata: chunk.metadata,
+                material_id: sourceType === 'material' ? sourceId : null,
+                lesson_id: sourceType === 'lesson' ? sourceId : null,
+                embedding_version: activeVersion
+            }));
+
+            const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings`, {
+                method: 'POST',
+                headers: {
+                    'apikey': supabaseAnonKey,
+                    'Authorization': `Bearer ${supabaseAnonKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(fullRecords)
+            });
+
+            if (!insertResponse.ok) {
+                throw new Error(`Failed to insert batch embeddings: ${await insertResponse.text()}`);
+            }
         }
     };
 
@@ -781,28 +902,30 @@ async function indexText({
 
     const chunks = chunkText(normalizedText);
 
-    // Fetch already indexed chunk indexes from DB to prevent duplicate embedding generation and insertion
-    const existingChunkIndexes = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, sourceId);
+    // Fetch already indexed chunk indexes from DB
+    const { chunkIndexes: existingChunkIndexes, versionMismatch } = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, sourceId, activeVersion);
 
-    // Filter chunks to keep only those not already indexed
-    const missingChunks = chunks.filter(c => !existingChunkIndexes.has(c.metadata?.chunk_index));
+    const isAtomicReplace = versionMismatch || (existingChunkIndexes.size === 0);
 
-    if (missingChunks.length === 0) {
+    const chunksToProcess = isAtomicReplace ? chunks : chunks.filter(c => !existingChunkIndexes.has(c.metadata?.chunk_index));
+
+    if (chunksToProcess.length === 0) {
         console.log(`✓ All chunks for ${sourceType} ${sourceId} are already fully indexed. Skipping.`);
         return;
     }
 
-    console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunks.length} total) for ${sourceType} ${sourceId}.`);
+    console.log(`Found ${chunksToProcess.length} chunks to process (out of ${chunks.length} total, isAtomicReplace: ${isAtomicReplace}) for ${sourceType} ${sourceId}.`);
 
-    const embeddings = await generateEmbeddings(missingChunks);
+    const embeddings = await generateEmbeddings(chunksToProcess);
 
     await upsertKnowledgeEmbeddings({
         sourceType,
         sourceId,
         courseId,
         title,
-        chunks: missingChunks,
-        embeddings
+        chunks: chunksToProcess,
+        embeddings,
+        isAtomicReplace
     });
 }
 
@@ -826,7 +949,36 @@ async function handleIndexCourse(payload, res) {
     return;
   }
 
+  const lockKey = material_id ? `indexing_lock_${material_id}` : `indexing_lock_${course_id}`;
+  const lockRequester = 'req_' + Math.random().toString(36).substring(2) + Date.now();
+
   try {
+    // 1. Acquire Distributed Lock to prevent race conditions
+    const acquireLockRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/acquire_indexing_lock`, {
+      method: 'POST',
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        p_lock_key: lockKey,
+        p_locked_by: lockRequester,
+        p_lease_duration: '10 minutes'
+      })
+    });
+
+    if (!acquireLockRes.ok) {
+      throw new Error(`Lock acquisition failed with status ${acquireLockRes.status}`);
+    }
+
+    const acquired = await acquireLockRes.json();
+    if (!acquired) {
+      res.writeHead(409, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Indexing operation already in progress for this ${material_id ? 'material' : 'course'}. Please try again later.` }));
+      return;
+    }
+
     let materials = [];
     let lessons = [];
     let topics = [];
@@ -877,18 +1029,23 @@ async function handleIndexCourse(payload, res) {
     const existingTopics = new Set(existingEmbeds.filter(e => e.source_type === 'topic').map(e => e.source_id));
     const existingLessons = new Set(existingEmbeds.filter(e => e.source_type === 'lesson').map(e => e.source_id));
 
+    // Prepare a list of asynchronous, concurrent tasks for parallel limit pool execution
+    const tasks = [];
+
     // 1. Index course info itself (only if course-level indexing)
     if (course && !existingCourses.has(course_id)) {
-      console.log(`Indexing course info for course: ${course.title}`);
-      await indexText({
-        sourceType: 'course',
-        sourceId: course_id,
-        courseId: course_id,
-        title: course.title,
-        text: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
-        supabaseUrl,
-        supabaseAnonKey,
-        payload
+      tasks.push(async () => {
+        console.log(`Indexing course info for course: ${course.title}`);
+        await indexText({
+          sourceType: 'course',
+          sourceId: course_id,
+          courseId: course_id,
+          title: course.title,
+          text: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+          supabaseUrl,
+          supabaseAnonKey,
+          payload
+        });
       });
     }
 
@@ -896,16 +1053,18 @@ async function handleIndexCourse(payload, res) {
     if (topics && Array.isArray(topics)) {
       for (const t of topics) {
         if (!existingTopics.has(t.id)) {
-          console.log(`Indexing topic: ${t.title}`);
-          await indexText({
-            sourceType: 'topic',
-            sourceId: t.id,
-            courseId: course_id,
-            title: t.title,
-            text: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
-            supabaseUrl,
-            supabaseAnonKey,
-            payload
+          tasks.push(async () => {
+            console.log(`Indexing topic: ${t.title}`);
+            await indexText({
+              sourceType: 'topic',
+              sourceId: t.id,
+              courseId: course_id,
+              title: t.title,
+              text: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+              supabaseUrl,
+              supabaseAnonKey,
+              payload
+            });
           });
         }
       }
@@ -923,20 +1082,22 @@ async function handleIndexCourse(payload, res) {
 
       for (const l of lessons) {
         if (!existingLessons.has(l.id)) {
-          console.log(`Indexing lesson content for lesson: ${l.title}`);
-          const content = l.content || '';
-          const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
-          const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
+          tasks.push(async () => {
+            console.log(`Indexing lesson content for lesson: ${l.title}`);
+            const content = l.content || '';
+            const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
+            const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
 
-          await indexText({
-            sourceType: 'lesson',
-            sourceId: l.id,
-            courseId: course_id,
-            title: `${l.title}${topicContext}`,
-            text: content,
-            supabaseUrl,
-            supabaseAnonKey,
-            payload
+            await indexText({
+              sourceType: 'lesson',
+              sourceId: l.id,
+              courseId: course_id,
+              title: `${l.title}${topicContext}`,
+              text: content,
+              supabaseUrl,
+              supabaseAnonKey,
+              payload
+            });
           });
         }
       }
@@ -945,221 +1106,226 @@ async function handleIndexCourse(payload, res) {
     // 4. Index materials (using full robust state machine for PDFs)
     if (materials && Array.isArray(materials)) {
       for (const m of materials) {
-        const fileUrl = m.file_url || '';
-        const fileType = m.file_type || '';
-        let isPdf = false;
+        tasks.push(async () => {
+          const fileUrl = m.file_url || '';
+          const fileType = m.file_type || '';
+          let isPdf = false;
 
-        if (fileType.toLowerCase().includes('pdf')) {
-          isPdf = true;
-        } else {
-          try {
-            const urlObj = new URL(fileUrl);
-            const pathOnly = urlObj.pathname.toLowerCase();
-            isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf') || urlObj.search.toLowerCase().includes('.pdf');
-          } catch (e) {
-            isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
-          }
-        }
-
-        if (isPdf) {
-          const mStart = Date.now();
-          let state = await getIndexingState(supabaseUrl, supabaseAnonKey, m.id);
-
-          let extractedText = '';
-          let status = 'pending';
-          let currentStep = 'none';
-          let retryCount = 0;
-          let timingLogs = {};
-
-          if (state) {
-            extractedText = state.extracted_text || '';
-            status = state.status || 'pending';
-            currentStep = state.current_step || 'none';
-            retryCount = state.retry_count || 0;
-            timingLogs = state.timing_logs || {};
+          if (fileType.toLowerCase().includes('pdf')) {
+            isPdf = true;
+          } else {
+            try {
+              const urlObj = new URL(fileUrl);
+              const pathOnly = urlObj.pathname.toLowerCase();
+              isPdf = pathOnly.endsWith('.pdf') || pathOnly.includes('pdf') || urlObj.search.toLowerCase().includes('.pdf');
+            } catch (e) {
+              isPdf = fileUrl.toLowerCase().includes('.pdf') || fileUrl.includes('content-type=application/pdf');
+            }
           }
 
-          // If PDF file URL changed or no state exists, do a fresh start for this material
-          if (!state || state.file_url !== fileUrl) {
-            console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
-            // Delete existing embeddings for this material
-            const deleteUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${m.id}`;
-            await fetch(deleteUrl, {
-              method: 'DELETE',
-              headers: {
-                'apikey': supabaseAnonKey,
-                'Authorization': `Bearer ${supabaseAnonKey}`
-              }
-            });
+          if (isPdf) {
+            const mStart = Date.now();
+            let state = await getIndexingState(supabaseUrl, supabaseAnonKey, m.id);
 
-            extractedText = '';
-            status = 'pending';
-            currentStep = 'none';
-            retryCount = 0;
-            timingLogs = {};
+            let extractedText = '';
+            let status = 'pending';
+            let currentStep = 'none';
+            let retryCount = 0;
+            let timingLogs = {};
 
-            state = {
-              material_id: m.id,
-              course_id: course_id,
-              file_url: fileUrl,
-              extracted_text: null,
-              chunks: null,
-              status: 'pending',
-              current_step: 'none',
-              timing_logs: {},
-              retry_count: 0
-            };
-            await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
-          }
-
-          // If already completed, skip processing
-          if (status === 'completed') {
-            console.log(`✓ PDF material ${m.title} is already fully indexed. Skipping.`);
-            continue;
-          }
-
-          try {
-            // Stage 1: Download & Text Extraction (Skip if extractedText is already truthy and populated to support full resumption)
-            if (extractedText && extractedText.trim().length > 0) {
-              console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
-            } else {
-              console.log(`Starting PDF download and extraction for: ${m.title}`);
-              const extStart = Date.now();
-
-              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                ...state,
-                status: 'extracting',
-                current_step: 'extraction'
-              });
-
-              const pdfResponse = await fetch(fileUrl);
-              if (!pdfResponse.ok) {
-                throw new Error(`Failed to download PDF from storage: ${pdfResponse.statusText}`);
-              }
-              const arrayBuffer = await pdfResponse.arrayBuffer();
-              const base64Data = Buffer.from(arrayBuffer).toString('base64');
-
-              const apiKey = resolveApiKey('extract_pdf_text', payload);
-              const model = resolveModelId('extract_pdf_text', payload);
-
-              const requestBody = {
-                contents: [
-                  {
-                    parts: [
-                      {
-                        inline_data: {
-                          mime_type: 'application/pdf',
-                          data: base64Data
-                        }
-                      },
-                      {
-                        text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
-                      }
-                    ]
-                  }
-                ]
-              };
-
-              const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-              });
-
-              if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
-              }
-
-              const data = await response.json();
-              extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-              if (!extractedText || extractedText.trim().length === 0) {
-                throw new Error("Gemini extracted zero text from this PDF document.");
-              }
-
-              timingLogs.extraction = Date.now() - extStart;
-              status = 'extracted';
-              currentStep = 'extraction';
-
-              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                ...state,
-                extracted_text: extractedText,
-                status,
-                current_step: currentStep,
-                timing_logs: timingLogs
-              });
-              console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
+            if (state) {
+              extractedText = state.extracted_text || '';
+              status = state.status || 'pending';
+              currentStep = state.current_step || 'none';
+              retryCount = state.retry_count || 0;
+              timingLogs = state.timing_logs || {};
             }
 
-            // Stage 2 & 3: Chunk, Embed and Store using shared indexText()
-            console.log(`Indexing text for PDF: ${m.title}`);
-            const indexStart = Date.now();
+            // If PDF file URL changed or no state exists, do a fresh start for this material
+            if (!state || state.file_url !== fileUrl) {
+              console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
+              // Delete existing embeddings for this material
+              const deleteUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${m.id}`;
+              await fetch(deleteUrl, {
+                method: 'DELETE',
+                headers: {
+                  'apikey': supabaseAnonKey,
+                  'Authorization': `Bearer ${supabaseAnonKey}`
+                }
+              });
 
-            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-              ...state,
-              status: 'embedding',
-              current_step: 'embedding'
-            });
+              extractedText = '';
+              status = 'pending';
+              currentStep = 'none';
+              retryCount = 0;
+              timingLogs = {};
 
+              state = {
+                material_id: m.id,
+                course_id: course_id,
+                file_url: fileUrl,
+                extracted_text: null,
+                chunks: null,
+                status: 'pending',
+                current_step: 'none',
+                timing_logs: {},
+                retry_count: 0
+              };
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
+            }
+
+            // If already completed, skip processing
+            if (status === 'completed') {
+              console.log(`✓ PDF material ${m.title} is already fully indexed. Skipping.`);
+              return;
+            }
+
+            try {
+              // Stage 1: Download & Text Extraction (Skip if extractedText is already truthy and populated to support full resumption)
+              if (extractedText && extractedText.trim().length > 0) {
+                console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
+              } else {
+                console.log(`Starting PDF download and extraction for: ${m.title}`);
+                const extStart = Date.now();
+
+                await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                  ...state,
+                  status: 'extracting',
+                  current_step: 'extraction'
+                });
+
+                const pdfResponse = await fetch(fileUrl);
+                if (!pdfResponse.ok) {
+                  throw new Error(`Failed to download PDF from storage: ${pdfResponse.statusText}`);
+                }
+                const arrayBuffer = await pdfResponse.arrayBuffer();
+                const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+                const apiKey = resolveApiKey('extract_pdf_text', payload);
+                const model = resolveModelId('extract_pdf_text', payload);
+
+                const requestBody = {
+                  contents: [
+                    {
+                      parts: [
+                        {
+                          inline_data: {
+                            mime_type: 'application/pdf',
+                            data: base64Data
+                          }
+                        },
+                        {
+                          text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                        }
+                      ]
+                    }
+                  ]
+                };
+
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
+                }
+
+                const data = await response.json();
+                extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+                if (!extractedText || extractedText.trim().length === 0) {
+                  throw new Error("Gemini extracted zero text from this PDF document.");
+                }
+
+                timingLogs.extraction = Date.now() - extStart;
+                status = 'extracted';
+                currentStep = 'extraction';
+
+                await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                  ...state,
+                  extracted_text: extractedText,
+                  status,
+                  current_step: currentStep,
+                  timing_logs: timingLogs
+                });
+                console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
+              }
+
+              // Stage 2 & 3: Chunk, Embed and Store using shared indexText()
+              console.log(`Indexing text for PDF: ${m.title}`);
+              const indexStart = Date.now();
+
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                status: 'embedding',
+                current_step: 'embedding'
+              });
+
+              await indexText({
+                sourceType: 'material',
+                sourceId: m.id,
+                courseId: course_id,
+                title: m.title,
+                text: extractedText,
+                chunkOptions: payload.chunk_options,
+                supabaseUrl,
+                supabaseAnonKey,
+                payload
+              });
+
+              timingLogs.embedding = Date.now() - indexStart;
+              timingLogs.total = Date.now() - mStart;
+              status = 'completed';
+              currentStep = 'completed';
+
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                status,
+                current_step: currentStep,
+                error_message: null,
+                timing_logs: timingLogs
+              });
+              console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
+
+            } catch (materialError) {
+              console.error(`Error during processing material ${m.title}:`, materialError);
+              const errStr = materialError.message || String(materialError);
+
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                ...state,
+                status: 'failed',
+                current_step: currentStep,
+                error_message: errStr,
+                retry_count: retryCount + 1
+              });
+
+              if (material_id) {
+                throw materialError;
+              }
+            }
+          } else {
+            // Fallback to title and description for non-PDFs or failed extractions
+            console.log(`Indexing metadata for non-PDF material: ${m.title}`);
             await indexText({
               sourceType: 'material',
               sourceId: m.id,
               courseId: course_id,
               title: m.title,
-              text: extractedText,
-              chunkOptions: payload.chunk_options,
+              text: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
               supabaseUrl,
               supabaseAnonKey,
               payload
             });
-
-            timingLogs.embedding = Date.now() - indexStart;
-            timingLogs.total = Date.now() - mStart;
-            status = 'completed';
-            currentStep = 'completed';
-
-            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-              ...state,
-              status,
-              current_step: currentStep,
-              error_message: null,
-              timing_logs: timingLogs
-            });
-            console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
-
-          } catch (materialError) {
-            console.error(`Error during processing material ${m.title}:`, materialError);
-            const errStr = materialError.message || String(materialError);
-
-            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-              ...state,
-              status: 'failed',
-              current_step: currentStep,
-              error_message: errStr,
-              retry_count: retryCount + 1
-            });
-
-            if (material_id) {
-              throw materialError;
-            }
           }
-        } else {
-          // Fallback to title and description for non-PDFs or failed extractions
-          console.log(`Indexing metadata for non-PDF material: ${m.title}`);
-          await indexText({
-            sourceType: 'material',
-            sourceId: m.id,
-            courseId: course_id,
-            title: m.title,
-            text: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
-            supabaseUrl,
-            supabaseAnonKey,
-            payload
-          });
-        }
+        });
       }
     }
+
+    // Execute all tasks in parallel using the bounded concurrency pool to respect API rate limits
+    await parallelLimit(tasks, 4, async (task) => await task());
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, message: `Successfully completed indexing for course ${course_id}` }));
@@ -1168,6 +1334,24 @@ async function handleIndexCourse(payload, res) {
     console.error('Indexing failed:', error);
     res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: error.message || String(error) }));
+  } finally {
+    // Safely release the distributed lock under all conditions
+    try {
+      await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/release_indexing_lock`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          p_lock_key: lockKey,
+          p_locked_by: lockRequester
+        })
+      });
+    } catch (releaseErr) {
+      console.warn('Failed to release indexing distributed lock:', releaseErr);
+    }
   }
 }
 

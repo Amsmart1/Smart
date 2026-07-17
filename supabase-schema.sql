@@ -546,8 +546,98 @@ CREATE TABLE IF NOT EXISTS knowledge_embeddings (
   content TEXT NOT NULL,
   embedding vector(768), -- Optimized for Gemini embedding-001/004
   metadata JSONB DEFAULT '{}'::jsonb,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  embedding_version VARCHAR(100) DEFAULT 'gemini-embedding-001'
 );
+
+-- Distributed Locking for Indexing operations
+CREATE TABLE IF NOT EXISTS indexing_locks (
+  lock_key VARCHAR(255) PRIMARY KEY,
+  locked_by VARCHAR(255) NOT NULL,
+  acquired_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+-- Distributed locking functions
+CREATE OR REPLACE FUNCTION acquire_indexing_lock(
+  p_lock_key VARCHAR,
+  p_locked_by VARCHAR,
+  p_lease_duration INTERVAL DEFAULT INTERVAL '10 minutes'
+) RETURNS BOOLEAN AS $$
+DECLARE
+  v_now TIMESTAMP WITH TIME ZONE := NOW();
+  v_acquired BOOLEAN := FALSE;
+BEGIN
+  -- Prune expired locks
+  DELETE FROM indexing_locks WHERE expires_at < v_now;
+
+  -- Try to insert new lock or update existing expired lock
+  INSERT INTO indexing_locks (lock_key, locked_by, expires_at)
+  VALUES (p_lock_key, p_locked_by, v_now + p_lease_duration)
+  ON CONFLICT (lock_key) DO UPDATE
+  SET locked_by = EXCLUDED.locked_by,
+      acquired_at = v_now,
+      expires_at = EXCLUDED.expires_at
+  WHERE indexing_locks.expires_at < v_now
+  RETURNING TRUE INTO v_acquired;
+
+  RETURN COALESCE(v_acquired, FALSE);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION release_indexing_lock(
+  p_lock_key VARCHAR,
+  p_locked_by VARCHAR
+) RETURNS BOOLEAN AS $$
+BEGIN
+  DELETE FROM indexing_locks
+  WHERE lock_key = p_lock_key AND locked_by = p_locked_by;
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Atomic delete-and-insert embeddings function
+CREATE OR REPLACE FUNCTION atomic_update_embeddings(
+  p_source_type VARCHAR,
+  p_source_id UUID,
+  p_course_id UUID,
+  p_embedding_version VARCHAR,
+  p_records JSONB
+) RETURNS VOID AS $$
+DECLARE
+  r JSONB;
+BEGIN
+  -- 1. Atomic Delete of old embeddings for this source of the specified version
+  DELETE FROM knowledge_embeddings
+  WHERE source_id = p_source_id AND source_type = p_source_type;
+
+  -- 2. Insert new records
+  FOR r IN SELECT * FROM jsonb_array_elements(p_records)
+  LOOP
+    INSERT INTO knowledge_embeddings (
+      source_type,
+      source_id,
+      course_id,
+      content,
+      embedding,
+      metadata,
+      material_id,
+      lesson_id,
+      embedding_version
+    ) VALUES (
+      p_source_type,
+      p_source_id,
+      p_course_id,
+      r->>'content',
+      (r->>'embedding')::vector,
+      COALESCE(r->'metadata', '{}'::jsonb),
+      CASE WHEN p_source_type = 'material' THEN p_source_id ELSE NULL END,
+      CASE WHEN p_source_type = 'lesson' THEN p_source_id ELSE NULL END,
+      p_embedding_version
+    );
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Index for semantic search
 CREATE INDEX IF NOT EXISTS idx_knowledge_embeddings_vector ON knowledge_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
