@@ -59,9 +59,9 @@ async function upsertIndexingState(supabaseClient: any, state: any) {
 async function getExistingChunkIndexes(supabaseClient: any, materialId: string) {
   try {
     const { data } = await supabaseClient
-      .from('material_embeddings')
+      .from('knowledge_embeddings')
       .select('metadata')
-      .eq('material_id', materialId);
+      .eq('source_id', materialId);
     if (data) {
       return new Set(data.map((d: any) => d.metadata?.chunk_index).filter((idx: any) => idx !== undefined && idx !== null));
     }
@@ -69,6 +69,223 @@ async function getExistingChunkIndexes(supabaseClient: any, materialId: string) 
     console.error(`Error fetching existing chunk indexes for ${materialId}:`, err);
   }
   return new Set();
+}
+
+/**
+ * Shared chunk, embed, and store engine for course knowledge items.
+ */
+async function indexText({
+    sourceType,
+    sourceId,
+    courseId,
+    title,
+    text,
+    chunkOptions = null,
+    supabaseClient = null,
+    vercelTarget = null,
+    gatewaySecret = null
+}: {
+    sourceType: string;
+    sourceId: string;
+    courseId: string;
+    title: string;
+    text: string;
+    chunkOptions?: string[] | null;
+    supabaseClient?: any;
+    vercelTarget?: string | null;
+    gatewaySecret?: string | null;
+}) {
+
+    const normalizeText = (t: string) => {
+        return t ? t.trim() : '';
+    };
+
+    const chunkText = (normalizedText: string) => {
+        if (sourceType === 'lesson') {
+            const chunkSize = 2000;
+            const localChunks = [];
+            for (let i = 0; i < normalizedText.length; i += chunkSize) {
+                localChunks.push({
+                    content: `Lesson Title: ${title}\nContent Chunk: ${normalizedText.substring(i, i + chunkSize)}`,
+                    metadata: { type: 'lesson', title: title, chunk_index: Math.floor(i / chunkSize) }
+                });
+            }
+            return localChunks;
+        } else if (sourceType === 'material') {
+            const allowedOptions = chunkOptions || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
+            const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+            const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
+            const rawSegments = normalizedText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
+            const parsedChunks: string[] = [];
+
+            for (const segment of rawSegments) {
+                if (segment.length > 2500) {
+                    let start = 0;
+                    while (start < segment.length) {
+                        let end = start + 2500;
+                        if (end < segment.length) {
+                            const lastBreak = segment.lastIndexOf('\n', end);
+                            if (lastBreak > start + 1000) {
+                                end = lastBreak;
+                            } else {
+                                const lastPeriod = segment.lastIndexOf('. ', end);
+                                if (lastPeriod > start + 1000) {
+                                    end = lastPeriod + 2;
+                                }
+                            }
+                        } else {
+                            end = segment.length;
+                        }
+                        parsedChunks.push(segment.substring(start, end).trim());
+                        start = end;
+                    }
+                } else {
+                    parsedChunks.push(segment);
+                }
+            }
+
+            const localChunks = [];
+            let chunkIndex = 0;
+            for (const chunkText of parsedChunks) {
+                let structureType = 'segment';
+                const firstWords = chunkText.substring(0, 50).toLowerCase();
+
+                for (const opt of allowedOptions) {
+                    const cleanOpt = opt.toLowerCase().trim();
+                    if (firstWords.includes(cleanOpt)) {
+                        if (cleanOpt.endsWith('s')) {
+                            const singular = cleanOpt.slice(0, -1);
+                            structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
+                        } else {
+                            structureType = cleanOpt;
+                        }
+                        break;
+                    }
+                }
+
+                if (structureType === 'segment') {
+                    if (firstWords.includes('chapter')) structureType = 'chapter';
+                    else if (firstWords.includes('section')) structureType = 'section';
+                    else if (firstWords.includes('topic')) structureType = 'topic';
+                    else if (firstWords.includes('week')) structureType = 'week';
+                    else if (firstWords.includes('lesson')) structureType = 'lesson';
+                }
+
+                localChunks.push({
+                    content: `Document: ${title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
+                    metadata: {
+                        type: 'material_pdf',
+                        title: title,
+                        chunk_index: chunkIndex++,
+                        structure_type: structureType
+                    }
+                });
+            }
+            return localChunks;
+        } else {
+            // Course or topic or fallback generic
+            const chunkSize = 2000;
+            const localChunks = [];
+            for (let i = 0; i < normalizedText.length; i += chunkSize) {
+                localChunks.push({
+                    content: normalizedText.substring(i, i + chunkSize),
+                    metadata: { type: sourceType, title: title, chunk_index: Math.floor(i / chunkSize) }
+                });
+            }
+            return localChunks;
+        }
+    };
+
+    const generateEmbeddings = async (chunks: any[]) => {
+        if (chunks.length === 0) return [];
+        const batchSize = 10;
+        const batches = [];
+        for (let i = 0; i < chunks.length; i += batchSize) {
+            batches.push(chunks.slice(i, i + batchSize));
+        }
+
+        const batchResults = await parallelLimit(batches, 4, async (batch) => {
+            const embeddingResponse = await fetch(vercelTarget!, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-supabase-signature': gatewaySecret!
+                },
+                body: JSON.stringify({
+                    type: 'generate_batch_embeddings',
+                    payload: { texts: batch.map(c => c.content) }
+                })
+            });
+
+            if (!embeddingResponse.ok) {
+                throw new Error(`Batch Embedding Proxy failed: ${await embeddingResponse.text()}`);
+            }
+
+            const embeddingResult = await embeddingResponse.json();
+            return embeddingResult.embeddings;
+        });
+
+        return batchResults.flat();
+    };
+
+    const upsertKnowledgeEmbeddings = async ({
+        sourceType,
+        sourceId,
+        courseId,
+        title,
+        chunks,
+        embeddings
+    }: {
+        sourceType: string;
+        sourceId: string;
+        courseId: string;
+        title: string;
+        chunks: any[];
+        embeddings: any[];
+    }) => {
+        if (chunks.length === 0) return;
+        const records = chunks.map((chunk, idx) => ({
+            source_type: sourceType,
+            source_id: sourceId,
+            course_id: courseId,
+            content: chunk.content,
+            embedding: embeddings[idx],
+            metadata: chunk.metadata,
+            material_id: sourceType === 'material' ? sourceId : null,
+            lesson_id: sourceType === 'lesson' ? sourceId : null
+        }));
+
+        const { error } = await supabaseClient.from('knowledge_embeddings').insert(records);
+        if (error) throw error;
+    };
+
+    const normalizedText = normalizeText(text);
+
+    const chunks = chunkText(normalizedText);
+
+    // Fetch already indexed chunk indexes from DB to prevent duplicate embedding generation and insertion
+    const existingChunkIndexes = await getExistingChunkIndexes(supabaseClient, sourceId);
+
+    // Filter chunks to keep only those not already indexed
+    const missingChunks = chunks.filter((c: any) => !existingChunkIndexes.has(c.metadata?.chunk_index));
+
+    if (missingChunks.length === 0) {
+        console.log(`✓ All chunks for ${sourceType} ${sourceId} are already fully indexed. Skipping.`);
+        return;
+    }
+
+    console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunks.length} total) for ${sourceType} ${sourceId}.`);
+
+    const embeddings = await generateEmbeddings(missingChunks);
+
+    await upsertKnowledgeEmbeddings({
+        sourceType,
+        sourceId,
+        courseId,
+        title,
+        chunks: missingChunks,
+        embeddings
+    });
 }
 
 serve(async (req) => {
@@ -185,10 +402,10 @@ serve(async (req) => {
       const embeddingResult = await embeddingResponse.json();
       const userMessageEmbedding = embeddingResult.embedding;
 
-      // Perform Semantic Search using match_materials RPC
-      const { data: matches, error: matchError } = await supabaseClient.rpc('match_materials', {
+      // Perform Semantic Search using match_knowledge RPC
+      const { data: matches, error: matchError } = await supabaseClient.rpc('match_knowledge', {
           query_embedding: userMessageEmbedding,
-          match_threshold: 0.3, // Tunable
+          match_threshold: 0.6, // Tunable
           match_count: 5,
           p_course_id: course_id
       });
@@ -199,7 +416,11 @@ serve(async (req) => {
 
       let context = '';
       if (matches && matches.length > 0) {
-          context = matches.map((m: any) => m.content).join('\n---\n');
+          const formattedMatches = matches.map((m: any) => ({
+              source_type: m.source_type || 'material',
+              content: m.content
+          }));
+          context = JSON.stringify(formattedMatches, null, 2);
       } else {
           // Fallback to basic retrieval if no semantic matches (e.g., Knowledge Base not indexed)
           const [
@@ -214,14 +435,33 @@ serve(async (req) => {
               supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
           ]);
 
-          const courseCtx = course ? `Course: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}\n\n` : '';
+          const fallbackList = [];
+          if (course) {
+              fallbackList.push({
+                  source_type: "course",
+                  content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`
+              });
+          }
+          (topics || []).forEach((t: any) => {
+              fallbackList.push({
+                  source_type: "topic",
+                  content: `Topic: ${t.title}\nDescription: ${t.description || ''}`
+              });
+          });
+          (materials || []).forEach((m: any) => {
+              fallbackList.push({
+                  source_type: "material",
+                  content: `Material: ${m.title}\nDescription: ${m.description || ''}`
+              });
+          });
+          (lessons || []).forEach((l: any) => {
+              fallbackList.push({
+                  source_type: "lesson",
+                  content: `Lesson: ${l.title}\nContent: ${l.content || ''}`
+              });
+          });
 
-          context = [
-              courseCtx,
-              ...(topics || []).map((t: any) => `Topic: ${t.title}\nDescription: ${t.description || ''}`),
-              ...(materials || []).map((m: any) => `Material: ${m.title} - ${m.description}`),
-              ...(lessons || []).map((l: any) => `Lesson: ${l.title}\nContent: ${l.content}`)
-          ].join('\n\n');
+          context = JSON.stringify(fallbackList, null, 2);
       }
 
       vercelPayload.context = context;
@@ -261,79 +501,53 @@ serve(async (req) => {
           course = crs;
       }
 
-      const chunks: any[] = [];
+      // Query existing embeddings from knowledge_embeddings for this course to avoid duplicate work
+      const { data: existingEmbeds, error: embedsErr } = await supabaseClient
+          .from('knowledge_embeddings')
+          .select('source_type, source_id')
+          .eq('course_id', course_id);
+
+      const existingEmbedsList = !embedsErr && existingEmbeds ? existingEmbeds : [];
+      const existingCourses = new Set(existingEmbedsList.filter((e: any) => e.source_type === 'course').map((e: any) => e.source_id));
+      const existingTopics = new Set(existingEmbedsList.filter((e: any) => e.source_type === 'topic').map((e: any) => e.source_id));
+      const existingLessons = new Set(existingEmbedsList.filter((e: any) => e.source_type === 'lesson').map((e: any) => e.source_id));
 
       // 1. Index course info itself (only if course-level indexing)
-      if (course) {
-          // Skip if course info embedding already exists
-          const { data: courseEmbeds, error: courseEmbedsErr } = await supabaseClient
-              .from('material_embeddings')
-              .select('id')
-              .eq('course_id', course_id)
-              .is('lesson_id', null)
-              .is('material_id', null);
-
-          const exists = !courseEmbedsErr && courseEmbeds && courseEmbeds.length > 0;
-
-          if (!exists) {
-              chunks.push({
-                  course_id: course_id,
-                  content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
-                  metadata: { type: 'course', title: course.title }
-              });
-          } else {
-              console.log(`✓ Course info embedding already exists for course ${course_id}. Skipping.`);
-          }
+      if (course && !existingCourses.has(course_id)) {
+          console.log(`Indexing course info for course: ${course.title}`);
+          await indexText({
+              sourceType: 'course',
+              sourceId: course_id,
+              courseId: course_id,
+              title: course.title,
+              text: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`,
+              supabaseClient,
+              vercelTarget,
+              gatewaySecret
+          });
       }
 
       // 2. Index topics (only if course-level indexing)
       if (topics && topics.length > 0) {
-          // Query existing topic embeddings for this course to skip duplicates
-          const { data: topicEmbeds } = await supabaseClient
-              .from('material_embeddings')
-              .select('metadata')
-              .eq('course_id', course_id)
-              .is('material_id', null)
-              .is('lesson_id', null);
-
-          const existingTopics = new Set<string>();
-          if (topicEmbeds) {
-              topicEmbeds.forEach((d: any) => {
-                  if (d.metadata?.type === 'topic' && d.metadata?.topic_id) {
-                      existingTopics.add(d.metadata.topic_id);
-                  }
-              });
-          }
-
-          topics.forEach((t: any) => {
+          for (const t of topics) {
               if (!existingTopics.has(t.id)) {
-                  chunks.push({
-                      course_id: course_id,
-                      content: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
-                      metadata: { type: 'topic', title: t.title, topic_id: t.id }
+                  console.log(`Indexing topic: ${t.title}`);
+                  await indexText({
+                      sourceType: 'topic',
+                      sourceId: t.id,
+                      courseId: course_id,
+                      title: t.title,
+                      text: `Topic Title: ${t.title}\nDescription: ${t.description || ''}`,
+                      supabaseClient,
+                      vercelTarget,
+                      gatewaySecret
                   });
-              } else {
-                  console.log(`✓ Topic embedding already exists for topic ${t.title} (${t.id}). Skipping.`);
               }
-          });
+          }
       }
 
       // 3. Index lessons (only if course-level indexing)
       if (lessons && lessons.length > 0) {
-          // Query existing lesson embeddings to skip duplicates
-          const { data: lessonEmbeds } = await supabaseClient
-              .from('material_embeddings')
-              .select('lesson_id')
-              .eq('course_id', course_id)
-              .not('lesson_id', 'is', null);
-
-          const existingLessons = new Set<string>();
-          if (lessonEmbeds) {
-              lessonEmbeds.forEach((d: any) => {
-                  if (d.lesson_id) existingLessons.add(d.lesson_id);
-              });
-          }
-
           // Build topics map for lookup
           const topicsMap: Record<string, string> = {};
           if (topics) {
@@ -342,24 +556,25 @@ serve(async (req) => {
               });
           }
 
-          lessons.forEach((l: any) => {
+          for (const l of lessons) {
               if (!existingLessons.has(l.id)) {
+                  console.log(`Indexing lesson: ${l.title}`);
                   const content = l.content || '';
                   const topicTitle = l.topic_id ? (topicsMap[l.topic_id] || '') : '';
                   const topicContext = topicTitle ? ` (Topic: ${topicTitle})` : '';
-                  const chunkSize = 2000;
-                  for (let i = 0; i < content.length; i += chunkSize) {
-                      chunks.push({
-                          lesson_id: l.id,
-                          course_id: course_id,
-                          content: `Lesson Title: ${l.title}${topicContext}\nContent Chunk: ${content.substring(i, i + chunkSize)}`,
-                          metadata: { type: 'lesson', title: l.title, chunk_index: Math.floor(i / chunkSize), topic_id: l.topic_id }
-                      });
-                  }
-              } else {
-                  console.log(`✓ Lesson embedding already exists for lesson ${l.title} (${l.id}). Skipping.`);
+
+                  await indexText({
+                      sourceType: 'lesson',
+                      sourceId: l.id,
+                      courseId: course_id,
+                      title: `${l.title}${topicContext}`,
+                      text: content,
+                      supabaseClient,
+                      vercelTarget,
+                      gatewaySecret
+                  });
               }
-          });
+          }
       }
 
       if (materials) {
@@ -385,7 +600,6 @@ serve(async (req) => {
                   let state = await getIndexingState(supabaseClient, m.id);
 
                   let extractedText = '';
-                  let chunksJson: any[] | null = null;
                   let status = 'pending';
                   let currentStep = 'none';
                   let retryCount = 0;
@@ -393,7 +607,6 @@ serve(async (req) => {
 
                   if (state) {
                       extractedText = state.extracted_text || '';
-                      chunksJson = state.chunks || null;
                       status = state.status || 'pending';
                       currentStep = state.current_step || 'none';
                       retryCount = state.retry_count || 0;
@@ -405,13 +618,12 @@ serve(async (req) => {
                       console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
                       // Delete existing embeddings for this material
                       const { error: deleteError } = await supabaseClient
-                          .from('material_embeddings')
+                          .from('knowledge_embeddings')
                           .delete()
-                          .eq('material_id', m.id);
+                          .eq('source_id', m.id);
                       if (deleteError) throw new Error(`Failed to clear existing material index: ${deleteError.message}`);
 
                       extractedText = '';
-                      chunksJson = null;
                       status = 'pending';
                       currentStep = 'none';
                       retryCount = 0;
@@ -438,8 +650,8 @@ serve(async (req) => {
                   }
 
                   try {
-                      // Stage 1: Download & Text Extraction
-                      if (extractedText && (status === 'extracted' || status === 'chunked' || status === 'embedding')) {
+                      // Stage 1: Download & Text Extraction (Skip if extractedText is already truthy and populated to support full resumption)
+                      if (extractedText && extractedText.trim().length > 0) {
                           console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
                       } else {
                           console.log(`Starting PDF download and extraction for: ${m.title}`);
@@ -452,11 +664,11 @@ serve(async (req) => {
                           });
 
                           // Call the Vercel helper to extract PDF text
-                          const extractResponse = await fetch(vercelTarget, {
+                          const extractResponse = await fetch(vercelTarget!, {
                               method: 'POST',
                               headers: {
                                   'Content-Type': 'application/json',
-                                  'x-supabase-signature': gatewaySecret
+                                  'x-supabase-signature': gatewaySecret!
                               },
                               body: JSON.stringify({
                                   type: 'extract_pdf_text',
@@ -492,115 +704,9 @@ serve(async (req) => {
                           console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
                       }
 
-                      // Stage 2: Dynamic Chunking
-                      if (chunksJson && (status === 'chunked' || status === 'embedding')) {
-                          console.log(`✓ Chunks already parsed for ${m.title}. Skipping chunking.`);
-                      } else {
-                          console.log(`Starting chunking for: ${m.title}`);
-                          const chunkStart = Date.now();
-
-                          await upsertIndexingState(supabaseClient, {
-                              ...state,
-                              status: 'chunking',
-                              current_step: 'chunking'
-                          });
-
-                          // Dynamic Structure-Aware Segmenting (Chapter/Chapters/Section/Sections/Topic/Topics/Week/Weeks/Lesson/Lessons boundaries)
-                          const allowedOptions: string[] = payload.chunk_options || ['chapter', 'chapters', 'section', 'sections', 'topic', 'topics', 'week', 'weeks', 'lesson', 'lessons'];
-                          const optionsPattern = allowedOptions.map(opt => opt.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-                          const boundaryRegex = new RegExp(`(?:\\r?\\n|^)(?=(?:${optionsPattern})\\s+(?:[0-9]+|[a-z]+|[ivxldm]+)\\b|\\r?\\n{2,}(?=[a-z\\s]{3,100}:))`, 'i');
-                          const rawSegments = extractedText.split(boundaryRegex).map(s => s.trim()).filter(s => s.length > 0);
-                          const parsedChunks: string[] = [];
-
-                          for (const segment of rawSegments) {
-                              if (segment.length > 2500) {
-                                  // Split large segment cleanly
-                                  let start = 0;
-                                  while (start < segment.length) {
-                                      let end = start + 2500;
-                                      if (end < segment.length) {
-                                          const lastBreak = segment.lastIndexOf('\n', end);
-                                          if (lastBreak > start + 1000) {
-                                              end = lastBreak;
-                                          } else {
-                                              const lastPeriod = segment.lastIndexOf('. ', end);
-                                              if (lastPeriod > start + 1000) {
-                                                  end = lastPeriod + 2;
-                                              }
-                                          }
-                                      } else {
-                                          end = segment.length;
-                                      }
-                                      parsedChunks.push(segment.substring(start, end).trim());
-                                      start = end;
-                                  }
-                              } else {
-                                  parsedChunks.push(segment);
-                              }
-                          }
-
-                          const localChunks: any[] = [];
-                          let chunkIndex = 0;
-                          for (const chunkText of parsedChunks) {
-                              // Detect structure type
-                              let structureType = 'segment';
-                              const firstWords = chunkText.substring(0, 50).toLowerCase();
-
-                              // Match against allowedOptions (supports custom keywords dynamically)
-                              for (const opt of allowedOptions) {
-                                  const cleanOpt = opt.toLowerCase().trim();
-                                  if (firstWords.includes(cleanOpt)) {
-                                      // Canonicalize plural to singular if possible
-                                      if (cleanOpt.endsWith('s')) {
-                                          const singular = cleanOpt.slice(0, -1);
-                                          structureType = allowedOptions.map(o => o.toLowerCase()).includes(singular) ? singular : cleanOpt;
-                                      } else {
-                                          structureType = cleanOpt;
-                                      }
-                                      break;
-                                  }
-                              }
-
-                              // Fallback to standard hardcoded checks to guarantee zero-regression
-                              if (structureType === 'segment') {
-                                  if (firstWords.includes('chapter')) structureType = 'chapter';
-                                  else if (firstWords.includes('section')) structureType = 'section';
-                                  else if (firstWords.includes('topic')) structureType = 'topic';
-                                  else if (firstWords.includes('week')) structureType = 'week';
-                                  else if (firstWords.includes('lesson')) structureType = 'lesson';
-                              }
-
-                              localChunks.push({
-                                  material_id: m.id,
-                                  course_id: course_id,
-                                  content: `Document: ${m.title}\nStructure: ${structureType.toUpperCase()}\nContent Segment:\n${chunkText}`,
-                                  metadata: {
-                                      type: 'material_pdf',
-                                      title: m.title,
-                                      chunk_index: chunkIndex++,
-                                      structure_type: structureType
-                                  }
-                              });
-                          }
-
-                          chunksJson = localChunks;
-                          timingLogs.chunking = Date.now() - chunkStart;
-                          status = 'chunked';
-                          currentStep = 'chunking';
-
-                          await upsertIndexingState(supabaseClient, {
-                              ...state,
-                              chunks: chunksJson,
-                              status,
-                              current_step: currentStep,
-                              timing_logs: timingLogs
-                          });
-                          console.log(`✓ Chunking completed for ${m.title} in ${timingLogs.chunking}ms (${chunksJson.length} chunks generated)`);
-                      }
-
-                      // Stage 3: Embedding and Storage with Bounded Concurrency Pool
-                      console.log(`Embedding chunks for: ${m.title}`);
-                      const embedStart = Date.now();
+                      // Stage 2 & 3: Chunk, Embed and Store using shared indexText()
+                      console.log(`Indexing text for PDF: ${m.title}`);
+                      const indexStart = Date.now();
 
                       await upsertIndexingState(supabaseClient, {
                           ...state,
@@ -608,53 +714,19 @@ serve(async (req) => {
                           current_step: 'embedding'
                       });
 
-                      // Fetch already indexed chunk indexes from DB
-                      const existingChunkIndexes = await getExistingChunkIndexes(supabaseClient, m.id);
-                      const missingChunks = chunksJson.filter((c: any) => !existingChunkIndexes.has(c.metadata?.chunk_index));
+                      await indexText({
+                          sourceType: 'material',
+                          sourceId: m.id,
+                          courseId: course_id,
+                          title: m.title,
+                          text: extractedText,
+                          chunkOptions: payload.chunk_options,
+                          supabaseClient,
+                          vercelTarget,
+                          gatewaySecret
+                      });
 
-                      if (missingChunks.length === 0) {
-                          console.log(`✓ All ${chunksJson.length} chunks already embedded and stored in DB. Skipping.`);
-                      } else {
-                          console.log(`Found ${missingChunks.length} missing chunk embeddings to process (out of ${chunksJson.length} total).`);
-
-                          const batchSize = 10;
-                          const batches = [];
-                          for (let i = 0; i < missingChunks.length; i += batchSize) {
-                              batches.push(missingChunks.slice(i, i + batchSize));
-                          }
-
-                          // Bounded concurrency processor (3-5 simultaneous batch requests)
-                          await parallelLimit(batches, 4, async (batch) => {
-                              const embeddingResponse = await fetch(vercelTarget, {
-                                  method: 'POST',
-                                  headers: {
-                                      'Content-Type': 'application/json',
-                                      'x-supabase-signature': gatewaySecret
-                                  },
-                                  body: JSON.stringify({
-                                      type: 'generate_batch_embeddings',
-                                      payload: { texts: batch.map(c => c.content) }
-                                  })
-                              });
-
-                              if (!embeddingResponse.ok) {
-                                  throw new Error(`Batch Embedding Proxy failed: ${await embeddingResponse.text()}`);
-                              }
-
-                              const embeddingResult = await embeddingResponse.json();
-                              const embeddings = embeddingResult.embeddings;
-
-                              const records = batch.map((chunk, idx) => ({
-                                  ...chunk,
-                                  embedding: embeddings[idx]
-                              }));
-
-                              const { error } = await supabaseClient.from('material_embeddings').insert(records);
-                              if (error) throw error;
-                          });
-                      }
-
-                      timingLogs.embedding = Date.now() - embedStart;
+                      timingLogs.embedding = Date.now() - indexStart;
                       timingLogs.total = Date.now() - mStart;
                       status = 'completed';
                       currentStep = 'completed';
@@ -684,56 +756,21 @@ serve(async (req) => {
                           throw materialError;
                       }
                   }
-                  continue; // Skip the metadata fallback since we successfully indexed the PDF content
+              } else {
+                  // Fallback to title and description for non-PDFs or failed extractions
+                  console.log(`Indexing non-PDF material: ${m.title}`);
+                  await indexText({
+                      sourceType: 'material',
+                      sourceId: m.id,
+                      courseId: course_id,
+                      title: m.title,
+                      text: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
+                      supabaseClient,
+                      vercelTarget,
+                      gatewaySecret
+                  });
               }
-
-              // Fallback to title and description for non-PDFs or failed extractions
-              chunks.push({
-                  material_id: m.id,
-                  course_id: course_id,
-                  content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
-                  metadata: { type: 'material', title: m.title }
-              });
           }
-      }
-
-      // 5. Embed and store remaining non-PDF chunks (lessons, topics, course info, non-PDF materials)
-      if (chunks.length > 0) {
-          console.log(`Processing ${chunks.length} non-PDF metadata chunks...`);
-          const batchSize = 10;
-          const batches = [];
-          for (let i = 0; i < chunks.length; i += batchSize) {
-              batches.push(chunks.slice(i, i + batchSize));
-          }
-
-          await parallelLimit(batches, 4, async (batch) => {
-              const embeddingResponse = await fetch(vercelTarget, {
-                  method: 'POST',
-                  headers: {
-                      'Content-Type': 'application/json',
-                      'x-supabase-signature': gatewaySecret
-                  },
-                  body: JSON.stringify({
-                      type: 'generate_batch_embeddings',
-                      payload: { texts: batch.map(c => c.content) }
-                  })
-              });
-
-              if (!embeddingResponse.ok) {
-                  throw new Error(`Batch Embedding Proxy failed for non-PDF chunks: ${await embeddingResponse.text()}`);
-              }
-
-              const embeddingResult = await embeddingResponse.json();
-              const embeddings = embeddingResult.embeddings;
-
-              const records = batch.map((chunk, idx) => ({
-                  ...chunk,
-                  embedding: embeddings[idx]
-              }));
-
-              const { error } = await supabaseClient.from('material_embeddings').insert(records);
-              if (error) throw error;
-          });
       }
 
       return new Response(JSON.stringify({ success: true, message: `Successfully completed indexing for course ${course_id}` }), {
