@@ -397,6 +397,32 @@ async function indexText({
     });
 }
 
+async function fetchCourseMetadata(courseId: string, supabaseClient: any) {
+  try {
+    const [
+      { data: course },
+      { data: topics },
+      { data: lessons },
+      { data: materials }
+    ] = await Promise.all([
+      supabaseClient.from('courses').select('*').eq('id', courseId).maybeSingle(),
+      supabaseClient.from('topics').select('*').eq('course_id', courseId).limit(100),
+      supabaseClient.from('lessons').select('id, title, content, topic_id').eq('course_id', courseId).limit(100),
+      supabaseClient.from('materials').select('id, title, description, file_url, file_type').eq('course_id', courseId).limit(100)
+    ]);
+
+    return {
+      course: course || null,
+      topics: topics || [],
+      lessons: lessons || [],
+      materials: materials || []
+    };
+  } catch (err) {
+    console.error('fetchCourseMetadata failed:', err);
+    return { course: null, topics: [], lessons: [], materials: [] };
+  }
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -480,18 +506,38 @@ serve(async (req) => {
     if (type === 'tutor') {
       const { course_id, message } = payload;
 
-      // Query course title to ensure the tutor is course-aware of its own subject and title
-      let courseTitle = '';
-      try {
-          const { data: courseData } = await supabaseClient.from('courses').select('title').eq('id', course_id).maybeSingle();
-          if (courseData) {
-              courseTitle = courseData.title;
-          }
-      } catch (e) {
-          console.warn('Failed to query course title in Edge Function:', e);
+      // 1. Fetch full course structural metadata
+      const { course, topics, lessons, materials } = await fetchCourseMetadata(course_id, supabaseClient);
+      if (course) {
+        vercelPayload.course_title = course.title;
       }
-      vercelPayload.course_title = courseTitle;
 
+      // 2. Identify the active topic(s) using lexical (keyword) analysis on the user message
+      const normMessage = message.toLowerCase();
+      let activeTopic: any = null;
+      let highestTopicScore = 0;
+
+      for (const topic of topics) {
+        const topicWords = topic.title.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
+        let score = 0;
+        for (const word of topicWords) {
+          if (normMessage.includes(word)) score += 10;
+        }
+        if (topic.description) {
+          const descWords = topic.description.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
+          for (const word of descWords) {
+            if (normMessage.includes(word)) score += 1;
+          }
+        }
+        if (score > highestTopicScore) {
+          highestTopicScore = score;
+          activeTopic = topic;
+        }
+      }
+
+      vercelPayload.active_topic = activeTopic;
+
+      // 3. Generate embedding for user message
       const embeddingResponse = await fetch(vercelTarget, {
         method: 'POST',
         headers: {
@@ -511,69 +557,30 @@ serve(async (req) => {
       const embeddingResult = await embeddingResponse.json();
       const userMessageEmbedding = embeddingResult.embedding;
 
-      // Perform Semantic Search using match_knowledge RPC
+      // Read threshold dynamically from course metadata if configured, allowing fully customizable tuning per course
+      const customThreshold = (course && course.metadata && typeof course.metadata.match_threshold === 'number')
+        ? course.metadata.match_threshold
+        : 0.3; // Default fallback to 0.3
+
+      const customMatchCount = (course && course.metadata && typeof course.metadata.match_count === 'number')
+        ? course.metadata.match_count
+        : 20; // Default fallback to 20 candidates
+
+      // Broader candidate set retrieval
       const { data: matches, error: matchError } = await supabaseClient.rpc('match_knowledge', {
           query_embedding: userMessageEmbedding,
-          match_threshold: 0.6, // Tunable
-          match_count: 5,
+          match_threshold: customThreshold,
+          match_count: customMatchCount,
           p_course_id: course_id
       });
 
       if (matchError) {
-          console.warn('Semantic search failed, falling back to basic retrieval:', matchError.message);
+          console.warn('Semantic search failed, falling back to empty matches:', matchError.message);
       }
 
-      let context = '';
-      if (matches && matches.length > 0) {
-          const formattedMatches = matches.map((m: any) => ({
-              source_type: m.source_type || 'material',
-              content: m.content
-          }));
-          context = JSON.stringify(formattedMatches, null, 2);
-      } else {
-          // Fallback to basic retrieval if no semantic matches (e.g., Knowledge Base not indexed)
-          const [
-              { data: materials },
-              { data: lessons },
-              { data: topics },
-              { data: course }
-          ] = await Promise.all([
-              supabaseClient.from('materials').select('title, description').eq('course_id', course_id).limit(5),
-              supabaseClient.from('lessons').select('title, content').eq('course_id', course_id).limit(5),
-              supabaseClient.from('topics').select('title, description').eq('course_id', course_id).limit(5),
-              supabaseClient.from('courses').select('title, description, semester').eq('id', course_id).maybeSingle()
-          ]);
-
-          const fallbackList = [];
-          if (course) {
-              fallbackList.push({
-                  source_type: "course",
-                  content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`
-              });
-          }
-          (topics || []).forEach((t: any) => {
-              fallbackList.push({
-                  source_type: "topic",
-                  content: `Topic: ${t.title}\nDescription: ${t.description || ''}`
-              });
-          });
-          (materials || []).forEach((m: any) => {
-              fallbackList.push({
-                  source_type: "material",
-                  content: `Material: ${m.title}\nDescription: ${m.description || ''}`
-              });
-          });
-          (lessons || []).forEach((l: any) => {
-              fallbackList.push({
-                  source_type: "lesson",
-                  content: `Lesson: ${l.title}\nContent: ${l.content || ''}`
-              });
-          });
-
-          context = JSON.stringify(fallbackList, null, 2);
-      }
-
-      vercelPayload.context = context;
+      // 4. Forward everything to Vercel
+      vercelPayload.semantic_matches = matches || [];
+      vercelPayload.course_metadata = { course, topics, lessons, materials };
     } else if (type === 'index_course') {
       const { course_id, material_id } = payload;
       if (!course_id) throw new Error('course_id is required');
