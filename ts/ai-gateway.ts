@@ -423,6 +423,62 @@ async function fetchCourseMetadata(courseId: string, supabaseClient: any) {
   }
 }
 
+function crossEncoderReranker(query: string, candidates: any[]) {
+  if (!query || !candidates || candidates.length === 0) return candidates;
+
+  const queryLower = query.toLowerCase().trim();
+  const stopWords = new Set(['the', 'and', 'a', 'of', 'to', 'is', 'in', 'that', 'it', 'for', 'on', 'with', 'as', 'at', 'by', 'an']);
+  const queryTerms = queryLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+
+  const scoredCandidates = candidates.map(c => {
+    const textLower = c.content.toLowerCase();
+    let overlapScore = 0;
+
+    // Word Overlap / Keyword matching density
+    queryTerms.forEach(term => {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      try {
+        const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+        const wordMatches = textLower.match(regex);
+        if (wordMatches) {
+          overlapScore += wordMatches.length * 2.0; // Term match frequency weight
+        }
+      } catch (e) {
+        if (textLower.includes(term)) {
+          overlapScore += 1.5;
+        }
+      }
+    });
+
+    // Semantic proximity & sequence overlap boost
+    if (queryTerms.length > 1) {
+      for (let i = 0; i < queryTerms.length - 1; i++) {
+        const pair = `${queryTerms[i]} ${queryTerms[i+1]}`;
+        if (textLower.includes(pair)) {
+          overlapScore += 5.0; // Bigram boost
+        }
+      }
+    }
+
+    // Direct substring query match bonus
+    if (textLower.includes(queryLower)) {
+      overlapScore += 10.0;
+    }
+
+    // Combine with original semantic score (Reranking calculation)
+    const interactionScore = Math.min(1.0, overlapScore / (queryTerms.length * 4.0 || 1));
+    const rerankedScore = (0.4 * (c.hybrid_score || c.similarity || 0.5)) + (0.6 * interactionScore);
+
+    return {
+      ...c,
+      reranked_score: Number(rerankedScore.toFixed(4))
+    };
+  });
+
+  // Sort by reranked score descending
+  return scoredCandidates.sort((a, b) => b.reranked_score - a.reranked_score);
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
