@@ -383,67 +383,6 @@ async function fetchCourseMetadata(courseId, supabaseUrl, supabaseAnonKey) {
 }
 
 /**
- * Cross-Encoder Reranker simulation mimicking query-chunk interaction.
- * Computes a fine-grained relevance score by evaluating direct word-overlap, matching sequences,
- * and structural alignment between the query and candidate chunk content.
- */
-function crossEncoderReranker(query, candidates) {
-  if (!query || !candidates || candidates.length === 0) return candidates;
-
-  const queryLower = query.toLowerCase().trim();
-  const stopWords = new Set(['the', 'and', 'a', 'of', 'to', 'is', 'in', 'that', 'it', 'for', 'on', 'with', 'as', 'at', 'by', 'an']);
-  const queryTerms = queryLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-
-  const scoredCandidates = candidates.map(c => {
-    const textLower = c.content.toLowerCase();
-    let overlapScore = 0;
-
-    // Word Overlap / Keyword matching density
-    queryTerms.forEach(term => {
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      try {
-        const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
-        const wordMatches = textLower.match(regex);
-        if (wordMatches) {
-          overlapScore += wordMatches.length * 2.0; // Term match frequency weight
-        }
-      } catch (e) {
-        if (textLower.includes(term)) {
-          overlapScore += 1.5;
-        }
-      }
-    });
-
-    // Semantic proximity & sequence overlap boost
-    if (queryTerms.length > 1) {
-      for (let i = 0; i < queryTerms.length - 1; i++) {
-        const pair = `${queryTerms[i]} ${queryTerms[i+1]}`;
-        if (textLower.includes(pair)) {
-          overlapScore += 5.0; // Bigram boost
-        }
-      }
-    }
-
-    // Direct substring query match bonus
-    if (textLower.includes(queryLower)) {
-      overlapScore += 10.0;
-    }
-
-    // Combine with original semantic score (Reranking calculation)
-    const interactionScore = Math.min(1.0, overlapScore / (queryTerms.length * 4.0 || 1));
-    const rerankedScore = (0.4 * (c.hybrid_score || c.similarity || 0.5)) + (0.6 * interactionScore);
-
-    return {
-      ...c,
-      reranked_score: Number(rerankedScore.toFixed(4))
-    };
-  });
-
-  // Sort by reranked score descending
-  return scoredCandidates.sort((a, b) => b.reranked_score - a.reranked_score);
-}
-
-/**
  * Simple TF-IDF like lexical scorer
  */
 function computeLexicalScore(text, query) {
@@ -600,32 +539,29 @@ async function handleCourseTutor(payload, res) {
     }
   });
 
-  // Re-rank candidates descending (hybrid list)
+  // Re-rank candidates descending
   candidates.sort((a, b) => b.hybrid_score - a.hybrid_score);
-
-  // Apply Cross Encoder Reranking on the candidates to compute deep joint query-document interaction
-  const rerankedCandidates = crossEncoderReranker(message, candidates);
 
   // Confidence thresholds and metadata-based filtering
   // Enforce Course Boundary: tutor must refuse if the top candidate score is below our strict threshold
   const CONFIDENCE_THRESHOLD = 0.45;
-  const bestCandidate = rerankedCandidates[0];
+  const bestCandidate = candidates[0];
 
-  if (!bestCandidate || bestCandidate.reranked_score < CONFIDENCE_THRESHOLD) {
+  if (!bestCandidate || bestCandidate.hybrid_score < CONFIDENCE_THRESHOLD) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       content: "I am sorry, but I cannot find sufficiently verified evidence in the course materials to answer your question. I am designed to assist you strictly using the official course curriculum and resources. Could you please specify or rephrase your question regarding our course topics?",
-      intent: classification?.intent || 'unknown',
-      category: classification?.category || 'conversation_management',
-      confidence: classification?.confidence || 0.0,
-      entities: classification?.entities || {},
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
       action: 'unsupported_refusal'
     }));
     return;
   }
 
-  // Filter down to the top 5 highest-quality chunks (after Cross-Encoder reranking) for the LLM context
-  const selectedChunks = rerankedCandidates.slice(0, 5);
+  // Filter down to the top 5 highest-quality chunks for the LLM context
+  const selectedChunks = candidates.slice(0, 5);
 
   // 3. Build highly structured prompts sections without using JSON.stringify
   const structuredCourseSection = course
