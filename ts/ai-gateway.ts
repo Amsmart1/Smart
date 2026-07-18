@@ -258,7 +258,9 @@ async function indexText({
 
     const generateEmbeddings = async (chunks: any[]) => {
         if (chunks.length === 0) return [];
-        const batchSize = 10;
+        // Optimize batch size from 10 to 100 (Google Gemini API's native maximum limit per batch)
+        // to reduce HTTP overhead and complete heavy embedding operations 10x faster.
+        const batchSize = 100;
         const batches = [];
         for (let i = 0; i < chunks.length; i += batchSize) {
             batches.push(chunks.slice(i, i + batchSize));
