@@ -536,6 +536,10 @@ CREATE TABLE IF NOT EXISTS violations (
 );
 
 -- Feature 6: Knowledge Base / Semantic Search
+-- Clean up legacy material_embeddings table and its references to avoid duplicate storage and conflicting logic
+DROP TABLE IF EXISTS material_embeddings CASCADE;
+DROP FUNCTION IF EXISTS match_material_embeddings CASCADE;
+
 CREATE TABLE IF NOT EXISTS knowledge_embeddings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   source_type VARCHAR(50) NOT NULL,
