@@ -889,7 +889,7 @@
             if (overlay) overlay.remove();
 
             // Try to exit fullscreen if we forced it
-            if (document.fullscreenElement) {
+            if (this.config.FULLSCREEN_REQUIRED && document.fullscreenElement) {
                 try {
                     if (document.exitFullscreen) document.exitFullscreen();
                     else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
