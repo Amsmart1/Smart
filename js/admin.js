@@ -3022,6 +3022,16 @@ function initNav() {
         button.classList.add('active');
         const page = button.dataset.page;
         DiscussionManager.cleanup();
+        if (page !== 'live-proctoring') {
+            if (_liveProctoringInterval) {
+                clearInterval(_liveProctoringInterval);
+                _liveProctoringInterval = null;
+            }
+            if (_liveViolationsChannel) {
+                window.supabaseClient?.removeChannel(_liveViolationsChannel);
+                _liveViolationsChannel = null;
+            }
+        }
         if(page === 'dashboard') renderDashboard();
         else if(page === 'users') renderUsers();
         else if(page === 'courses') renderCourses();
@@ -3294,8 +3304,6 @@ async function updateProctoringStatus(status) {
     }
 }
 
-let _liveSurveillanceActive = false;
-
 async function monitorLiveSession(attemptId, email) {
     const backdrop = UI.showModal('Live Session Monitor: ' + email, `
         <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
@@ -3314,7 +3322,7 @@ async function monitorLiveSession(attemptId, email) {
         </div>
     `, { maxWidth: '1000px' });
 
-    _liveSurveillanceActive = false;
+    let surveillanceActive = false;
     const toggle = document.getElementById('surveillance-toggle');
     const pulse = document.getElementById('surveillance-pulse');
     const audioQueue = [];
@@ -3340,9 +3348,9 @@ async function monitorLiveSession(attemptId, email) {
     };
 
     toggle.onchange = (e) => {
-        _liveSurveillanceActive = e.target.checked;
-        pulse.style.display = _liveSurveillanceActive ? 'block' : 'none';
-        if (_liveSurveillanceActive) {
+        surveillanceActive = e.target.checked;
+        pulse.style.display = surveillanceActive ? 'block' : 'none';
+        if (surveillanceActive) {
             UI.showNotification('Live surveillance mode active', 'success');
             playNextAudio();
         }
@@ -3350,7 +3358,7 @@ async function monitorLiveSession(attemptId, email) {
 
     try {
         const fetchAndUpdate = async (isIncremental = false) => {
-            const violations = await SupabaseDB.getViolations(null, email, null, { attemptId, all: true });
+            const { data: violations } = await SupabaseDB.getViolations(null, email, null, { attemptId, all: true });
 
             // To provide a smooth enterprise experience, we only update the main container if it's the first load
             // or if the surveillance toggle just changed. Otherwise we can target specific areas if needed.
@@ -3371,7 +3379,7 @@ async function monitorLiveSession(attemptId, email) {
                 });
             }
 
-            if (isIncremental && _liveSurveillanceActive) {
+            if (isIncremental && surveillanceActive) {
                 const loadBtn = document.querySelector('#proctor-snaps button');
                 if (loadBtn) UI._loadProctorThumbnails(loadBtn);
             }
@@ -3390,7 +3398,7 @@ async function monitorLiveSession(attemptId, email) {
             }, async (payload) => {
                 const newViolation = payload.new;
 
-                if (_liveSurveillanceActive) {
+                if (surveillanceActive) {
                     if (newViolation.type === 'AUDIO_RECORDED' && newViolation.metadata?.path) {
                         audioQueue.push(newViolation.metadata.path);
                         if (!isPlayingAudio) playNextAudio();
@@ -3405,13 +3413,23 @@ async function monitorLiveSession(attemptId, email) {
             .subscribe();
 
         const cleanup = () => {
-            _liveSurveillanceActive = false;
+            surveillanceActive = false;
             window.supabaseClient?.removeChannel(channel);
         };
 
-        backdrop.querySelector('button.secondary.tiny').onclick = cleanup;
-        // Also handle backdrop removal via external clicks if needed,
-        // but UI.showModal usually handles simple removal.
+        // MutationObserver to bulletproof modal destruction/removal cleanups
+        const observer = new MutationObserver(() => {
+            if (!document.body.contains(backdrop)) {
+                cleanup();
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        backdrop.querySelector('button.secondary.tiny').onclick = () => {
+            cleanup();
+            backdrop.remove();
+        };
 
     } catch (e) {
         document.getElementById('liveMonitorContent').innerHTML = '<div class="empty">Error loading session data</div>';
@@ -3637,8 +3655,19 @@ async function showLiveFeedModal() {
         clearInterval(interval);
     };
 
-    backdrop.onclick = (e) => { if (e.target === backdrop) cleanup(); };
-    backdrop.querySelector('button.secondary.tiny').onclick = cleanup;
+    // Use MutationObserver on body to safely catch DOM removals and prevent any interval leaks
+    const observer = new MutationObserver(() => {
+        if (!document.body.contains(backdrop)) {
+            cleanup();
+            observer.disconnect();
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    backdrop.querySelector('button.secondary.tiny').onclick = () => {
+        cleanup();
+        backdrop.remove();
+    };
 }
 
 window.exportProctoringReport = exportProctoringReport;

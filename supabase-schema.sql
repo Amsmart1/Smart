@@ -3886,7 +3886,8 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 
 -- 24. Live Proctoring Aggregate RPC
 DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
-CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
+DROP FUNCTION IF EXISTS get_active_proctored_sessions(VARCHAR) CASCADE;
+CREATE OR REPLACE FUNCTION get_active_proctored_sessions(p_teacher_email VARCHAR DEFAULT NULL)
 RETURNS TABLE (
     attempt_id UUID,
     user_email VARCHAR,
@@ -3900,6 +3901,8 @@ RETURNS TABLE (
     status TEXT,
     is_online BOOLEAN
 ) AS $$
+DECLARE
+    v_sql TEXT;
 BEGIN
     -- Resilience: Ensure attempt_id column exists before trying to query it
     -- This handles cases where the script might be partially failing or running against old schemas
@@ -3907,7 +3910,7 @@ BEGIN
         RETURN;
     END IF;
 
-    RETURN QUERY EXECUTE '
+    v_sql := '
     WITH latest_violations AS (
         -- Get unique attempts with activity in the last 4 hours
         SELECT
@@ -3920,7 +3923,13 @@ BEGIN
             COUNT(*) FILTER (WHERE v.severity NOT IN (''INFO'', ''LOW'')) as high_v_count,
             COUNT(*) FILTER (WHERE v.severity != ''INFO'') as total_v_count
         FROM violations v
-        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''
+        WHERE v.timestamp > NOW() - INTERVAL ''4 hours''';
+
+    IF p_teacher_email IS NOT NULL THEN
+        v_sql := v_sql || ' AND v.teacher_email = $1';
+    END IF;
+
+    v_sql := v_sql || '
         GROUP BY v.attempt_id, v.user_email, v.assessment_id, v.assessment_type
     )
     SELECT
@@ -3944,9 +3953,14 @@ BEGIN
     JOIN users u ON lv.user_email = u.email
     LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = ''quiz''
     LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = ''assignment''
-    ORDER BY lv.last_act DESC'
-    USING NOW();
+    ORDER BY lv.last_act DESC';
+
+    IF p_teacher_email IS NOT NULL THEN
+        RETURN QUERY EXECUTE v_sql USING p_teacher_email;
+    ELSE
+        RETURN QUERY EXECUTE v_sql;
+    END IF;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION get_active_proctored_sessions() TO authenticated, anon;
+GRANT EXECUTE ON FUNCTION get_active_proctored_sessions(VARCHAR) TO authenticated, anon;
