@@ -70,22 +70,22 @@ END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 -- Public helpers with mandatory status and reset blocking
--- Returns NULL if user is inactive, flagged, or has an active 'approved' password reset
+-- Public helpers with mandatory status check
+-- Returns NULL if user is inactive or flagged
 CREATE OR REPLACE FUNCTION get_auth_email() RETURNS VARCHAR AS $$
 DECLARE
   v_email_raw VARCHAR;
   v_email VARCHAR;
   v_active BOOLEAN;
   v_flagged BOOLEAN;
-  v_reset_status TEXT;
 BEGIN
   v_email_raw := get_auth_email_raw();
   IF v_email_raw IS NOT NULL THEN
-    SELECT email, active, flagged, reset_request->>'status'
-    INTO v_email, v_active, v_flagged, v_reset_status
+    SELECT email, active, flagged
+    INTO v_email, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    IF v_email IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE AND (v_reset_status IS NULL OR v_reset_status != 'approved') THEN
+    IF v_email IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_email;
     END IF;
   END IF;
@@ -99,15 +99,14 @@ DECLARE
   v_role VARCHAR;
   v_active BOOLEAN;
   v_flagged BOOLEAN;
-  v_reset_status TEXT;
 BEGIN
   v_email_raw := get_auth_email_raw();
   IF v_email_raw IS NOT NULL THEN
-    SELECT role, active, flagged, reset_request->>'status'
-    INTO v_role, v_active, v_flagged, v_reset_status
+    SELECT role, active, flagged
+    INTO v_role, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    IF v_role IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE AND (v_reset_status IS NULL OR v_reset_status != 'approved') THEN
+    IF v_role IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_role;
     END IF;
   END IF;
