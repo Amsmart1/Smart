@@ -264,7 +264,16 @@ module.exports = async function handler(req, res) {
             const embedData = await embedRes.json();
             const embedding = embedData.embedding.values;
 
-            // Broader candidate set retrieval (match_count: 20, match_threshold: 0.3)
+            // Read threshold dynamically from course metadata if configured, allowing fully customizable tuning per course
+            const customThreshold = (course && course.metadata && typeof course.metadata.match_threshold === 'number')
+              ? course.metadata.match_threshold
+              : 0.3; // Default fallback to 0.3
+
+            const customMatchCount = (course && course.metadata && typeof course.metadata.match_count === 'number')
+              ? course.metadata.match_count
+              : 20; // Default fallback to 20 candidates
+
+            // Broader candidate set retrieval
             const matchResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/match_knowledge`, {
               method: 'POST',
               headers: {
@@ -275,8 +284,8 @@ module.exports = async function handler(req, res) {
               },
               body: JSON.stringify({
                 query_embedding: embedding,
-                match_threshold: 0.3,
-                match_count: 20,
+                match_threshold: customThreshold,
+                match_count: customMatchCount,
                 p_course_id: course_id
               })
             });

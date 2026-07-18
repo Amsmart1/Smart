@@ -557,11 +557,20 @@ serve(async (req) => {
       const embeddingResult = await embeddingResponse.json();
       const userMessageEmbedding = embeddingResult.embedding;
 
-      // Broader candidate set retrieval (match_count: 20, match_threshold: 0.3)
+      // Read threshold dynamically from course metadata if configured, allowing fully customizable tuning per course
+      const customThreshold = (course && course.metadata && typeof course.metadata.match_threshold === 'number')
+        ? course.metadata.match_threshold
+        : 0.3; // Default fallback to 0.3
+
+      const customMatchCount = (course && course.metadata && typeof course.metadata.match_count === 'number')
+        ? course.metadata.match_count
+        : 20; // Default fallback to 20 candidates
+
+      // Broader candidate set retrieval
       const { data: matches, error: matchError } = await supabaseClient.rpc('match_knowledge', {
           query_embedding: userMessageEmbedding,
-          match_threshold: 0.3,
-          match_count: 20,
+          match_threshold: customThreshold,
+          match_count: customMatchCount,
           p_course_id: course_id
       });
 
