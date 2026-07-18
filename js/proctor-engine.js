@@ -915,6 +915,10 @@
       /** @type {HTMLVideoElement|null} */
       this._webcamVideo = null;
 
+      // ── Bound Handlers ──────────────────────────────────────────────────────
+      this._boundOnOnline = this._onOnline.bind(this);
+      this._boundOnOffline = this._onOffline.bind(this);
+
       this.debug('ProctorEngine: Instantiated', {
         attemptId: this.config.attemptId,
         userId: this.config.userId,
@@ -2010,8 +2014,8 @@
      * @private
      */
     _startConnectionMonitor() {
-      window.addEventListener('online', this._onOnline.bind(this));
-      window.addEventListener('offline', this._onOffline.bind(this));
+      window.addEventListener('online', this._boundOnOnline);
+      window.addEventListener('offline', this._boundOnOffline);
 
       this._connectionCheckTimer = setInterval(() => {
         if (navigator.onLine !== this.state.networkStatus) {
@@ -2026,8 +2030,8 @@
      * @private
      */
     _stopConnectionMonitor() {
-      window.removeEventListener('online', this._onOnline.bind(this));
-      window.removeEventListener('offline', this._onOffline.bind(this));
+      window.removeEventListener('online', this._boundOnOnline);
+      window.removeEventListener('offline', this._boundOnOffline);
 
       if (this._connectionCheckTimer) {
         clearInterval(this._connectionCheckTimer);
