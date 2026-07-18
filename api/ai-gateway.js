@@ -211,28 +211,42 @@ module.exports = async function handler(req, res) {
       const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
       const { course_id, message } = payload;
 
-      // Query course title if not already provided to ensure the tutor is course-aware of its own subject and title
-      if (!payload.course_title) {
-        try {
-          const courseRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}`, {
-            headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-          });
-          if (courseRes.ok) {
-            const courseData = await courseRes.json();
-            if (courseData && courseData.length > 0) {
-              payload.course_title = courseData[0].title;
-            }
+      // 1. Fetch full course structural metadata
+      const { course, topics, lessons, materials } = await fetchCourseMetadata(course_id, supabaseUrl, supabaseAnonKey);
+      if (course) {
+        payload.course_title = course.title;
+      }
+
+      // 2. Identify the active topic(s) using lexical (keyword) analysis on the user message
+      const normMessage = message.toLowerCase();
+      let activeTopic = null;
+      let highestTopicScore = 0;
+
+      for (const topic of topics) {
+        const topicWords = topic.title.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+        let score = 0;
+        for (const word of topicWords) {
+          if (normMessage.includes(word)) score += 10;
+        }
+        if (topic.description) {
+          const descWords = topic.description.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+          for (const word of descWords) {
+            if (normMessage.includes(word)) score += 1;
           }
-        } catch (courseError) {
-          console.warn('Failed to query course title in Vercel RAG step:', courseError);
+        }
+        if (score > highestTopicScore) {
+          highestTopicScore = score;
+          activeTopic = topic;
         }
       }
 
-      // 1. Generate embedding for user message using configured embedding model
+      payload.active_topic = activeTopic;
+
+      // 3. Generate embedding for user message
       const apiKey = resolveApiKey('generate_embedding', payload);
       const embeddingModel = resolveModelId('generate_embedding', payload);
       const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
-      let context = '';
+      let matches = [];
 
       if (apiKey) {
         try {
@@ -250,7 +264,7 @@ module.exports = async function handler(req, res) {
             const embedData = await embedRes.json();
             const embedding = embedData.embedding.values;
 
-            // 2. Call match_knowledge RPC
+            // Broader candidate set retrieval (match_count: 20, match_threshold: 0.3)
             const matchResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/match_knowledge`, {
               method: 'POST',
               headers: {
@@ -261,21 +275,14 @@ module.exports = async function handler(req, res) {
               },
               body: JSON.stringify({
                 query_embedding: embedding,
-                match_threshold: 0.6,
-                match_count: 5,
+                match_threshold: 0.3,
+                match_count: 20,
                 p_course_id: course_id
               })
             });
 
             if (matchResponse.ok) {
-              const matches = await matchResponse.json();
-              if (matches && matches.length > 0) {
-                const formattedMatches = matches.map(m => ({
-                  source_type: m.source_type || 'material',
-                  content: m.content
-                }));
-                context = JSON.stringify(formattedMatches, null, 2);
-              }
+              matches = await matchResponse.json();
             }
           }
         } catch (embedError) {
@@ -283,63 +290,9 @@ module.exports = async function handler(req, res) {
         }
       }
 
-      if (!context) {
-        // Fallback to basic retrieval using REST API endpoints
-        try {
-          const [matRes, lesRes, topRes, courseRes] = await Promise.all([
-            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&limit=5`, {
-              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-            }),
-            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&limit=5`, {
-              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-            }),
-            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&limit=5`, {
-              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-            }),
-            fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}`, {
-              headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-            })
-          ]);
-
-          const materials = matRes.ok ? await matRes.json() : [];
-          const lessons = lesRes.ok ? await lesRes.json() : [];
-          const topics = topRes.ok ? await topRes.json() : [];
-          const courseData = courseRes.ok ? await courseRes.json() : [];
-          const course = courseData?.[0] || null;
-
-          const fallbackList = [];
-          if (course) {
-            fallbackList.push({
-              source_type: "course",
-              content: `Course Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`
-            });
-          }
-          (topics || []).forEach(t => {
-            fallbackList.push({
-              source_type: "topic",
-              content: `Topic: ${t.title}\nDescription: ${t.description || ''}`
-            });
-          });
-          (materials || []).forEach(m => {
-            fallbackList.push({
-              source_type: "material",
-              content: `Material: ${m.title}\nDescription: ${m.description || ''}`
-            });
-          });
-          (lessons || []).forEach(l => {
-            fallbackList.push({
-              source_type: "lesson",
-              content: `Lesson: ${l.title}\nContent: ${l.content || ''}`
-            });
-          });
-
-          context = JSON.stringify(fallbackList, null, 2);
-        } catch (retrievalError) {
-          console.error('Basic context retrieval failed:', retrievalError);
-        }
-      }
-
-      payload.context = context;
+      // 4. Hybrid retrieval, re-ranking & structured context build will be handled inside handleCourseTutor
+      payload.semantic_matches = matches;
+      payload.course_metadata = { course, topics, lessons, materials };
     }
 
     switch (type) {
@@ -389,10 +342,72 @@ module.exports = async function handler(req, res) {
 };
 
 /**
+ * Helper to retrieve full course structural metadata from Supabase
+ */
+async function fetchCourseMetadata(courseId, supabaseUrl, supabaseAnonKey) {
+  try {
+    const [courseRes, topicsRes, lessonsRes, materialsRes] = await Promise.all([
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${courseId}`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${courseId}&limit=100`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${courseId}&select=id,title,content,topic_id&limit=100`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      }),
+      fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${courseId}&select=id,title,description,file_url,file_type&limit=100`, {
+        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      })
+    ]);
+
+    const course = courseRes.ok ? (await courseRes.json())[0] : null;
+    const topics = topicsRes.ok ? await topicsRes.json() : [];
+    const lessons = lessonsRes.ok ? await lessonsRes.json() : [];
+    const materials = materialsRes.ok ? await materialsRes.json() : [];
+
+    return { course, topics, lessons, materials };
+  } catch (err) {
+    console.error('fetchCourseMetadata failed:', err);
+    return { course: null, topics: [], lessons: [], materials: [] };
+  }
+}
+
+/**
+ * Simple TF-IDF like lexical scorer
+ */
+function computeLexicalScore(text, query) {
+  if (!text || !query) return 0;
+  const stopWords = new Set(['the', 'and', 'a', 'of', 'to', 'is', 'in', 'that', 'it', 'for', 'on', 'with', 'as', 'at', 'by', 'an']);
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+  if (queryWords.length === 0) return 0;
+
+  const contentLower = text.toLowerCase();
+  let matches = 0;
+  for (const word of queryWords) {
+    // Safely escape special regex characters to prevent runtime crashes
+    const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+      const regex = new RegExp(`\\b${escapedWord}\\b`, 'g');
+      const wordMatches = contentLower.match(regex);
+      if (wordMatches) {
+        matches += wordMatches.length;
+      }
+    } catch (e) {
+      // Fallback direct substring index match if regex fails
+      if (contentLower.includes(word.toLowerCase())) {
+        matches += 1;
+      }
+    }
+  }
+  return matches / queryWords.length;
+}
+
+/**
  * Feature 1 & 6: Course-aware Tutor
  */
 async function handleCourseTutor(payload, res) {
-  let { message, history = [], context = '' } = payload;
+  let { message, history = [], semantic_matches = [], course_metadata = {}, active_topic = null } = payload;
 
   if (!message || typeof message !== 'string') {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -455,51 +470,164 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
+  // 1. Build larger candidate pool of semantic matches and structural pieces
+  const candidates = [];
+  const { course, topics = [], lessons = [], materials = [] } = course_metadata;
+
+  // Add semantic matches
+  (semantic_matches || []).forEach(match => {
+    candidates.push({
+      id: match.id,
+      source_type: match.source_type,
+      source_id: match.source_id,
+      content: match.content,
+      metadata: match.metadata || {},
+      similarity: match.similarity || 0.5
+    });
+  });
+
+  // Inject structural topics, lessons, and materials as candidate chunks if not already present
+  lessons.forEach(l => {
+    if (!candidates.some(c => c.source_type === 'lesson' && c.source_id === l.id)) {
+      candidates.push({
+        source_type: 'lesson',
+        source_id: l.id,
+        content: `Lesson Title: ${l.title}\nContent Chunk: ${l.content || ''}`,
+        metadata: { type: 'lesson', title: l.title },
+        similarity: 0.4 // lower default similarity
+      });
+    }
+  });
+
+  materials.forEach(m => {
+    if (!candidates.some(c => c.source_type === 'material' && c.source_id === m.id)) {
+      candidates.push({
+        source_type: 'material',
+        source_id: m.id,
+        content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
+        metadata: { type: 'material', title: m.title },
+        similarity: 0.4
+      });
+    }
+  });
+
+  // 2. Compute Hybrid Scores: 0.5 * Semantic + 0.5 * Lexical, plus structural boosting
+  const queryLower = message.toLowerCase();
+  candidates.forEach(c => {
+    const lexicalScore = computeLexicalScore(c.content, message);
+    c.lexical_score = lexicalScore;
+    c.hybrid_score = (0.5 * c.similarity) + (0.5 * Math.min(1.0, lexicalScore));
+
+    // Structural boost: if the chunk aligns with the active topic
+    if (active_topic) {
+      const activeTopicTitle = active_topic.title.toLowerCase();
+      const contentLower = c.content.toLowerCase();
+      const hasTopicRef = contentLower.includes(activeTopicTitle) ||
+                          (c.metadata?.topic && String(c.metadata.topic).toLowerCase().includes(activeTopicTitle));
+      if (hasTopicRef) {
+        c.hybrid_score += 0.15; // 15% structural boost
+      }
+    }
+  });
+
+  // Re-rank candidates descending
+  candidates.sort((a, b) => b.hybrid_score - a.hybrid_score);
+
+  // Confidence thresholds and metadata-based filtering
+  // Enforce Course Boundary: tutor must refuse if the top candidate score is below our strict threshold
+  const CONFIDENCE_THRESHOLD = 0.45;
+  const bestCandidate = candidates[0];
+
+  if (!bestCandidate || bestCandidate.hybrid_score < CONFIDENCE_THRESHOLD) {
+    res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      content: "I am sorry, but I cannot find sufficiently verified evidence in the course materials to answer your question. I am designed to assist you strictly using the official course curriculum and resources. Could you please specify or rephrase your question regarding our course topics?",
+      intent: classification.intent,
+      category: classification.category,
+      confidence: classification.confidence,
+      entities: classification.entities,
+      action: 'unsupported_refusal'
+    }));
+    return;
+  }
+
+  // Filter down to the top 5 highest-quality chunks for the LLM context
+  const selectedChunks = candidates.slice(0, 5);
+
+  // 3. Build highly structured prompts sections without using JSON.stringify
+  const structuredCourseSection = course
+    ? `Title: ${course.title}\nDescription: ${course.description || ''}\nSemester: ${course.semester || ''}`
+    : `Title: ${payload.course_title || 'Unknown Course'}`;
+
+  const structuredTopicSection = active_topic
+    ? `Active Topic: ${active_topic.title}\nDescription: ${active_topic.description || ''}`
+    : `Active Topic: General / Global Search`;
+
+  const lessonTitles = lessons.map(l => l.title).join(', ') || 'None';
+  const structuredLessonSection = `Available Lessons: ${lessonTitles}`;
+
+  const materialTitles = materials.map(m => m.title).join(', ') || 'None';
+  const structuredMaterialSection = `Available Materials: ${materialTitles}`;
+
+  let evidenceText = '';
+  selectedChunks.forEach((c, idx) => {
+    evidenceText += `Evidence [${idx + 1}] (Source: ${c.source_type.toUpperCase()}, ID: ${c.source_id}):\n${c.content}\n\n`;
+  });
+
   const apiKey = resolveApiKey('tutor', payload);
   const tutorModel = resolveModelId('tutor', payload);
 
-  const courseTitle = payload.course_title || 'this course';
-  const systemPrompt = `You are an expert academic tutor supporting Ghanaian SHS learners for the course "${courseTitle}".
-  Your goal is to provide high-quality, conversational tutoring. Explain concepts clearly and build learner understanding progressively. Connect explanations to classroom, real-world, or family contexts where applicable.
+  const systemPrompt = `You are a curriculum-grounded expert academic tutor supporting Ghanaian SHS learners.
+Your goal is to provide high-quality, conversational tutoring.
+You must be strictly course-aware and topic-aware, framing your entire response within the provided course and active topic structures.
 
-  Your teaching approach must align with:
-  - Ghana Education Service (GES) curriculum expectations.
-  - SHS learning standards.
-  - WASSCE examination preparations where relevant.
+Key Grounding Rules:
+- Answer the student's question ONLY using the retrieved evidence.
+- Never introduce any facts, concepts, or details not supported by the retrieved context.
+- Quote or reference the specific lesson, topic, or material used.
+- Require direct citations (e.g. "[Lesson: Lesson Title]" or "[Material: PDF Title]") to the lesson/material used in your answer.
+- If the retrieved evidence is insufficient to answer the question, or if the question lies outside the course boundary, strictly refuse to answer. Do not use general knowledge to fill in gaps.
 
-  Use the provided course context to answer student questions. If information is missing, state that the course material or lesson does not contain the answer and provide general academic guidance where appropriate. Never invent course-specific facts.
+Classroom Teacher Feedback Integration:
+- If the student shares classroom teacher feedback, grade comments, or scores from an assignment or quiz, act as their supportive tutor explaining the feedback constructively using the retrieved course evidence.
 
-  Classroom Teacher Feedback Integration:
-  - If the student shares classroom teacher feedback, grade comments, or scores from an assignment or quiz, act as their supportive tutor explaining the feedback constructively. Highlight conceptual gaps, correct terminology errors, and provide step-by-step guidance to help them master the topics and improve.
+Strict Token Bloat Prevention Rules:
+- Do not repeat or restate the student's question or the provided teacher feedback in your response.
+- Keep explanations highly direct, concise, and academically focused.
+- Avoid wordy preambles, generic robotic intros, or repetitive summaries.
+- Limit responses to a maximum of 3-4 highly informative paragraphs, utilizing bullet points for step-by-step clarity.
 
-  Strict Token Bloat Prevention Rules:
-  - Do not repeat or restate the student's question or the provided teacher feedback in your response.
-  - Keep explanations highly direct, concise, and academically focused.
-  - Avoid wordy preambles, generic robotic intros, or repetitive summaries.
-  - Limit responses to a maximum of 3-4 highly informative paragraphs, utilizing bullet points for step-by-step clarity.
+Strict Academic Guardrails:
+- You have absolutely NO access to quizzes, exams, assignments, student submissions, grades, secrets, personal or private data.
+- If a student asks about their grades, specific assignment answers, quiz solutions, submission statuses, secrets, personal or private data, you MUST politely explain that you do not have access to that information and can only assist them in learning and understanding the course concepts, lessons, and materials.
+- Strict Conversational Quality Check: Always use flawless grammar, perfect spelling, and elegant sentence structure. Maintain a professional, friendly teacher tone suitable suitable for students. Match the user's request precisely.`;
 
-  Key Tutoring Principles:
-  1. Conversational Style: Be encouraging, clear, and professional.
-  2. Answers & Explanations: Provide precise and accurate answers; explain the underlying concepts.
-  3. Follow-up: Ask a short follow-up question when it helps assess understanding or continue learning. Do not force a follow-up question for simple factual answers or calculations.
+  const structuredPrompt = `--- COURSE CONTEXT ---
+${structuredCourseSection}
 
-  Strict Academic Guardrails:
-  - You have absolutely NO access to quizzes, exams, assignments, student submissions, grades, secrets, personal or private data.
-  - If a student asks about their grades, specific assignment answers, quiz solutions, submission statuses, secrets, personal or private data, you MUST politely explain that you do not have access to that information and can only assist them in learning and understanding the course concepts, lessons, and materials.
-  - Do not make up answers. If the information is not in the context, guide the student based on general academic principles related to the topic, but prioritize course-specific info.
-  - Strict Conversational Quality Check: Always use flawless grammar, perfect spelling, and elegant sentence structure. Maintain a professional, friendly teacher tone suitable suitable for students. Match the user's request precisely.
+--- TOPIC CONTEXT ---
+${structuredTopicSection}
 
-  Course Context:
-  ${context.substring(0, 15000)}`;
+--- LESSON CONTEXT ---
+${structuredLessonSection}
+
+--- MATERIAL CONTEXT ---
+${structuredMaterialSection}
+
+--- RETRIEVED EVIDENCE ---
+${evidenceText}
+
+--- STUDENT QUESTION ---
+${message}`;
 
   try {
     const { rawText, data } = await callGeminiAPI({
       apiKey,
       model: tutorModel,
-      prompt: message,
+      prompt: structuredPrompt,
       systemInstruction: systemPrompt,
       history: sanitizedHistory,
-      temperature: 0.7
+      temperature: 0.3 // slightly lower temperature for stricter grounding adherence
     });
 
     const guardedText = runResponseQualityGuard(rawText, 'tutor');
