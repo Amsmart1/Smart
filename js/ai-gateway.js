@@ -429,13 +429,38 @@ class AIManager {
         if (materialId) {
             payload.material_id = materialId;
         }
-        if (typeof window !== 'undefined' && window.SupabaseDB && typeof window.SupabaseDB.invokeFunction === 'function') {
-            return await window.SupabaseDB.invokeFunction('ai-gateway', {
-                type: 'index_course',
-                payload: payload
-            });
+
+        const executeCall = async () => {
+            if (typeof window !== 'undefined' && window.SupabaseDB && typeof window.SupabaseDB.invokeFunction === 'function') {
+                return await window.SupabaseDB.invokeFunction('ai-gateway', {
+                    type: 'index_course',
+                    payload: payload
+                });
+            }
+            return await this._invoke('index_course', payload);
+        };
+
+        try {
+            return await executeCall();
+        } catch (error) {
+            const errStr = String(error.message || error).toUpperCase();
+            // Handle Edge Function resource limit (150s), gateway timeout (504, 546), or generic timeouts.
+            // Since the indexing lifecycle (material_indexing_states) is stateful, retrying will seamlessly
+            // skip already completed stages (like download/extraction) and resume from the failed step.
+            if (
+                errStr.includes('WORKER_RESOURCE_LIMIT') ||
+                errStr.includes('546') ||
+                errStr.includes('504') ||
+                errStr.includes('TIMEOUT') ||
+                errStr.includes('EXCEEDED')
+            ) {
+                console.warn('Indexing encountered a resource limit or timeout. Attempting automatic resume/retry...', error);
+                // Give a 2.5 second delay for DB connections and locks to settle
+                await new Promise(resolve => setTimeout(resolve, 2500));
+                return await executeCall();
+            }
+            throw error;
         }
-        return await this._invoke('index_course', payload);
     }
 
     /**
