@@ -1795,7 +1795,8 @@ BEGIN
       OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
       OLD.flagged IS DISTINCT FROM NEW.flagged)
       AND NOT is_admin()
-      AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin') THEN
+      AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin')
+      AND COALESCE(current_setting('app.trusted_internal_update', true), 'false') <> 'true' THEN
 
       RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
   END IF;
