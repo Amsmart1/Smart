@@ -147,9 +147,9 @@ def run_verification():
             page.click("button:has-text('Manage Lessons')")
             page.wait_for_timeout(2000)
 
-            # Ensure we are on the Course Details page and click '+ Add Lesson'
-            print("Clicking '+ Add Lesson'...")
-            page.click("button:has-text('+ Add Lesson')")
+            # Ensure we are on the Course Details page and click '+ Lesson'
+            print("Clicking '+ Lesson'...")
+            page.click("button:has-text('+ Lesson')")
             page.wait_for_timeout(2000)
 
             # Check if Lesson Form and Import Content side-panel are present

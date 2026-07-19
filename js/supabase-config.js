@@ -2064,7 +2064,7 @@ class SupabaseDB {
             let result = data || [];
 
             if (options.withLatestSnapshots) {
-                const attemptIds = result.map(s => s.attempt_id);
+                const attemptIds = result.map(s => s.attempt_id).filter(id => id !== null && id !== undefined && id !== '' && id !== 'null' && id !== 'undefined');
                 if (attemptIds.length > 0) {
                     // Fetch latest snapshots for all attempts in a single query
                     const { data: snaps, error: snapErr } = await supabaseClient
@@ -2196,7 +2196,8 @@ class SupabaseDB {
     static subscribeToLiveViolations(callback) {
         if (!supabaseClient) return null;
 
-        const channel = supabaseClient.channel('live-violations');
+        const channelName = 'live-violations-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now().toString(36);
+        const channel = supabaseClient.channel(channelName);
         channel
             .on('postgres_changes', {
                 event: 'INSERT',
@@ -2211,7 +2212,16 @@ class SupabaseDB {
     }
 
     static async getViolations(assessmentId = null, userEmail = null, teacherEmail = null, options = {}) {
-        const { assessmentType = null, severity = null, attemptId = null } = options;
+        let { assessmentType = null, severity = null, attemptId = null } = options;
+
+        // Sanitize UUID parameters to prevent invalid input syntax for UUID 400 Bad Requests
+        if (attemptId === 'null' || attemptId === 'undefined' || !attemptId) {
+            attemptId = null;
+        }
+        if (assessmentId === 'null' || assessmentId === 'undefined' || !assessmentId) {
+            assessmentId = null;
+        }
+
         return this._request(async () => {
             let query = supabaseClient.from('violations').select('*', { count: 'exact' });
 
