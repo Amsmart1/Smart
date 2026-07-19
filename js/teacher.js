@@ -444,30 +444,144 @@ async function showLessonForm(courseId, lesson = null) {
   content.innerHTML = `
     <div class="card">
       <h2 class="m-0">${isEdit ? 'Edit Lesson' : 'Add Lesson'}</h2>
-      <form id="lessonForm" class="mt-20">
-        <label>Lesson Title</label>
-        <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" required>
+      <div class="grid-2 mt-20">
+        <div>
+          <form id="lessonForm">
+            <label>Lesson Title</label>
+            <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" required>
 
-        <label>Topic</label>
-        <select id="lessonTopicId" required>
-          <option value="">-- Select Topic --</option>
-          ${topics.map(t => `<option value="${t.id}" ${lesson?.topic_id === t.id ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
-        </select>
-        ${topics.length === 0 ? '<p class="tiny danger-text mt-5">No topics found. Please create a topic first.</p>' : ''}
+            <label>Topic</label>
+            <select id="lessonTopicId" required>
+              <option value="">-- Select Topic --</option>
+              ${topics.map(t => `<option value="${t.id}" ${lesson?.topic_id === t.id ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
+            </select>
+            ${topics.length === 0 ? '<p class="tiny danger-text mt-5">No topics found. Please create a topic first.</p>' : ''}
 
-        <label class="mt-10">Video URL (Optional)</label>
-        <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
-        <label>Content</label>
-        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
-        <label>Order Index</label>
-        <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
-        <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40" ${topics.length === 0 ? 'disabled' : ''}>${isEdit ? 'Update Lesson' : 'Save Lesson'}</button>
-          <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
+            <label class="mt-10">Video URL (Optional)</label>
+            <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
+
+            <label>Content</label>
+            <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
+
+            <label>Order Index</label>
+            <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
+
+            <div class="flex gap-10 mt-20">
+              <button type="submit" class="button w-auto px-40" ${topics.length === 0 ? 'disabled' : ''}>${isEdit ? 'Update Lesson' : 'Save Lesson'}</button>
+              <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
+            </div>
+          </form>
         </div>
-      </form>
+
+        <div class="bg-light p-15 border-radius-md" style="max-height: 700px; overflow-y: auto;">
+          <h3 class="m-0 mb-10 small">Import Content from Knowledge Base</h3>
+          <p class="tiny text-muted mb-15">Select content from Course, Topics, or Materials (PDFs) to load and edit before saving as a lesson.</p>
+
+          <label>Select Source Content</label>
+          <select id="kbSourceSelect" class="w-100 mb-10" disabled>
+            <option value="">-- Loading knowledge items... --</option>
+          </select>
+
+          <div id="kbPreviewSection" style="display: none;">
+            <label class="mt-10">Edit Selected Content</label>
+            <textarea id="kbContentEdit" class="w-100" rows="8" placeholder="Edit content before importing..."></textarea>
+
+            <div class="flex gap-10 mt-10">
+              <button type="button" id="kbApplyBtn" class="button tiny w-auto">Overwrite Lesson Content</button>
+              <button type="button" id="kbAppendBtn" class="button secondary tiny w-auto">Append to Lesson</button>
+            </div>
+          </div>
+
+          <div id="kbEmptyMessage" class="tiny text-muted mt-10" style="display: none;">
+            No knowledge base items found for this course. Ensure you have topics or uploaded PDF materials indexed under "Materials".
+          </div>
+        </div>
+      </div>
     </div>
   `;
+
+  // Asynchronously load knowledge embeddings
+  const kbSelect = document.getElementById('kbSourceSelect');
+  const kbPreviewSec = document.getElementById('kbPreviewSection');
+  const kbContentEdit = document.getElementById('kbContentEdit');
+  const kbEmptyMsg = document.getElementById('kbEmptyMessage');
+  const kbApplyBtn = document.getElementById('kbApplyBtn');
+  const kbAppendBtn = document.getElementById('kbAppendBtn');
+
+  let kbEmbeddings = [];
+
+  try {
+    const { data: embeddings } = await SupabaseDB.getKnowledgeEmbeddings(courseId);
+    kbEmbeddings = embeddings || [];
+  } catch (e) {
+    console.warn('Failed to load knowledge embeddings:', e);
+  }
+
+  if (renderId !== window.currentRenderId) return;
+
+  if (kbEmbeddings.length === 0) {
+    if (kbSelect) {
+      kbSelect.innerHTML = '<option value="">-- No items available --</option>';
+      kbSelect.disabled = true;
+    }
+    if (kbEmptyMsg) kbEmptyMsg.style.display = 'block';
+  } else {
+    if (kbSelect) {
+      kbSelect.innerHTML = `
+        <option value="">-- Select a knowledge item --</option>
+        ${kbEmbeddings.map((item, index) => {
+          const type = item.source_type ? item.source_type.toUpperCase() : 'UNKNOWN';
+          const title = item.metadata?.title || 'Untitled';
+          const snippet = item.content ? (item.content.trim().slice(0, 50) + (item.content.trim().length > 50 ? '...' : '')) : '';
+          return `<option value="${index}">[${type}] ${escapeHtml(title)} - ${escapeHtml(snippet)}</option>`;
+        }).join('')}
+      `;
+      kbSelect.disabled = false;
+    }
+    if (kbEmptyMsg) kbEmptyMsg.style.display = 'none';
+  }
+
+  if (kbSelect) {
+    kbSelect.addEventListener('change', (e) => {
+      const idx = e.target.value;
+      if (idx === "") {
+        if (kbPreviewSec) kbPreviewSec.style.display = 'none';
+      } else {
+        const selectedItem = kbEmbeddings[parseInt(idx)];
+        if (selectedItem) {
+          if (kbContentEdit) kbContentEdit.value = selectedItem.content || '';
+          if (kbPreviewSec) kbPreviewSec.style.display = 'block';
+        }
+      }
+    });
+  }
+
+  if (kbApplyBtn) {
+    kbApplyBtn.addEventListener('click', () => {
+      const editedContent = kbContentEdit ? kbContentEdit.value : '';
+      const lessonContentTextarea = document.getElementById('lessonContent');
+      if (lessonContentTextarea) {
+        lessonContentTextarea.value = editedContent;
+        UI.showNotification('Lesson content overwritten with knowledge item.', 'success');
+      }
+    });
+  }
+
+  if (kbAppendBtn) {
+    kbAppendBtn.addEventListener('click', () => {
+      const editedContent = kbContentEdit ? kbContentEdit.value : '';
+      const lessonContentTextarea = document.getElementById('lessonContent');
+      if (lessonContentTextarea) {
+        if (lessonContentTextarea.value.trim()) {
+          lessonContentTextarea.value += '\n\n' + editedContent;
+        } else {
+          lessonContentTextarea.value = editedContent;
+        }
+        UI.showNotification('Knowledge item appended to lesson content.', 'success');
+      }
+    });
+  }
+
   document.getElementById('lessonForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -1980,6 +2094,29 @@ async function renderAntiCheat() {
 
   // Default to historical view (keeping the functional default intact)
   await showHistorical();
+}
+
+async function renderTeacherLiveProctoringPage() {
+  const renderId = ++window.currentRenderId;
+  const content = document.getElementById('pageContent');
+  if (!content) return;
+  clearActiveCountdowns();
+
+  // Cleanup existing live monitoring on teacher side
+  if (TeacherState._liveProctoringInterval) {
+    clearInterval(TeacherState._liveProctoringInterval);
+    TeacherState._liveProctoringInterval = null;
+  }
+  if (TeacherState._liveViolationsChannel) {
+    window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+    TeacherState._liveViolationsChannel = null;
+  }
+
+  content.innerHTML = `
+    <div id="anticheat-tab-content"></div>
+  `;
+
+  await renderTeacherLiveProctoring(renderId);
 }
 
 async function renderTeacherLiveProctoring(renderId) {
@@ -4453,7 +4590,7 @@ function initNav() {
         button.classList.add('active');
         const page = button.dataset.page;
         DiscussionManager.cleanup();
-        if (page !== 'anticheat') {
+        if (page !== 'anticheat' && page !== 'live-proctoring') {
             if (TeacherState._liveProctoringInterval) {
                 clearInterval(TeacherState._liveProctoringInterval);
                 TeacherState._liveProctoringInterval = null;
@@ -4477,6 +4614,7 @@ function initNav() {
         else if(page === 'live') renderLiveClasses();
         else if(page === 'calendar') renderCalendar();
         else if(page === 'anticheat') renderAntiCheat();
+        else if(page === 'live-proctoring') renderTeacherLiveProctoringPage();
         else if(page === 'settings') renderSettings();
         else if(page === 'help') renderHelp();
       });
@@ -4906,6 +5044,7 @@ window.renderGradeBook = renderGradeBook;
 window.renderAnalytics = renderAnalytics;
 window.renderHelp = renderHelp;
 window.renderAntiCheat = renderAntiCheat;
+window.renderTeacherLiveProctoringPage = renderTeacherLiveProctoringPage;
 window.renderSettings = renderSettings;
 window.showCertForm = showCertForm;
 window.issueCert = issueCert;
