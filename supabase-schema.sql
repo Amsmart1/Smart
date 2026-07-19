@@ -657,6 +657,7 @@ CREATE TABLE IF NOT EXISTS material_indexing_states (
   error_message TEXT,
   timing_logs JSONB DEFAULT '{}'::jsonb,
   retry_count INTEGER DEFAULT 0,
+  last_chunk_index INTEGER DEFAULT -1,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -3978,3 +3979,32 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 -- Grant access to the function to authenticated and anon roles, revoking from PUBLIC
 REVOKE ALL ON FUNCTION get_active_proctored_sessions() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION get_active_proctored_sessions() TO authenticated, anon;
+
+-- RPC for fetching unique source_type and source_id pairs from knowledge_embeddings
+CREATE OR REPLACE FUNCTION get_distinct_knowledge_sources(p_course_id UUID)
+RETURNS TABLE (
+  source_type VARCHAR,
+  source_id UUID
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Enterprise Grade Security: Validate access context
+  IF NOT (
+    is_admin() OR
+    EXISTS (SELECT 1 FROM courses WHERE id = p_course_id AND teacher_email = get_auth_email()) OR
+    EXISTS (SELECT 1 FROM enrollments WHERE course_id = p_course_id AND student_email = get_auth_email())
+  ) THEN
+    RAISE EXCEPTION 'Access Denied: get_distinct_knowledge_sources authorization failed';
+  END IF;
+
+  RETURN QUERY
+  SELECT DISTINCT ke.source_type, ke.source_id
+  FROM knowledge_embeddings ke
+  WHERE ke.course_id = p_course_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION get_distinct_knowledge_sources(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_distinct_knowledge_sources(UUID) TO authenticated, anon;
