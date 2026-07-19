@@ -2052,7 +2052,11 @@ class SupabaseDB {
 
     static async getLiveProctoringSessions(options = {}) {
         return this._request(async () => {
-            const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions');
+            const rpcParams = {};
+            if (options.teacherEmail) {
+                rpcParams.p_teacher_email = options.teacherEmail;
+            }
+            const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions', rpcParams);
             if (error) throw error;
             let result = data || [];
 
@@ -2083,17 +2087,25 @@ class SupabaseDB {
         });
     }
 
-    static async getExamsTodayCount() {
+    static async getExamsTodayCount(teacherEmail = null) {
         return this._request(async () => {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const isoToday = today.toISOString();
 
-            const [quizCount, subCount] = await Promise.all([
-                this.getCount('quiz_submissions', q => q.gte('started_at', isoToday)),
-                this.getCount('submissions', q => q.gte('submitted_at', isoToday))
-            ]);
-            return quizCount + subCount;
+            if (teacherEmail) {
+                const [quizCount, subCount] = await Promise.all([
+                    this.getCount('quiz_submissions', q => q.gte('started_at', isoToday).eq('quizzes.teacher_email', teacherEmail), '*, quizzes!inner(*)'),
+                    this.getCount('submissions', q => q.gte('submitted_at', isoToday).eq('assignments.teacher_email', teacherEmail), '*, assignments!inner(*)')
+                ]);
+                return quizCount + subCount;
+            } else {
+                const [quizCount, subCount] = await Promise.all([
+                    this.getCount('quiz_submissions', q => q.gte('started_at', isoToday)),
+                    this.getCount('submissions', q => q.gte('submitted_at', isoToday))
+                ]);
+                return quizCount + subCount;
+            }
         });
     }
 

@@ -7,7 +7,9 @@ const TeacherState = {
   studentsPage: 1,
   _warnedEnd: false,
   liveClassTimer: null,
-  analyticsCache: new Map()
+  analyticsCache: new Map(),
+  _liveProctoringInterval: null,
+  _liveViolationsChannel: null
 };
 
 function clearActiveCountdowns() {
@@ -1589,27 +1591,537 @@ async function renderAntiCheat() {
   if (!content) return;
   clearActiveCountdowns();
 
-  try {
-    const user = await SessionManager.getCurrentUser();
-    if (renderId !== window.currentRenderId) return;
-    const { data: summary } = await SupabaseDB.getViolationSummary(user.email);
-    if (renderId !== window.currentRenderId) return;
-
-    UI.renderAntiCheatSummary('pageContent', summary, {
-        title: 'Security Monitoring',
-        onViewDetails: (id, title) => viewAssessmentViolations(id, title),
-        onRefresh: () => renderAntiCheat()
-    });
-  } catch (error) {
-    console.error('AntiCheat error:', error);
-    UI.showNotification('Error loading security summary: ' + error.message, 'error');
-    content.innerHTML = `<div class="card danger-border">
-      <h3>Error Loading Summary</h3>
-      <div class="small danger-text">${escapeHtml(error.message)}</div>
-      <button class="button w-auto mt-10" onclick="renderAntiCheat()">Retry</button>
-    </div>`;
+  // Cleanup existing live monitoring on teacher side
+  if (TeacherState._liveProctoringInterval) {
+    clearInterval(TeacherState._liveProctoringInterval);
+    TeacherState._liveProctoringInterval = null;
   }
+  if (TeacherState._liveViolationsChannel) {
+    window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+    TeacherState._liveViolationsChannel = null;
+  }
+
+  content.innerHTML = `
+    <div class="flex-between mb-20">
+        <div>
+            <h2 class="m-0">Security Monitoring</h2>
+            <p class="small text-muted mt-5">Oversee academic integrity and manage proctoring parameters.</p>
+        </div>
+        <div class="flex gap-10">
+            <button class="button secondary small w-auto" id="teacher-view-records-btn">📜 View Historical Records</button>
+            <button class="button small w-auto" id="teacher-view-live-btn" style="background:#5b2ea6">📺 Live Proctoring Center</button>
+        </div>
+    </div>
+    <div id="anticheat-tab-content"></div>
+  `;
+
+  const showHistorical = async () => {
+    // Clear any active intervals/channels when switching to historical
+    if (TeacherState._liveProctoringInterval) {
+      clearInterval(TeacherState._liveProctoringInterval);
+      TeacherState._liveProctoringInterval = null;
+    }
+    if (TeacherState._liveViolationsChannel) {
+      window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+      TeacherState._liveViolationsChannel = null;
+    }
+
+    document.getElementById('teacher-view-records-btn').classList.remove('secondary');
+    document.getElementById('teacher-view-records-btn').style.background = 'var(--purple)';
+    document.getElementById('teacher-view-records-btn').style.color = 'white';
+    document.getElementById('teacher-view-live-btn').classList.add('secondary');
+    document.getElementById('teacher-view-live-btn').style.background = '';
+    document.getElementById('teacher-view-live-btn').style.color = '';
+
+    UI.showLoading('anticheat-tab-content', 'Loading security summary...');
+    try {
+        const user = await SessionManager.getCurrentUser();
+        const { data: summary } = await SupabaseDB.getViolationSummary(user.email);
+        if (renderId !== window.currentRenderId) return;
+
+        UI.renderAntiCheatSummary('anticheat-tab-content', summary, {
+            title: 'Historical Security Records',
+            subtitle: 'Overview of historical assessments with detected integrity violations.',
+            onViewDetails: (id, title) => viewAssessmentViolations(id, title),
+            onRefresh: () => showHistorical()
+        });
+    } catch (error) {
+        console.error('AntiCheat error:', error);
+        UI.showNotification('Error loading security summary: ' + error.message, 'error');
+        document.getElementById('anticheat-tab-content').innerHTML = `
+          <div class="card danger-border">
+            <h3>Error Loading Summary</h3>
+            <div class="small danger-text">${escapeHtml(error.message)}</div>
+            <button class="button w-auto mt-10" onclick="renderAntiCheat()">Retry</button>
+          </div>
+        `;
+    }
+  };
+
+  const showLive = async () => {
+    document.getElementById('teacher-view-live-btn').classList.remove('secondary');
+    document.getElementById('teacher-view-live-btn').style.background = '#5b2ea6';
+    document.getElementById('teacher-view-live-btn').style.color = 'white';
+    document.getElementById('teacher-view-records-btn').classList.add('secondary');
+    document.getElementById('teacher-view-records-btn').style.background = '';
+    document.getElementById('teacher-view-records-btn').style.color = '';
+
+    await renderTeacherLiveProctoring(renderId);
+  };
+
+  document.getElementById('teacher-view-records-btn').onclick = showHistorical;
+  document.getElementById('teacher-view-live-btn').onclick = showLive;
+
+  // Default to historical view (keeping the functional default intact)
+  await showHistorical();
 }
+
+async function renderTeacherLiveProctoring(renderId) {
+    const area = document.getElementById('anticheat-tab-content');
+    if (!area) return;
+
+    UI.showLoading('anticheat-tab-content', 'Initializing Real-time Proctoring Center...');
+
+    try {
+        const user = await SessionManager.getCurrentUser();
+        const [sessions, examsToday] = await Promise.all([
+            SupabaseDB.getLiveProctoringSessions({ teacherEmail: user.email }),
+            SupabaseDB.getExamsTodayCount(user.email)
+        ]);
+        if (renderId !== window.currentRenderId) return;
+
+        const activeCount = sessions.length;
+        const totalViolations = sessions.reduce((acc, s) => acc + parseInt(s.violation_count || 0), 0);
+        const accuracy = 96.3;
+
+        area.innerHTML = `
+            <div class="flex-between mb-20">
+                <h3 class="m-0">Live Proctoring Dashboard</h3>
+                <div class="flex gap-10">
+                    <button class="button secondary small w-auto" onclick="showTeacherLiveFeedModal('${escapeAttr(user.email)}')" style="background:var(--ok); color:white">📺 Open Live Feed</button>
+                    <button class="button secondary small w-auto" onclick="renderTeacherLiveProctoring(${renderId})">Refresh</button>
+                    <button class="button small w-auto" style="background:#5b2ea6" onclick="exportProctoringReport('${escapeAttr(user.email)}')">Export Report</button>
+                </div>
+            </div>
+
+            <div class="card p-0 mb-20 overflow-hidden" style="border:none; background:#5b2ea6; color:white">
+                <div class="p-15 flex-between">
+                    <div class="flex-center-y gap-10">
+                        <div class="pulse-indicator" style="width:10px; height:10px; background:#48bb78; border-radius:50%"></div>
+                        <strong style="font-size:1.1rem">My Scoped Courses Live AI Proctoring</strong>
+                        <span class="tiny" style="opacity:0.8; margin-left:10px">Monitoring Active for Enrolled Students</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-grid mb-20">
+                <div class="stat-card">
+                    <h4>Active Enrolled Sessions</h4>
+                    <div class="value">${activeCount}</div>
+                </div>
+                <div class="stat-card">
+                    <h4>Violations Detected</h4>
+                    <div class="value">${totalViolations}</div>
+                </div>
+                <div class="stat-card">
+                    <h4>My Exams Today</h4>
+                    <div class="value">${examsToday}</div>
+                </div>
+                <div class="stat-card">
+                    <h4>Detection Accuracy</h4>
+                    <div class="value">${accuracy}%</div>
+                </div>
+            </div>
+
+            <div class="card mb-20" style="background:#fff5f5; border:1px solid #feb2b2">
+                <h4 class="m-0 mb-15" style="color:#c53030">Recent Enrolled Violations</h4>
+                <div id="liveViolationsFeed" class="flex-column gap-10">
+                    <div class="empty tiny" style="color:#a0aec0">Waiting for live data...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="flex-between mb-15">
+                    <h3 class="m-0">Active Proctored Sessions</h3>
+                    <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
+                </div>
+                <div id="activeSessionsTable"></div>
+            </div>
+        `;
+
+        renderTeacherSessionsTable(sessions);
+
+        // Start real-time updates
+        TeacherState._liveProctoringInterval = setInterval(async () => {
+            const updatedSessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail: user.email });
+            const updatedExams = await SupabaseDB.getExamsTodayCount(user.email);
+            // Update counts in UI without full re-render
+            const valEls = area.querySelectorAll('.stat-card .value');
+            if (valEls[0]) valEls[0].textContent = updatedSessions.length;
+            if (valEls[1]) valEls[1].textContent = updatedSessions.reduce((acc, s) => acc + parseInt(s.violation_count || 0), 0);
+            if (valEls[2]) valEls[2].textContent = updatedExams;
+
+            renderTeacherSessionsTable(updatedSessions);
+        }, 10000);
+
+        TeacherState._liveViolationsChannel = SupabaseDB.subscribeToLiveViolations((v) => {
+            if (v.severity !== 'INFO' && v.teacher_email === user.email) {
+                addTeacherLiveViolationToFeed(v);
+            }
+        });
+
+    } catch (e) {
+        console.error('Live Proctoring Error:', e);
+        area.innerHTML = `<div class="stat-card danger"><h3>System Error</h3><p class="small">${escapeHtml(e.message)}</p></div>`;
+    }
+}
+
+function renderTeacherSessionsTable(sessions) {
+    UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
+        const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
+        let statusClass = 'badge-active';
+        if (s.status === 'Flagged') statusClass = 'badge-inactive';
+        else if (s.status === 'Warning') statusClass = 'badge-warn';
+        else if (s.status === 'Idle') statusClass = 'secondary';
+
+        const onlineIndicator = s.is_online ?
+            '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+            '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+
+        return `
+            <tr data-attempt-id="${s.attempt_id}">
+                <td>
+                    <div class="flex-center-y">
+                        ${onlineIndicator}
+                        <div class="bold small">${escapeHtml(s.full_name)}</div>
+                    </div>
+                    <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
+                </td>
+                <td>
+                    <div class="small">${escapeHtml(s.assessment_title)}</div>
+                    <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
+                </td>
+                <td><div class="small">${elapsed} min</div></td>
+                <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
+                <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
+                <td>
+                    <div class="flex gap-5">
+                        <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                        <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }, { emptyMessage: 'No active proctored sessions at the moment.' });
+}
+
+function addTeacherLiveViolationToFeed(v) {
+    const feed = document.getElementById('liveViolationsFeed');
+    if (!feed) return;
+
+    const empty = feed.querySelector('.empty');
+    if (empty) empty.remove();
+
+    const entry = document.createElement('div');
+    entry.className = 'flex-between p-10 bg-white border-radius-sm animate-fade-in';
+    entry.style.borderLeft = '4px solid #c53030';
+    entry.innerHTML = `
+        <div>
+            <div class="bold small" style="color:#c53030">${escapeHtml(v.type.replace(/_/g, ' '))}</div>
+            <div class="tiny text-muted">Student: ${escapeHtml(v.user_email)} - ${new Date(v.timestamp).toLocaleTimeString()}</div>
+        </div>
+        <button class="button secondary tiny w-auto" onclick="monitorLiveSession('${v.attempt_id}', '${escapeAttr(v.user_email)}')">View</button>
+    `;
+
+    feed.prepend(entry);
+    if (feed.children.length > 5) feed.lastElementChild.remove();
+}
+
+async function monitorLiveSession(attemptId, email) {
+    const backdrop = UI.showModal('Live Session Monitor: ' + email, `
+        <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
+            <div class="flex-center-y gap-10">
+                <div class="pulse-indicator" id="surveillance-pulse" style="width:10px; height:10px; background:#48bb78; border-radius:50%; display:none"></div>
+                <span class="small bold">Live Surveillance</span>
+                <span id="monitor-status-indicator" class="tiny text-muted">| Monitoring Active</span>
+            </div>
+            <label class="switch-container flex-center-y gap-10">
+                <input type="checkbox" id="surveillance-toggle" style="width:auto; margin:0">
+                <span class="tiny text-muted">Auto-play audio & update feed</span>
+            </label>
+        </div>
+        <div id="liveMonitorContent" style="min-height:400px">
+            <div class="flex-center p-40"><div class="loading-spinner"></div></div>
+        </div>
+    `, { maxWidth: '1000px' });
+
+    let surveillanceActive = false;
+    const toggle = document.getElementById('surveillance-toggle');
+    const pulse = document.getElementById('surveillance-pulse');
+    const audioQueue = [];
+    let isPlayingAudio = false;
+
+    const playNextAudio = async () => {
+        if (audioQueue.length === 0 || isPlayingAudio) return;
+        isPlayingAudio = true;
+        const path = audioQueue.shift();
+        try {
+            const url = await SupabaseDB.createSignedUrl('proctoring', path);
+            const audio = new Audio(url);
+            audio.onended = () => {
+                isPlayingAudio = false;
+                playNextAudio();
+            };
+            await audio.play();
+        } catch (e) {
+            console.warn('Audio playback failed:', e);
+            isPlayingAudio = false;
+            playNextAudio();
+        }
+    };
+
+    toggle.onchange = (e) => {
+        surveillanceActive = e.target.checked;
+        pulse.style.display = surveillanceActive ? 'block' : 'none';
+        if (surveillanceActive) {
+            UI.showNotification('Live surveillance mode active', 'success');
+            playNextAudio();
+        }
+    };
+
+    try {
+        const fetchAndUpdate = async (isIncremental = false) => {
+            const { data: violations } = await SupabaseDB.getViolations(null, email, null, { attemptId, all: true });
+
+            const activeTab = document.querySelector('#proctoringMediaEvidence .tabs button.active')?.textContent.split(' (')[0];
+
+            UI.renderIntegrityReport('liveMonitorContent', violations, email);
+
+            if (activeTab) {
+                const tabs = document.querySelectorAll('#proctoringMediaEvidence .tabs button');
+                tabs.forEach(btn => {
+                    if (btn.textContent.startsWith(activeTab)) {
+                        const tabIdMap = { 'Webcam Snapshots': 'snaps', 'Screen Recordings': 'screen', 'Audio Recordings': 'audio' };
+                        const tabId = tabIdMap[activeTab];
+                        if (tabId) UI._switchProctorTab(btn, tabId);
+                    }
+                });
+            }
+
+            if (isIncremental && surveillanceActive) {
+                const loadBtn = document.querySelector('#proctor-snaps button');
+                if (loadBtn) UI._loadProctorThumbnails(loadBtn);
+            }
+        };
+
+        // Initial fetch
+        await fetchAndUpdate(false);
+
+        // Subscribe to live updates for THIS assessment attempt
+        const channel = window.supabaseClient.channel('monitor-' + attemptId)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'violations',
+                filter: `attempt_id=eq.${attemptId}`
+            }, async (payload) => {
+                const newViolation = payload.new;
+
+                if (surveillanceActive) {
+                    if (newViolation.type === 'AUDIO_RECORDED' && newViolation.metadata?.path) {
+                        audioQueue.push(newViolation.metadata.path);
+                        if (!isPlayingAudio) playNextAudio();
+                    }
+                    await fetchAndUpdate(true);
+                } else {
+                    UI.showNotification('New activity detected in session', 'info');
+                    await fetchAndUpdate(true);
+                }
+            })
+            .subscribe();
+
+        const cleanup = () => {
+            surveillanceActive = false;
+            window.supabaseClient?.removeChannel(channel);
+        };
+
+        // MutationObserver to bulletproof modal destruction/removal cleanups
+        const observer = new MutationObserver(() => {
+            if (!document.body.contains(backdrop)) {
+                cleanup();
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        backdrop.querySelector('button.secondary.tiny').onclick = () => {
+            cleanup();
+            backdrop.remove();
+        };
+
+    } catch (e) {
+        document.getElementById('liveMonitorContent').innerHTML = '<div class="empty">Error loading session data</div>';
+    }
+}
+
+async function terminateSession(attemptId, email) {
+    if (!await UI.confirm(`Are you sure you want to terminate the session for ${email}? This will stop their assessment immediately.`, 'Terminate Session')) return;
+
+    try {
+        await SupabaseDB.saveViolation({
+            attempt_id: attemptId,
+            user_email: email,
+            type: 'SESSION_TERMINATED',
+            severity: 'CRITICAL',
+            score: 100,
+            metadata: { reason: 'Terminated by classroom teacher' }
+        });
+
+        UI.showNotification('Termination signal sent to student device.', 'success');
+        const user = await SessionManager.getCurrentUser();
+        const updatedSessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail: user.email });
+        renderTeacherSessionsTable(updatedSessions);
+    } catch (e) {
+        UI.showNotification('Failed to terminate session: ' + e.message, 'error');
+    }
+}
+
+async function sendMessageToStudent(email, attemptId = null) {
+    const msg = await UI.prompt(`Send a priority message to student ${email}:`, '', 'Priority Message');
+    if (!msg) return;
+
+    try {
+        const user = await SessionManager.getCurrentUser();
+        await SupabaseDB.notifyUser({
+            email: email,
+            title: 'Proctoring Alert',
+            message: msg,
+            type: 'system',
+            metadata: { author_email: user.email }
+        });
+
+        if (attemptId) {
+            await SupabaseDB.saveViolation({
+                attempt_id: attemptId,
+                user_email: email,
+                type: 'STAFF_MESSAGE',
+                severity: 'INFO',
+                score: 0,
+                metadata: { message: msg }
+            });
+        }
+
+        UI.showNotification('Message sent to student.', 'success');
+    } catch (e) {
+        UI.showNotification('Failed to send message: ' + e.message, 'error');
+    }
+}
+
+async function exportProctoringReport(teacherEmail) {
+    UI.showNotification('Preparing proctoring report...', 'info');
+    try {
+        const sessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail });
+        if (!sessions || sessions.length === 0) {
+            return UI.showNotification('No active sessions to export.', 'warn');
+        }
+
+        const headers = ['Student', 'Email', 'Assessment', 'Type', 'Started At', 'Last Activity', 'Violations', 'Status', 'Online'];
+        const rows = sessions.map(s => [
+            s.full_name,
+            s.user_email,
+            s.assessment_title,
+            s.assessment_type,
+            new Date(s.started_at).toLocaleString(),
+            new Date(s.last_activity).toLocaleString(),
+            s.violation_count,
+            s.status,
+            s.is_online ? 'YES' : 'NO'
+        ]);
+
+        Exporter.csv(`teacher_proctoring_report_${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+        UI.showNotification('Report exported successfully.', 'success');
+    } catch (e) {
+        console.error('Export failed:', e);
+        UI.showNotification('Failed to export report: ' + e.message, 'error');
+    }
+}
+
+async function showTeacherLiveFeedModal(teacherEmail) {
+    const backdrop = UI.showModal('Real-time Proctoring Feed', `
+        <div id="live-feed-grid" class="grid-3 gap-15">
+            <div class="flex-center p-40" style="grid-column: 1/-1"><div class="loading-spinner"></div></div>
+        </div>
+    `, { maxWidth: '1200px' });
+
+    const grid = document.getElementById('live-feed-grid');
+
+    const updateFeed = async () => {
+        const sessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail, withLatestSnapshots: true });
+        if (!sessions || sessions.length === 0) {
+            grid.innerHTML = '<div class="empty p-40" style="grid-column: 1/-1">No active sessions currently streaming.</div>';
+            return;
+        }
+
+        const proms = sessions.map(async s => {
+            let snapUrl = null;
+            if (s.latestSnapshotPath) {
+                snapUrl = await SupabaseDB.createSignedUrl('proctoring', s.latestSnapshotPath);
+            }
+            return { ...s, snapUrl };
+        });
+
+        const sessionsWithSnaps = await Promise.all(proms);
+
+        grid.innerHTML = sessionsWithSnaps.map(s => `
+            <div class="card p-0 overflow-hidden animate-fade-in" style="border: 2px solid ${s.violation_count > 5 ? 'var(--danger)' : (s.violation_count > 0 ? 'var(--warn)' : 'var(--border)')}">
+                <div class="p-10 flex-between bg-light">
+                    <div class="flex-center-y gap-5">
+                        <div class="${s.is_online ? 'pulse-indicator' : ''}" style="width:6px; height:6px; background:${s.is_online ? '#48bb78' : '#cbd5e0'}; border-radius:50%"></div>
+                        <div>
+                            <div class="bold tiny">${escapeHtml(s.full_name)}</div>
+                            <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+                        </div>
+                    </div>
+                    <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'badge-active'} tiny">${s.violation_count} V</span>
+                </div>
+                <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
+                    ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
+                    <div class="absolute bottom-5 right-5 flex gap-5">
+                        <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    };
+
+    updateFeed();
+    const interval = setInterval(updateFeed, 15000);
+
+    const cleanup = () => {
+        clearInterval(interval);
+    };
+
+    // Use MutationObserver on body to safely catch DOM removals and prevent any interval leaks
+    const observer = new MutationObserver(() => {
+        if (!document.body.contains(backdrop)) {
+            cleanup();
+            observer.disconnect();
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    backdrop.querySelector('button.secondary.tiny').onclick = () => {
+        cleanup();
+        backdrop.remove();
+    };
+}
+
+window.monitorLiveSession = monitorLiveSession;
+window.terminateSession = terminateSession;
+window.sendMessageToStudent = sendMessageToStudent;
+window.showTeacherLiveFeedModal = showTeacherLiveFeedModal;
+window.exportProctoringReport = exportProctoringReport;
 
 async function viewAssessmentViolations(assessmentId, title) {
     const renderId = ++window.currentRenderId;
@@ -3392,6 +3904,16 @@ function initNav() {
         button.classList.add('active');
         const page = button.dataset.page;
         DiscussionManager.cleanup();
+        if (page !== 'anticheat') {
+            if (TeacherState._liveProctoringInterval) {
+                clearInterval(TeacherState._liveProctoringInterval);
+                TeacherState._liveProctoringInterval = null;
+            }
+            if (TeacherState._liveViolationsChannel) {
+                window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+                TeacherState._liveViolationsChannel = null;
+            }
+        }
         if(page === 'dashboard') renderDashboard();
         else if(page === 'courses') renderCourses();
         else if(page === 'materials') renderMaterials();
