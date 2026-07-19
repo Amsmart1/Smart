@@ -9,8 +9,53 @@ const TeacherState = {
   liveClassTimer: null,
   analyticsCache: new Map(),
   _liveProctoringInterval: null,
-  _liveViolationsChannel: null
+  _liveViolationsChannel: null,
+  viewModes: {},
+  lastSessions: null
 };
+
+function getTeacherViewMode(viewName) {
+    if (!TeacherState.viewModes[viewName]) {
+        TeacherState.viewModes[viewName] = localStorage.getItem('teacher_view_mode_' + viewName) || 'grid';
+    }
+    return TeacherState.viewModes[viewName];
+}
+
+function setTeacherViewMode(viewName, mode) {
+    TeacherState.viewModes[viewName] = mode;
+    localStorage.setItem('teacher_view_mode_' + viewName, mode);
+
+    if (viewName === 'grading') {
+        renderGrading(TeacherState.gradingPage || 1);
+    } else if (viewName === 'students') {
+        renderStudents(TeacherState.studentsPage || 1);
+    } else if (viewName === 'certificates') {
+        renderCertificates();
+    } else if (viewName === 'assignments') {
+        renderAssignments();
+    } else if (viewName === 'quizzes') {
+        renderQuizzes();
+    } else if (viewName === 'lessons') {
+        if (TeacherState.currentCourseId) {
+            editCourse(TeacherState.currentCourseId);
+        }
+    } else if (viewName === 'anticheat') {
+        if (TeacherState.lastSessions) {
+            renderTeacherSessionsTable(TeacherState.lastSessions);
+        } else {
+            const user = JSON.parse(sessionStorage.getItem('currentUser') || '{}');
+            if (user.email) {
+                SupabaseDB.getLiveProctoringSessions({ teacherEmail: user.email }).then(sessions => {
+                    TeacherState.lastSessions = sessions;
+                    renderTeacherSessionsTable(sessions);
+                }).catch(e => console.error('Error fetching live proctoring sessions for view mode:', e));
+            }
+        }
+    }
+}
+
+window.getTeacherViewMode = getTeacherViewMode;
+window.setTeacherViewMode = setTeacherViewMode;
 
 function clearActiveCountdowns() {
     UI.clearCountdowns(TeacherState.activeCountdowns, TeacherState.liveClassTimer);
@@ -215,6 +260,7 @@ function showCourseForm(course = null) {
   });
 }
 async function editCourse(id) {
+  TeacherState.currentCourseId = id;
   const renderId = ++window.currentRenderId;
   const user = await SessionManager.getCurrentUser();
   if (renderId !== window.currentRenderId) return;
@@ -239,6 +285,7 @@ async function editCourse(id) {
   })).sort((a, b) => a.order_index - b.order_index);
 
   const uncategorizedLessons = lessons.filter(l => !l.topic_id);
+  const viewMode = getTeacherViewMode('lessons');
 
   content.innerHTML = `
     <div class="card flex-between">
@@ -253,58 +300,114 @@ async function editCourse(id) {
     </div>
     <div class="grid-2 mt-20">
       <section class="card">
-        <div class="flex-between">
+        <div class="flex-between flex-wrap gap-10">
           <h3 class="m-0">Topics & Lessons</h3>
-          <div class="flex gap-5">
-            <button class="button secondary w-auto small" onclick="void showTopicForm('${id}')">+ Add Topic</button>
-            <button class="button w-auto small" onclick="void showLessonForm('${id}')">+ Add Lesson</button>
+          <div class="flex gap-10 flex-wrap flex-center-y">
+            <div class="flex gap-5">
+              <button class="button secondary w-auto small" onclick="void showTopicForm('${id}')">+ Topic</button>
+              <button class="button w-auto small" onclick="void showLessonForm('${id}')">+ Lesson</button>
+            </div>
+            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('lessons', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('lessons', 'list')">List</button>
+            </div>
           </div>
         </div>
         <div class="mt-15">
-          ${topicsWithLessons.map(t => `
-            <div class="mb-20">
-              <div class="flex-between p-10 bg-light border-radius-sm mb-5">
-                <div style="flex:1">
-                  <strong class="small d-block">${escapeHtml(t.title)}</strong>
-                  <div class="tiny text-muted mt-2">${UI.renderRichText(t.description)}</div>
-                </div>
-                <div class="flex gap-5">
-                  <button class="button tiny w-auto secondary" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">Edit Topic</button>
-                  <button class="button tiny w-auto danger" onclick="deleteTopicById('${t.id}', '${id}')">Delete</button>
-                </div>
-              </div>
-              <div class="pl-15">
-                ${t.lessons.map(l => `
-                  <div class="flex-between list-item py-5">
-                    <span class="small">${escapeHtml(l.title)}</span>
-                    <div class="flex gap-5">
-                      <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
-                      <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+          ${viewMode === 'grid' ? `
+            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px">
+              ${topicsWithLessons.map(t => `
+                <div class="card flex-between flex-column m-0 p-10 animate-fade-in" style="border: 1px solid var(--border); background: var(--bg-card); min-height: 200px; height: 100%">
+                  <div class="w-full">
+                    <div class="flex-between gap-5 p-5" style="border-bottom: 1px solid var(--border)">
+                      <div class="bold text-ellipsis" style="font-size: 1rem" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}</div>
+                      <div class="flex gap-5">
+                        <button class="button tiny secondary p-5" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">✏️</button>
+                        <button class="button tiny danger p-5" onclick="deleteTopicById('${t.id}', '${id}')">❌</button>
+                      </div>
                     </div>
-                  </div>
-                `).join('') || '<div class="tiny text-muted p-5">No lessons in this topic.</div>'}
-              </div>
-            </div>
-          `).join('')}
+                    <div class="tiny text-muted mt-5 mb-10 text-ellipsis-3" style="max-height: 45px; overflow: hidden">${UI.renderRichText(t.description)}</div>
 
-          ${uncategorizedLessons.length > 0 ? `
-            <div class="mb-20">
-              <div class="p-10 bg-light border-radius-sm mb-5">
-                <strong class="small danger-text italic">Uncategorized Lessons (Please assign to a topic)</strong>
-              </div>
-              <div class="pl-15">
-                ${uncategorizedLessons.map(l => `
-                  <div class="flex-between list-item py-5">
-                    <span class="small">${escapeHtml(l.title)}</span>
-                    <div class="flex gap-5">
-                      <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
-                      <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+                    <div class="flex-column gap-5 mt-10">
+                      ${t.lessons.map(l => `
+                        <div class="flex-between p-5 bg-light border-radius-sm" style="border: 1px solid var(--border); font-size: 13px">
+                          <span class="text-ellipsis bold" style="max-width: 140px" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</span>
+                          <div class="flex gap-2">
+                            <button class="button tiny w-auto p-5 py-2 m-0" onclick="void editLesson('${l.id}', '${id}')">✏️</button>
+                            <button class="button tiny danger w-auto p-5 py-2 m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌</button>
+                          </div>
+                        </div>
+                      `).join('') || '<div class="tiny text-muted italic">No lessons.</div>'}
                     </div>
                   </div>
-                `).join('')}
-              </div>
+                </div>
+              `).join('')}
+
+              ${uncategorizedLessons.length > 0 ? `
+                <div class="card flex-between flex-column m-0 p-10" style="border: 1px dashed var(--danger); background: #fff5f5; height: 100%">
+                  <div class="w-full">
+                    <strong class="small danger-text italic d-block mb-10">Uncategorized Lessons</strong>
+                    <div class="flex-column gap-5">
+                      ${uncategorizedLessons.map(l => `
+                        <div class="flex-between p-5 bg-white border-radius-sm" style="border: 1px solid var(--danger); font-size: 13px">
+                          <span class="text-ellipsis bold" style="max-width: 140px" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</span>
+                          <div class="flex gap-2">
+                            <button class="button tiny w-auto p-5 py-2 m-0" onclick="void editLesson('${l.id}', '${id}')">✏️</button>
+                            <button class="button tiny danger w-auto p-5 py-2 m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌</button>
+                          </div>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                </div>
+              ` : ''}
             </div>
-          ` : ''}
+          ` : `
+            ${topicsWithLessons.map(t => `
+              <div class="mb-20">
+                <div class="flex-between p-10 bg-light border-radius-sm mb-5">
+                  <div style="flex:1">
+                    <strong class="small d-block">${escapeHtml(t.title)}</strong>
+                    <div class="tiny text-muted mt-2">${UI.renderRichText(t.description)}</div>
+                  </div>
+                  <div class="flex gap-5">
+                    <button class="button tiny w-auto secondary" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">Edit Topic</button>
+                    <button class="button tiny w-auto danger" onclick="deleteTopicById('${t.id}', '${id}')">Delete</button>
+                  </div>
+                </div>
+                <div class="pl-15">
+                  ${t.lessons.map(l => `
+                    <div class="flex-between list-item py-5">
+                      <span class="small">${escapeHtml(l.title)}</span>
+                      <div class="flex gap-5">
+                        <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
+                        <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+                      </div>
+                    </div>
+                  `).join('') || '<div class="tiny text-muted p-5">No lessons in this topic.</div>'}
+                </div>
+              </div>
+            `).join('')}
+
+            ${uncategorizedLessons.length > 0 ? `
+              <div class="mb-20">
+                <div class="p-10 bg-light border-radius-sm mb-5">
+                  <strong class="small danger-text italic">Uncategorized Lessons (Please assign to a topic)</strong>
+                </div>
+                <div class="pl-15">
+                  ${uncategorizedLessons.map(l => `
+                    <div class="flex-between list-item py-5">
+                      <span class="small">${escapeHtml(l.title)}</span>
+                      <div class="flex gap-5">
+                        <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
+                        <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+          `}
 
           ${topics.length === 0 && uncategorizedLessons.length === 0 ? '<div class="empty p-10">No topics or lessons yet.</div>' : ''}
         </div>
@@ -540,36 +643,94 @@ async function renderAssignments() {
     ]);
     if (renderId !== window.currentRenderId) return;
 
+  const viewMode = getTeacherViewMode('assignments');
+
   content.innerHTML = `
-    <div class="card flex-between">
+    <div class="card flex-between flex-wrap gap-15">
       <h2 class="m-0">My Assignments</h2>
-      <button class="button w-auto" onclick="showAssignmentForm()">+ Create Assignment</button>
-    </div>
-    <div class="grid">
-      ${assignments.map(a => {
-        const course = courses.find(c => c.id === a.course_id);
-        return `
-        <div class="card">
-          <h3 class="m-0">${escapeHtml(a.title)}</h3>
-          <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-          <div class="small">${UI.renderRichText(a.description)}</div>
-          <div class="mt-10">
-            <p class="small m-0 mb-5">Due: ${new Date(a.due_date).toLocaleString()}</p>
-            ${new Date(a.due_date).getTime() > now ? `
-                <div class="assign-countdown"
-                     data-target="${new Date(a.due_date).getTime()}"
-                     data-start="${a.start_at || (a.created_at ? new Date(a.created_at).getTime() : now)}"
-                     data-status="${a.status || 'published'}"></div>
-            ` : '<div class="danger-text bold tiny">Past Due</div>'}
-          </div>
-          <div class="flex gap-10 mt-15">
-            <button class="button small w-auto" onclick="editAssignment('${escapeAttr(a.id)}')">Edit</button>
-            <button class="button small w-auto danger" onclick="deleteAssignmentById('${escapeAttr(a.id)}')">Delete</button>
-          </div>
+      <div class="flex gap-10 flex-center-y flex-wrap">
+        <button class="button w-auto m-0" onclick="showAssignmentForm()">+ Create Assignment</button>
+        <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+            <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('assignments', 'grid')">Grid</button>
+            <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('assignments', 'list')">Table</button>
         </div>
-`;}).join('') || '<div class="empty">No assignments found.</div>'}
       </div>
-    `;
+    </div>
+
+    <div id="assignmentsContainer" class="mt-20">
+      ${viewMode === 'grid' ? `
+        <div class="grid">
+          ${assignments.map(a => {
+            const course = courses.find(c => c.id === a.course_id);
+            return `
+            <div class="card">
+              <h3 class="m-0">${escapeHtml(a.title)}</h3>
+              <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
+              <div class="small">${UI.renderRichText(a.description)}</div>
+              <div class="mt-10">
+                <p class="small m-0 mb-5">Due: ${new Date(a.due_date).toLocaleString()}</p>
+                ${new Date(a.due_date).getTime() > now ? `
+                    <div class="assign-countdown"
+                         data-target="${new Date(a.due_date).getTime()}"
+                         data-start="${a.start_at || (a.created_at ? new Date(a.created_at).getTime() : now)}"
+                         data-status="${a.status || 'published'}"></div>
+                ` : '<div class="danger-text bold tiny">Past Due</div>'}
+              </div>
+              <div class="flex gap-10 mt-15">
+                <button class="button small w-auto" onclick="editAssignment('${escapeAttr(a.id)}')">Edit</button>
+                <button class="button small w-auto danger" onclick="deleteAssignmentById('${escapeAttr(a.id)}')">Delete</button>
+              </div>
+            </div>
+          `;}).join('') || '<div class="empty">No assignments found.</div>'}
+        </div>
+      ` : `
+        <div class="p-0" style="overflow-x:auto">
+            <table class="m-0">
+                <thead>
+                    <tr>
+                        <th>Assignment Name</th>
+                        <th>Course</th>
+                        <th>Description</th>
+                        <th style="min-width: 150px">Due Date</th>
+                        <th style="min-width: 180px">Time Remaining</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${assignments.map(a => {
+                        const course = courses.find(c => c.id === a.course_id);
+                        return `
+                            <tr>
+                                <td>
+                                    <div class="bold small">${escapeHtml(a.title)}</div>
+                                    <div class="tiny text-muted">ID: ${escapeHtml(a.id.substring(0,8))}...</div>
+                                </td>
+                                <td>${escapeHtml(course?.title || 'None')}</td>
+                                <td><div class="small text-ellipsis" style="max-width: 250px">${UI.renderRichText(a.description)}</div></td>
+                                <td><div class="small">${new Date(a.due_date).toLocaleString()}</div></td>
+                                <td>
+                                    ${new Date(a.due_date).getTime() > now ? `
+                                        <div class="assign-countdown"
+                                             data-target="${new Date(a.due_date).getTime()}"
+                                             data-start="${a.start_at || (a.created_at ? new Date(a.created_at).getTime() : now)}"
+                                             data-status="${a.status || 'published'}"></div>
+                                    ` : '<span class="badge badge-inactive tiny">PAST DUE</span>'}
+                                </td>
+                                <td>
+                                    <div class="flex gap-10">
+                                        <button class="button small w-auto py-5 px-10" onclick="editAssignment('${escapeAttr(a.id)}')">Edit</button>
+                                        <button class="button small danger w-auto py-5 px-10" onclick="deleteAssignmentById('${escapeAttr(a.id)}')">Delete</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('') || '<tr><td colspan="6" class="empty">No assignments found.</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+      `}
+    </div>
+  `;
 
     Countdown.createAll('.assign-countdown', {
         showProgress: true,
@@ -589,6 +750,7 @@ async function renderAssignments() {
   }
 }
 async function renderGrading(page = 1) {
+  TeacherState.gradingPage = page;
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
@@ -597,6 +759,7 @@ async function renderGrading(page = 1) {
   const searchTerm = document.getElementById('gradingSearch')?.value || '';
   const assignmentFilter = document.getElementById('gradingAssignmentFilter')?.value || '';
   const pageSize = 10;
+  const viewMode = getTeacherViewMode('grading');
 
   try {
     const user = await SessionManager.getCurrentUser();
@@ -625,7 +788,13 @@ async function renderGrading(page = 1) {
       <div class="card mb-20">
         <div class="flex-between flex-wrap gap-15">
             <h2 class="m-0">Grading Queue</h2>
-            <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+            <div class="flex gap-10 flex-center-y flex-wrap">
+                <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+                <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                    <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'grid')">Grid</button>
+                    <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'list')">Table</button>
+                </div>
+            </div>
         </div>
         <div class="grid-2 mt-20 gap-10">
             <div>
@@ -641,30 +810,73 @@ async function renderGrading(page = 1) {
             </div>
         </div>
       </div>
-      <div id="gradingQueueTable"></div>
+      <div id="gradingQueueContainer" class="mb-20"></div>
       <div id="gradingPagination"></div>
     `;
 
-    UI.renderTable('gradingQueueTable', ['Assignment', 'Student', 'Submitted', 'Status', 'Action'], submittedSubs, (s) => {
-        const assignment = assignments.find(a => a.id === s.assignment_id);
-        const studentName = s.users?.full_name || 'Unknown Student';
-        const isRegrade = !!s.regrade_request;
-        return `
-            <tr>
-                <td>
-                    <div class="bold small">${escapeHtml(assignment?.title || 'Unknown')}</div>
-                    <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
-                </td>
-                <td>
-                    <div class="bold small">${escapeHtml(studentName)}</div>
-                    <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
-                </td>
-                <td>${new Date(s.submitted_at).toLocaleString()}</td>
-                <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
-                <td><button class="button small w-auto" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button></td>
-            </tr>
-        `;
-    }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p>' });
+    const container = document.getElementById('gradingQueueContainer');
+    if (container) {
+      if (viewMode === 'grid') {
+        if (!submittedSubs || submittedSubs.length === 0) {
+            container.innerHTML = `<div class="empty"><h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p></div>`;
+        } else {
+            container.innerHTML = `
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                    ${submittedSubs.map(s => {
+                        const assignment = assignments.find(a => a.id === s.assignment_id);
+                        const studentName = s.users?.full_name || 'Unknown Student';
+                        const isRegrade = !!s.regrade_request;
+                        return `
+                            <div class="card flex-between flex-column m-0" style="height:100%">
+                                <div>
+                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(assignment?.title || 'Unknown')}">${escapeHtml(assignment?.title || 'Unknown')}</h3>
+                                    <div class="tiny text-muted mb-10">Assignment ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <div class="small">
+                                        <strong>Student:</strong> ${escapeHtml(studentName)}
+                                    </div>
+                                    <div class="tiny text-muted mb-10">${escapeHtml(s.student_email)}</div>
+                                    <div class="small mb-10">
+                                        <strong>Submitted:</strong> ${new Date(s.submitted_at).toLocaleString()}
+                                    </div>
+                                    <div>
+                                        ${isRegrade ? '<span class="badge badge-warn">REGRADE REQUEST</span>' : '<span class="badge badge-active">NEW SUBMISSION</span>'}
+                                        ${s.is_late ? '<span class="badge badge-inactive">LATE</span>' : ''}
+                                    </div>
+                                </div>
+                                <div class="mt-15 w-full">
+                                    <button class="button small w-full" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+      } else {
+        container.innerHTML = `<div id="gradingQueueTable"></div>`;
+        UI.renderTable('gradingQueueTable', ['Assignment', 'Student', 'Submitted', 'Status', 'Action'], submittedSubs, (s) => {
+            const assignment = assignments.find(a => a.id === s.assignment_id);
+            const studentName = s.users?.full_name || 'Unknown Student';
+            const isRegrade = !!s.regrade_request;
+            return `
+                <tr>
+                    <td>
+                        <div class="bold small">${escapeHtml(assignment?.title || 'Unknown')}</div>
+                        <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
+                    </td>
+                    <td>
+                        <div class="bold small">${escapeHtml(studentName)}</div>
+                        <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
+                    </td>
+                    <td>${new Date(s.submitted_at).toLocaleString()}</td>
+                    <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
+                    <td><button class="button small w-auto" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button></td>
+                </tr>
+            `;
+        }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p>' });
+      }
+    }
 
     UI.renderPagination('gradingPagination', total, page, pageSize, (p) => renderGrading(p));
 
@@ -737,6 +949,8 @@ async function renderStudents(page = 1) {
     const isSearchFocused = document.activeElement && document.activeElement.id === 'studentSearch';
     const isFilterFocused = document.activeElement && document.activeElement.id === 'courseFilter';
 
+    const viewMode = getTeacherViewMode('students');
+
     content.innerHTML = `
     <div class="card">
       <div class="flex-between mb-20 flex-wrap gap-15">
@@ -750,25 +964,62 @@ async function renderStudents(page = 1) {
             <input type="text" id="studentSearch" placeholder="Search by name or email..." class="m-0" style="width:250px" value="${escapeAttr(searchTerm)}">
             <button class="button secondary small w-auto" onclick="exportStudents('csv')">CSV</button>
             <button class="button secondary small w-auto" onclick="exportStudents('pdf')">PDF</button>
+            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'list')">Table</button>
+            </div>
         </div>
       </div>
-      <div class="p-0 mt-15" style="overflow-x:auto">
-          <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Course</th><th>Action</th></tr></thead>
-            <tbody>
-              ${students.map(s => `
-                <tr>
-                  <td>${escapeHtml(s.full_name)}</td>
-                  <td>${escapeHtml(s.email)}</td>
-                  <td>${escapeHtml(s.course_title || 'Unknown')}</td>
-                  <td class="flex gap-10">
-                    <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
-                    <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
-                  </td>
-                </tr>
-              `).join('') || '<tr><td colspan="4" class="empty">No students found.</td></tr>'}
-            </tbody>
-          </table>
+      <div id="studentsContainer" class="mt-15">
+        ${viewMode === 'grid' ? `
+          <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+              ${students.map(s => {
+                const initials = s.full_name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'ST';
+                return `
+                <div class="card flex-between flex-column m-0" style="height:100%">
+                  <div>
+                    <div class="flex-center-y gap-10">
+                      <div class="avatar-circle flex-center" style="width:40px; height:40px; background:var(--primary-light, #e0e7ff); color:var(--primary, #4f46e5); border-radius:50%; font-weight:700; font-size:14px; flex-shrink:0">
+                        ${escapeHtml(initials)}
+                      </div>
+                      <div style="min-width:0">
+                        <h3 class="m-0 text-ellipsis" style="font-size:16px" title="${escapeAttr(s.full_name)}">${escapeHtml(s.full_name)}</h3>
+                        <div class="tiny text-muted text-ellipsis" title="${escapeAttr(s.email)}">${escapeHtml(s.email)}</div>
+                      </div>
+                    </div>
+                    <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
+                    <div class="small">
+                      <strong>Course:</strong>
+                      <div class="mt-5"><span class="badge badge-purple small text-ellipsis" style="display:inline-block; max-width:100%" title="${escapeAttr(s.course_title)}">${escapeHtml(s.course_title || 'Unknown')}</span></div>
+                    </div>
+                  </div>
+                  <div class="flex gap-10 mt-15 w-full">
+                    <button class="button small w-full" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Cert</button>
+                    <button class="button danger small w-full" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                  </div>
+                </div>
+              `;}).join('') || '<div class="empty" style="grid-column: 1/-1">No students found.</div>'}
+          </div>
+        ` : `
+          <div class="p-0" style="overflow-x:auto">
+              <table class="m-0">
+                <thead><tr><th>Name</th><th>Email</th><th>Course</th><th>Action</th></tr></thead>
+                <tbody>
+                  ${students.map(s => `
+                    <tr>
+                      <td>${escapeHtml(s.full_name)}</td>
+                      <td>${escapeHtml(s.email)}</td>
+                      <td>${escapeHtml(s.course_title || 'Unknown')}</td>
+                      <td class="flex gap-10">
+                        <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
+                        <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="4" class="empty">No students found.</td></tr>'}
+                </tbody>
+              </table>
+          </div>
+        `}
       </div>
       <div id="studentsPagination" class="mt-20"></div>
     </div>
@@ -843,41 +1094,96 @@ async function renderCertificates() {
     const { data: certs } = await SupabaseDB.getCertificates(null, user.email);
     if (renderId !== window.currentRenderId) return;
 
+    const viewMode = getTeacherViewMode('certificates');
+
     content.innerHTML = `
-      <div class="flex-between mb-20">
+      <div class="flex-between mb-20 flex-wrap gap-15">
         <h2 class="m-0">Course Certificates</h2>
-        <div class="small text-muted">${certs.length} Total Certificates</div>
+        <div class="flex gap-10 flex-center-y flex-wrap">
+            <div class="small text-muted">${certs.length} Total Certificates</div>
+            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'list')">Table</button>
+            </div>
+        </div>
       </div>
-      <div id="certsTable"></div>
+      <div id="certsContainer"></div>
       <div id="certFormArea" class="hidden mt-20"></div>
     `;
 
-    UI.renderTable('certsTable', ['Student', 'Course', 'Status', 'Date', 'Action'], certs, (c) => {
-        const isRequested = c.status === 'requested';
-        let statusBadge = 'badge-warn';
-        if (c.status === 'approved') statusBadge = 'badge-active';
-        else if (c.status === 'rejected') statusBadge = 'badge-inactive';
+    const container = document.getElementById('certsContainer');
+    if (container) {
+      if (viewMode === 'grid') {
+        if (!certs || certs.length === 0) {
+            container.innerHTML = `<div class="empty">No certificates requested or issued yet.</div>`;
+        } else {
+            container.innerHTML = `
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                    ${certs.map(c => {
+                        const isRequested = c.status === 'requested';
+                        let statusBadge = 'badge-warn';
+                        if (c.status === 'approved') statusBadge = 'badge-active';
+                        else if (c.status === 'rejected') statusBadge = 'badge-inactive';
 
-        return `
-            <tr>
-              <td>
-                <div class="bold small">${escapeHtml(c.student_email)}</div>
-              </td>
-              <td>${escapeHtml(c.courses?.title || 'Unknown')}</td>
-              <td><span class="badge ${statusBadge}">${c.status.toUpperCase()}</span></td>
-              <td>${new Date(c.updated_at).toLocaleDateString()}</td>
-              <td>
-                <div class="flex gap-5">
-                  ${isRequested ? `
-                    <button class="button small w-auto" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
-                  ` : `
-                    <button class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
-                  `}
+                        return `
+                            <div class="card flex-between flex-column m-0" style="height:100%">
+                                <div>
+                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(c.courses?.title || 'Unknown')}">${escapeHtml(c.courses?.title || 'Unknown')}</h3>
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <div class="small">
+                                        <strong>Student:</strong>
+                                    </div>
+                                    <div class="tiny text-muted mb-10 text-ellipsis" title="${escapeAttr(c.student_email)}">${escapeHtml(c.student_email)}</div>
+                                    <div class="small mb-10">
+                                        <strong>Status:</strong> <span class="badge ${statusBadge}">${c.status.toUpperCase()}</span>
+                                    </div>
+                                    <div class="tiny text-muted mb-10">
+                                        Date: ${new Date(c.updated_at).toLocaleDateString()}
+                                    </div>
+                                </div>
+                                <div class="mt-15 w-full">
+                                    ${isRequested ? `
+                                        <button class="button small w-full" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
+                                    ` : `
+                                        <button class="button secondary small w-full" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
+                                    `}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
                 </div>
-              </td>
-            </tr>
-        `;
-    }, { emptyMessage: 'No certificates requested or issued yet.' });
+            `;
+        }
+      } else {
+        container.innerHTML = `<div id="certsTable"></div>`;
+        UI.renderTable('certsTable', ['Student', 'Course', 'Status', 'Date', 'Action'], certs, (c) => {
+            const isRequested = c.status === 'requested';
+            let statusBadge = 'badge-warn';
+            if (c.status === 'approved') statusBadge = 'badge-active';
+            else if (c.status === 'rejected') statusBadge = 'badge-inactive';
+
+            return `
+                <tr>
+                  <td>
+                    <div class="bold small">${escapeHtml(c.student_email)}</div>
+                  </td>
+                  <td>${escapeHtml(c.courses?.title || 'Unknown')}</td>
+                  <td><span class="badge ${statusBadge}">${c.status.toUpperCase()}</span></td>
+                  <td>${new Date(c.updated_at).toLocaleDateString()}</td>
+                  <td>
+                    <div class="flex gap-5">
+                      ${isRequested ? `
+                        <button class="button small w-auto" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
+                      ` : `
+                        <button class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
+                      `}
+                    </div>
+                  </td>
+                </tr>
+            `;
+        }, { emptyMessage: 'No certificates requested or issued yet.' });
+      }
+    }
 
   } catch (error) {
     console.error('Certificates error:', error);
@@ -1741,11 +2047,17 @@ async function renderTeacherLiveProctoring(renderId) {
             </div>
 
             <div class="card">
-                <div class="flex-between mb-15">
-                    <h3 class="m-0">Active Proctored Sessions</h3>
-                    <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
+                <div class="flex-between mb-15 flex-wrap gap-10">
+                    <div>
+                        <h3 class="m-0">Active Proctored Sessions</h3>
+                        <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
+                    </div>
+                    <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                        <button class="button ${getTeacherViewMode('anticheat') === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'grid')">Grid</button>
+                        <button class="button ${getTeacherViewMode('anticheat') === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'list')">Table</button>
+                    </div>
                 </div>
-                <div id="activeSessionsTable"></div>
+                <div id="activeSessionsContainer"></div>
             </div>
         `;
 
@@ -1777,43 +2089,104 @@ async function renderTeacherLiveProctoring(renderId) {
 }
 
 function renderTeacherSessionsTable(sessions) {
-    UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
-        const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
-        let statusClass = 'badge-active';
-        if (s.status === 'Flagged') statusClass = 'badge-inactive';
-        else if (s.status === 'Warning') statusClass = 'badge-warn';
-        else if (s.status === 'Idle') statusClass = 'secondary';
+    TeacherState.lastSessions = sessions;
+    const container = document.getElementById('activeSessionsContainer');
+    if (!container) return;
 
-        const onlineIndicator = s.is_online ?
-            '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
-            '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+    const viewMode = getTeacherViewMode('anticheat');
+    if (viewMode === 'grid') {
+        if (!sessions || sessions.length === 0) {
+            container.innerHTML = '<div class="empty">No active proctored sessions at the moment.</div>';
+            return;
+        }
 
-        return `
-            <tr data-attempt-id="${s.attempt_id}">
-                <td>
-                    <div class="flex-center-y">
-                        ${onlineIndicator}
-                        <div class="bold small">${escapeHtml(s.full_name)}</div>
-                    </div>
-                    <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
-                </td>
-                <td>
-                    <div class="small">${escapeHtml(s.assessment_title)}</div>
-                    <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
-                </td>
-                <td><div class="small">${elapsed} min</div></td>
-                <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
-                <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
-                <td>
-                    <div class="flex gap-5">
-                        <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
-                        <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
-                    </div>
-                </td>
-            </tr>
+        container.innerHTML = `
+            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                ${sessions.map(s => {
+                    const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
+                    let statusClass = 'badge-active';
+                    if (s.status === 'Flagged') statusClass = 'badge-inactive';
+                    else if (s.status === 'Warning') statusClass = 'badge-warn';
+                    else if (s.status === 'Idle') statusClass = 'secondary';
+
+                    const onlineIndicator = s.is_online ?
+                        '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+                        '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+
+                    return `
+                        <div class="card flex-between flex-column m-0" style="height:100%; border: 1px solid var(--border)" data-attempt-id="${s.attempt_id}">
+                            <div>
+                                <div class="flex-between">
+                                    <div class="flex-center-y">
+                                        ${onlineIndicator}
+                                        <div class="bold small">${escapeHtml(s.full_name)}</div>
+                                    </div>
+                                    <span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span>
+                                </div>
+                                <div class="tiny text-muted ml-15 mb-10 text-ellipsis" title="${escapeAttr(s.user_email)}">${escapeHtml(s.user_email)}</div>
+                                <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                <div class="small">
+                                    <strong>Exam:</strong> ${escapeHtml(s.assessment_title)}
+                                    <div class="mt-5"><span class="badge badge-purple tiny">${s.assessment_type.toUpperCase()}</span></div>
+                                </div>
+                                <div class="small mt-10">
+                                    <strong>Duration:</strong> ${elapsed} min
+                                </div>
+                                <div class="small mt-5 flex-center-y gap-5">
+                                    <strong>Violations:</strong>
+                                    <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span>
+                                </div>
+                            </div>
+                            <div class="flex gap-5 mt-15 w-full">
+                                <button class="button small tiny w-full" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                                <button class="button secondary tiny w-full" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                                <button class="button danger tiny w-full" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
         `;
-    }, { emptyMessage: 'No active proctored sessions at the moment.' });
+    } else {
+        container.innerHTML = `<div id="activeSessionsTable"></div>`;
+        UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
+            const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
+            let statusClass = 'badge-active';
+            if (s.status === 'Flagged') statusClass = 'badge-inactive';
+            else if (s.status === 'Warning') statusClass = 'badge-warn';
+            else if (s.status === 'Idle') statusClass = 'secondary';
+
+            const onlineIndicator = s.is_online ?
+                '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+                '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+
+            return `
+                <tr data-attempt-id="${s.attempt_id}">
+                    <td>
+                        <div class="flex-center-y">
+                            ${onlineIndicator}
+                            <div class="bold small">${escapeHtml(s.full_name)}</div>
+                        </div>
+                        <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
+                    </td>
+                    <td>
+                        <div class="small">${escapeHtml(s.assessment_title)}</div>
+                        <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
+                    </td>
+                    <td><div class="small">${elapsed} min</div></td>
+                    <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
+                    <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
+                    <td>
+                        <div class="flex gap-5">
+                            <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                            <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                            <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }, { emptyMessage: 'No active proctored sessions at the moment.' });
+    }
 }
 
 function addTeacherLiveViolationToFeed(v) {
@@ -3036,38 +3409,128 @@ async function renderQuizzes() {
       SupabaseDB.getCourses(user.email, null)
     ]);
     if (renderId !== window.currentRenderId) return;
-    container.innerHTML = `
-    <div class="card flex-between">
-      <h2 class="m-0">Quizzes</h2>
-      <button class="button w-auto" onclick="showQuizForm()">+ Create Quiz</button>
-    </div>
-    <div class="grid">
-      ${quizzes.map(q => {
-        const course = courses.find(c => c.id === q.course_id);
-        return `
-        <div class="card">
-          <h3 class="m-0">${escapeHtml(q.title)}</h3>
-          <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-          <div class="small mb-5">${UI.renderRichText(q.description)}</div>
-          <p class="small">Status: ${q.status}</p>
-          <p class="small">Questions: ${q.questions?.length || 0}</p>
-          ${q.start_at || q.end_at ? `
-            <div class="mt-10 mb-10 p-10 border-radius-sm" style="background:var(--bg)">
-                ${q.start_at && new Date(q.start_at).getTime() > now ? `
-                    <div class="quiz-sch-countdown" data-target="${new Date(q.start_at).getTime()}" data-start="${q.created_at ? new Date(q.created_at).getTime() : now}" data-label="Starts In:" data-status="${q.status || 'published'}"></div>
-                ` : q.end_at && new Date(q.end_at).getTime() > now ? `
-                    <div class="quiz-sch-countdown" data-target="${new Date(q.end_at).getTime()}" data-reference="${q.start_at || (q.created_at ? new Date(q.created_at).getTime() : now)}" data-label="Ends In:" data-status="${q.status || 'published'}"></div>
-                ` : q.end_at ? '<div class="tiny danger-text bold">Expired</div>' : ''}
+    const viewMode = getTeacherViewMode('quizzes');
+
+    let quizzesHtml = '';
+    if (viewMode === 'grid') {
+        if (!quizzes || quizzes.length === 0) {
+            quizzesHtml = '<div class="empty">No quizzes created yet.</div>';
+        } else {
+            quizzesHtml = '<div class="grid">';
+            quizzes.forEach(q => {
+                const course = courses.find(c => c.id === q.course_id);
+                let countdownHtml = '';
+                if (q.start_at || q.end_at) {
+                    let innerCountdown = '';
+                    if (q.start_at && new Date(q.start_at).getTime() > now) {
+                        innerCountdown = `<div class="quiz-sch-countdown" data-target="${new Date(q.start_at).getTime()}" data-start="${q.created_at ? new Date(q.created_at).getTime() : now}" data-label="Starts In:" data-status="${q.status || 'published'}"></div>`;
+                    } else if (q.end_at && new Date(q.end_at).getTime() > now) {
+                        innerCountdown = `<div class="quiz-sch-countdown" data-target="${new Date(q.end_at).getTime()}" data-reference="${q.start_at || (q.created_at ? new Date(q.created_at).getTime() : now)}" data-label="Ends In:" data-status="${q.status || 'published'}"></div>`;
+                    } else if (q.end_at) {
+                        innerCountdown = '<div class="tiny danger-text bold">Expired</div>';
+                    }
+                    countdownHtml = `<div class="mt-10 mb-10 p-10 border-radius-sm" style="background:var(--bg)">${innerCountdown}</div>`;
+                }
+
+                quizzesHtml += `
+                    <div class="card">
+                      <h3 class="m-0">${escapeHtml(q.title)}</h3>
+                      <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
+                      <div class="small mb-5">${UI.renderRichText(q.description)}</div>
+                      <p class="small">Status: ${q.status}</p>
+                      <p class="small">Questions: ${q.questions?.length || 0}</p>
+                      ${countdownHtml}
+                      <div class="flex gap-10 mt-15">
+                        <button class="button small w-auto" onclick="editQuiz('${q.id}')">Edit</button>
+                        <button class="button small w-auto success" style="background:var(--ok)" onclick="viewQuizResults('${q.id}')">Results</button>
+                        <button class="button small w-auto danger" onclick="deleteQuizById('${q.id}')">Delete</button>
+                      </div>
+                    </div>
+                `;
+            });
+            quizzesHtml += '</div>';
+        }
+    } else {
+        quizzesHtml = `
+            <div class="p-0" style="overflow-x:auto">
+                <table class="m-0">
+                    <thead>
+                        <tr>
+                            <th>Quiz Name</th>
+                            <th>Course</th>
+                            <th>Description</th>
+                            <th>Questions</th>
+                            <th>Status</th>
+                            <th style="min-width: 180px">Time Limit/Schedule</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+        if (!quizzes || quizzes.length === 0) {
+            quizzesHtml += '<tr><td colspan="7" class="empty">No quizzes created yet.</td></tr>';
+        } else {
+            quizzes.forEach(q => {
+                const course = courses.find(c => c.id === q.course_id);
+                let countdownHtml = '';
+                if (q.start_at || q.end_at) {
+                    let innerCountdown = '';
+                    if (q.start_at && new Date(q.start_at).getTime() > now) {
+                        innerCountdown = `<div class="quiz-sch-countdown" data-target="${new Date(q.start_at).getTime()}" data-start="${q.created_at ? new Date(q.created_at).getTime() : now}" data-label="Starts In:" data-status="${q.status || 'published'}"></div>`;
+                    } else if (q.end_at && new Date(q.end_at).getTime() > now) {
+                        innerCountdown = `<div class="quiz-sch-countdown" data-target="${new Date(q.end_at).getTime()}" data-reference="${q.start_at || (q.created_at ? new Date(q.created_at).getTime() : now)}" data-label="Ends In:" data-status="${q.status || 'published'}"></div>`;
+                    } else if (q.end_at) {
+                        innerCountdown = '<span class="badge badge-inactive tiny">EXPIRED</span>';
+                    }
+                    countdownHtml = `<div class="p-5 border-radius-sm" style="background:var(--bg)">${innerCountdown}</div>`;
+                } else {
+                    countdownHtml = '<span class="text-muted tiny">No limit</span>';
+                }
+
+                quizzesHtml += `
+                    <tr>
+                        <td>
+                            <div class="bold small">${escapeHtml(q.title)}</div>
+                            <div class="tiny text-muted">ID: ${escapeHtml(q.id.substring(0,8))}...</div>
+                        </td>
+                        <td>${escapeHtml(course?.title || 'None')}</td>
+                        <td><div class="small text-ellipsis" style="max-width: 250px">${UI.renderRichText(q.description)}</div></td>
+                        <td><div class="small bold">${q.questions?.length || 0} Qs</div></td>
+                        <td><span class="badge ${q.status === 'published' ? 'badge-active' : 'badge-inactive'} small">${q.status.toUpperCase()}</span></td>
+                        <td>${countdownHtml}</td>
+                        <td>
+                            <div class="flex gap-5">
+                                <button class="button small w-auto py-5 px-10" onclick="editQuiz('${q.id}')">Edit</button>
+                                <button class="button small success w-auto py-5 px-10" style="background:var(--ok)" onclick="viewQuizResults('${q.id}')">Results</button>
+                                <button class="button small danger w-auto py-5 px-10" onclick="deleteQuizById('${q.id}')">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        quizzesHtml += `
+                    </tbody>
+                </table>
             </div>
-          ` : ''}
-          <div class="flex gap-10 mt-15">
-            <button class="button small w-auto" onclick="editQuiz('${q.id}')">Edit</button>
-            <button class="button small w-auto success" style="background:var(--ok)" onclick="viewQuizResults('${q.id}')">Results</button>
-            <button class="button small w-auto danger" onclick="deleteQuizById('${q.id}')">Delete</button>
-          </div>
+        `;
+    }
+
+    container.innerHTML = `
+    <div class="card flex-between flex-wrap gap-15">
+      <h2 class="m-0">Quizzes</h2>
+      <div class="flex gap-10 flex-center-y flex-wrap">
+        <button class="button w-auto m-0" onclick="showQuizForm()">+ Create Quiz</button>
+        <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+            <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('quizzes', 'grid')">Grid</button>
+            <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('quizzes', 'list')">Table</button>
         </div>
-`;}).join('') || '<div class="empty">No quizzes created yet.</div>'}
       </div>
+    </div>
+
+    <div id="quizzesContainer" class="mt-20">
+      ${quizzesHtml}
+    </div>
     `;
 
     Countdown.createAll('.quiz-sch-countdown', {
