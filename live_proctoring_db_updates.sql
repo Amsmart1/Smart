@@ -30,7 +30,7 @@ CREATE POLICY "System Settings: Public Select" ON system_settings FOR SELECT USI
 -- or have an in-progress quiz submission.
 DROP FUNCTION IF EXISTS get_active_proctored_sessions() CASCADE;
 DROP FUNCTION IF EXISTS get_active_proctored_sessions(VARCHAR) CASCADE;
-CREATE OR REPLACE FUNCTION get_active_proctored_sessions(p_teacher_email VARCHAR DEFAULT NULL)
+CREATE OR REPLACE FUNCTION get_active_proctored_sessions()
 RETURNS TABLE (
     attempt_id UUID,
     user_email VARCHAR,
@@ -50,7 +50,7 @@ DECLARE
 BEGIN
     -- Secure derivation: scope based on caller's identity
     IF is_admin() THEN
-        v_derived_teacher_email := p_teacher_email;
+        v_derived_teacher_email := NULL;
     ELSE
         v_derived_teacher_email := get_auth_email();
         IF v_derived_teacher_email IS NULL THEN
@@ -116,9 +116,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
--- Grant access to the function
-REVOKE ALL ON FUNCTION get_active_proctored_sessions(VARCHAR) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION get_active_proctored_sessions(VARCHAR) TO authenticated;
+-- Grant access to the function exclusively to authenticated users, revoking from anon/PUBLIC
+-- Grant access to the function to authenticated and anon roles, revoking from PUBLIC
+REVOKE ALL ON FUNCTION get_active_proctored_sessions() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_active_proctored_sessions() TO authenticated, anon;
 
 -- Update tr_inherit_course_data to be more robust
 CREATE OR REPLACE FUNCTION tr_inherit_course_data() RETURNS TRIGGER AS $$

@@ -34,11 +34,6 @@ const clientOptions = {
             return fetch(url, options);
         }
     },
-    auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false
-    },
     realtime: {
         headers: {
             'x-session-id': sessionStorage.getItem('sessionId')
@@ -2064,11 +2059,7 @@ class SupabaseDB {
 
     static async getLiveProctoringSessions(options = {}) {
         return this._request(async () => {
-            const rpcParams = {};
-            if (options.teacherEmail) {
-                rpcParams.p_teacher_email = options.teacherEmail;
-            }
-            const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions', rpcParams);
+            const { data, error } = await supabaseClient.rpc('get_active_proctored_sessions');
             if (error) throw error;
             let result = data || [];
 
