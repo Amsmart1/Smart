@@ -9,8 +9,45 @@ const TeacherState = {
   liveClassTimer: null,
   analyticsCache: new Map(),
   _liveProctoringInterval: null,
-  _liveViolationsChannel: null
+  _liveViolationsChannel: null,
+  viewModes: {},
+  lastSessions: null
 };
+
+function getTeacherViewMode(viewName) {
+    if (!TeacherState.viewModes[viewName]) {
+        TeacherState.viewModes[viewName] = localStorage.getItem('teacher_view_mode_' + viewName) || 'grid';
+    }
+    return TeacherState.viewModes[viewName];
+}
+
+function setTeacherViewMode(viewName, mode) {
+    TeacherState.viewModes[viewName] = mode;
+    localStorage.setItem('teacher_view_mode_' + viewName, mode);
+
+    if (viewName === 'grading') {
+        renderGrading(TeacherState.gradingPage || 1);
+    } else if (viewName === 'students') {
+        renderStudents(TeacherState.studentsPage || 1);
+    } else if (viewName === 'certificates') {
+        renderCertificates();
+    } else if (viewName === 'anticheat') {
+        if (TeacherState.lastSessions) {
+            renderTeacherSessionsTable(TeacherState.lastSessions);
+        } else {
+            const user = JSON.parse(sessionStorage.getItem('currentUser') || '{}');
+            if (user.email) {
+                SupabaseDB.getLiveProctoringSessions({ teacherEmail: user.email }).then(sessions => {
+                    TeacherState.lastSessions = sessions;
+                    renderTeacherSessionsTable(sessions);
+                }).catch(e => console.error('Error fetching live proctoring sessions for view mode:', e));
+            }
+        }
+    }
+}
+
+window.getTeacherViewMode = getTeacherViewMode;
+window.setTeacherViewMode = setTeacherViewMode;
 
 function clearActiveCountdowns() {
     UI.clearCountdowns(TeacherState.activeCountdowns, TeacherState.liveClassTimer);
@@ -703,6 +740,7 @@ async function renderAssignments() {
   }
 }
 async function renderGrading(page = 1) {
+  TeacherState.gradingPage = page;
   const renderId = ++window.currentRenderId;
   const content = document.getElementById('pageContent');
   if (!content) return;
@@ -711,6 +749,7 @@ async function renderGrading(page = 1) {
   const searchTerm = document.getElementById('gradingSearch')?.value || '';
   const assignmentFilter = document.getElementById('gradingAssignmentFilter')?.value || '';
   const pageSize = 10;
+  const viewMode = getTeacherViewMode('grading');
 
   try {
     const user = await SessionManager.getCurrentUser();
@@ -739,7 +778,13 @@ async function renderGrading(page = 1) {
       <div class="card mb-20">
         <div class="flex-between flex-wrap gap-15">
             <h2 class="m-0">Grading Queue</h2>
-            <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+            <div class="flex gap-10 flex-center-y flex-wrap">
+                <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+                <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                    <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'grid')">Grid</button>
+                    <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'list')">Table</button>
+                </div>
+            </div>
         </div>
         <div class="grid-2 mt-20 gap-10">
             <div>
@@ -755,30 +800,73 @@ async function renderGrading(page = 1) {
             </div>
         </div>
       </div>
-      <div id="gradingQueueTable"></div>
+      <div id="gradingQueueContainer" class="mb-20"></div>
       <div id="gradingPagination"></div>
     `;
 
-    UI.renderTable('gradingQueueTable', ['Assignment', 'Student', 'Submitted', 'Status', 'Action'], submittedSubs, (s) => {
-        const assignment = assignments.find(a => a.id === s.assignment_id);
-        const studentName = s.users?.full_name || 'Unknown Student';
-        const isRegrade = !!s.regrade_request;
-        return `
-            <tr>
-                <td>
-                    <div class="bold small">${escapeHtml(assignment?.title || 'Unknown')}</div>
-                    <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
-                </td>
-                <td>
-                    <div class="bold small">${escapeHtml(studentName)}</div>
-                    <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
-                </td>
-                <td>${new Date(s.submitted_at).toLocaleString()}</td>
-                <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
-                <td><button class="button small w-auto" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button></td>
-            </tr>
-        `;
-    }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p>' });
+    const container = document.getElementById('gradingQueueContainer');
+    if (container) {
+      if (viewMode === 'grid') {
+        if (!submittedSubs || submittedSubs.length === 0) {
+            container.innerHTML = `<div class="empty"><h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p></div>`;
+        } else {
+            container.innerHTML = `
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                    ${submittedSubs.map(s => {
+                        const assignment = assignments.find(a => a.id === s.assignment_id);
+                        const studentName = s.users?.full_name || 'Unknown Student';
+                        const isRegrade = !!s.regrade_request;
+                        return `
+                            <div class="card flex-between flex-column m-0" style="height:100%">
+                                <div>
+                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(assignment?.title || 'Unknown')}">${escapeHtml(assignment?.title || 'Unknown')}</h3>
+                                    <div class="tiny text-muted mb-10">Assignment ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <div class="small">
+                                        <strong>Student:</strong> ${escapeHtml(studentName)}
+                                    </div>
+                                    <div class="tiny text-muted mb-10">${escapeHtml(s.student_email)}</div>
+                                    <div class="small mb-10">
+                                        <strong>Submitted:</strong> ${new Date(s.submitted_at).toLocaleString()}
+                                    </div>
+                                    <div>
+                                        ${isRegrade ? '<span class="badge badge-warn">REGRADE REQUEST</span>' : '<span class="badge badge-active">NEW SUBMISSION</span>'}
+                                        ${s.is_late ? '<span class="badge badge-inactive">LATE</span>' : ''}
+                                    </div>
+                                </div>
+                                <div class="mt-15 w-full">
+                                    <button class="button small w-full" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+      } else {
+        container.innerHTML = `<div id="gradingQueueTable"></div>`;
+        UI.renderTable('gradingQueueTable', ['Assignment', 'Student', 'Submitted', 'Status', 'Action'], submittedSubs, (s) => {
+            const assignment = assignments.find(a => a.id === s.assignment_id);
+            const studentName = s.users?.full_name || 'Unknown Student';
+            const isRegrade = !!s.regrade_request;
+            return `
+                <tr>
+                    <td>
+                        <div class="bold small">${escapeHtml(assignment?.title || 'Unknown')}</div>
+                        <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
+                    </td>
+                    <td>
+                        <div class="bold small">${escapeHtml(studentName)}</div>
+                        <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
+                    </td>
+                    <td>${new Date(s.submitted_at).toLocaleString()}</td>
+                    <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
+                    <td><button class="button small w-auto" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button></td>
+                </tr>
+            `;
+        }, { emptyMessage: '<h3>All caught up!</h3><p class="small">No pending submissions to grade matching your filters.</p>' });
+      }
+    }
 
     UI.renderPagination('gradingPagination', total, page, pageSize, (p) => renderGrading(p));
 
@@ -851,6 +939,8 @@ async function renderStudents(page = 1) {
     const isSearchFocused = document.activeElement && document.activeElement.id === 'studentSearch';
     const isFilterFocused = document.activeElement && document.activeElement.id === 'courseFilter';
 
+    const viewMode = getTeacherViewMode('students');
+
     content.innerHTML = `
     <div class="card">
       <div class="flex-between mb-20 flex-wrap gap-15">
@@ -864,25 +954,62 @@ async function renderStudents(page = 1) {
             <input type="text" id="studentSearch" placeholder="Search by name or email..." class="m-0" style="width:250px" value="${escapeAttr(searchTerm)}">
             <button class="button secondary small w-auto" onclick="exportStudents('csv')">CSV</button>
             <button class="button secondary small w-auto" onclick="exportStudents('pdf')">PDF</button>
+            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'list')">Table</button>
+            </div>
         </div>
       </div>
-      <div class="p-0 mt-15" style="overflow-x:auto">
-          <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Course</th><th>Action</th></tr></thead>
-            <tbody>
-              ${students.map(s => `
-                <tr>
-                  <td>${escapeHtml(s.full_name)}</td>
-                  <td>${escapeHtml(s.email)}</td>
-                  <td>${escapeHtml(s.course_title || 'Unknown')}</td>
-                  <td class="flex gap-10">
-                    <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
-                    <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
-                  </td>
-                </tr>
-              `).join('') || '<tr><td colspan="4" class="empty">No students found.</td></tr>'}
-            </tbody>
-          </table>
+      <div id="studentsContainer" class="mt-15">
+        ${viewMode === 'grid' ? `
+          <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+              ${students.map(s => {
+                const initials = s.full_name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'ST';
+                return `
+                <div class="card flex-between flex-column m-0" style="height:100%">
+                  <div>
+                    <div class="flex-center-y gap-10">
+                      <div class="avatar-circle flex-center" style="width:40px; height:40px; background:var(--primary-light, #e0e7ff); color:var(--primary, #4f46e5); border-radius:50%; font-weight:700; font-size:14px; flex-shrink:0">
+                        ${escapeHtml(initials)}
+                      </div>
+                      <div style="min-width:0">
+                        <h3 class="m-0 text-ellipsis" style="font-size:16px" title="${escapeAttr(s.full_name)}">${escapeHtml(s.full_name)}</h3>
+                        <div class="tiny text-muted text-ellipsis" title="${escapeAttr(s.email)}">${escapeHtml(s.email)}</div>
+                      </div>
+                    </div>
+                    <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
+                    <div class="small">
+                      <strong>Course:</strong>
+                      <div class="mt-5"><span class="badge badge-purple small text-ellipsis" style="display:inline-block; max-width:100%" title="${escapeAttr(s.course_title)}">${escapeHtml(s.course_title || 'Unknown')}</span></div>
+                    </div>
+                  </div>
+                  <div class="flex gap-10 mt-15 w-full">
+                    <button class="button small w-full" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Cert</button>
+                    <button class="button danger small w-full" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                  </div>
+                </div>
+              `;}).join('') || '<div class="empty" style="grid-column: 1/-1">No students found.</div>'}
+          </div>
+        ` : `
+          <div class="p-0" style="overflow-x:auto">
+              <table class="m-0">
+                <thead><tr><th>Name</th><th>Email</th><th>Course</th><th>Action</th></tr></thead>
+                <tbody>
+                  ${students.map(s => `
+                    <tr>
+                      <td>${escapeHtml(s.full_name)}</td>
+                      <td>${escapeHtml(s.email)}</td>
+                      <td>${escapeHtml(s.course_title || 'Unknown')}</td>
+                      <td class="flex gap-10">
+                        <button class="button small w-auto" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Certificate</button>
+                        <button class="button danger small w-auto" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="4" class="empty">No students found.</td></tr>'}
+                </tbody>
+              </table>
+          </div>
+        `}
       </div>
       <div id="studentsPagination" class="mt-20"></div>
     </div>
@@ -957,41 +1084,96 @@ async function renderCertificates() {
     const { data: certs } = await SupabaseDB.getCertificates(null, user.email);
     if (renderId !== window.currentRenderId) return;
 
+    const viewMode = getTeacherViewMode('certificates');
+
     content.innerHTML = `
-      <div class="flex-between mb-20">
+      <div class="flex-between mb-20 flex-wrap gap-15">
         <h2 class="m-0">Course Certificates</h2>
-        <div class="small text-muted">${certs.length} Total Certificates</div>
+        <div class="flex gap-10 flex-center-y flex-wrap">
+            <div class="small text-muted">${certs.length} Total Certificates</div>
+            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'list')">Table</button>
+            </div>
+        </div>
       </div>
-      <div id="certsTable"></div>
+      <div id="certsContainer"></div>
       <div id="certFormArea" class="hidden mt-20"></div>
     `;
 
-    UI.renderTable('certsTable', ['Student', 'Course', 'Status', 'Date', 'Action'], certs, (c) => {
-        const isRequested = c.status === 'requested';
-        let statusBadge = 'badge-warn';
-        if (c.status === 'approved') statusBadge = 'badge-active';
-        else if (c.status === 'rejected') statusBadge = 'badge-inactive';
+    const container = document.getElementById('certsContainer');
+    if (container) {
+      if (viewMode === 'grid') {
+        if (!certs || certs.length === 0) {
+            container.innerHTML = `<div class="empty">No certificates requested or issued yet.</div>`;
+        } else {
+            container.innerHTML = `
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                    ${certs.map(c => {
+                        const isRequested = c.status === 'requested';
+                        let statusBadge = 'badge-warn';
+                        if (c.status === 'approved') statusBadge = 'badge-active';
+                        else if (c.status === 'rejected') statusBadge = 'badge-inactive';
 
-        return `
-            <tr>
-              <td>
-                <div class="bold small">${escapeHtml(c.student_email)}</div>
-              </td>
-              <td>${escapeHtml(c.courses?.title || 'Unknown')}</td>
-              <td><span class="badge ${statusBadge}">${c.status.toUpperCase()}</span></td>
-              <td>${new Date(c.updated_at).toLocaleDateString()}</td>
-              <td>
-                <div class="flex gap-5">
-                  ${isRequested ? `
-                    <button class="button small w-auto" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
-                  ` : `
-                    <button class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
-                  `}
+                        return `
+                            <div class="card flex-between flex-column m-0" style="height:100%">
+                                <div>
+                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(c.courses?.title || 'Unknown')}">${escapeHtml(c.courses?.title || 'Unknown')}</h3>
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <div class="small">
+                                        <strong>Student:</strong>
+                                    </div>
+                                    <div class="tiny text-muted mb-10 text-ellipsis" title="${escapeAttr(c.student_email)}">${escapeHtml(c.student_email)}</div>
+                                    <div class="small mb-10">
+                                        <strong>Status:</strong> <span class="badge ${statusBadge}">${c.status.toUpperCase()}</span>
+                                    </div>
+                                    <div class="tiny text-muted mb-10">
+                                        Date: ${new Date(c.updated_at).toLocaleDateString()}
+                                    </div>
+                                </div>
+                                <div class="mt-15 w-full">
+                                    ${isRequested ? `
+                                        <button class="button small w-full" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
+                                    ` : `
+                                        <button class="button secondary small w-full" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
+                                    `}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
                 </div>
-              </td>
-            </tr>
-        `;
-    }, { emptyMessage: 'No certificates requested or issued yet.' });
+            `;
+        }
+      } else {
+        container.innerHTML = `<div id="certsTable"></div>`;
+        UI.renderTable('certsTable', ['Student', 'Course', 'Status', 'Date', 'Action'], certs, (c) => {
+            const isRequested = c.status === 'requested';
+            let statusBadge = 'badge-warn';
+            if (c.status === 'approved') statusBadge = 'badge-active';
+            else if (c.status === 'rejected') statusBadge = 'badge-inactive';
+
+            return `
+                <tr>
+                  <td>
+                    <div class="bold small">${escapeHtml(c.student_email)}</div>
+                  </td>
+                  <td>${escapeHtml(c.courses?.title || 'Unknown')}</td>
+                  <td><span class="badge ${statusBadge}">${c.status.toUpperCase()}</span></td>
+                  <td>${new Date(c.updated_at).toLocaleDateString()}</td>
+                  <td>
+                    <div class="flex gap-5">
+                      ${isRequested ? `
+                        <button class="button small w-auto" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
+                      ` : `
+                        <button class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
+                      `}
+                    </div>
+                  </td>
+                </tr>
+            `;
+        }, { emptyMessage: 'No certificates requested or issued yet.' });
+      }
+    }
 
   } catch (error) {
     console.error('Certificates error:', error);
@@ -1855,11 +2037,17 @@ async function renderTeacherLiveProctoring(renderId) {
             </div>
 
             <div class="card">
-                <div class="flex-between mb-15">
-                    <h3 class="m-0">Active Proctored Sessions</h3>
-                    <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
+                <div class="flex-between mb-15 flex-wrap gap-10">
+                    <div>
+                        <h3 class="m-0">Active Proctored Sessions</h3>
+                        <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
+                    </div>
+                    <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+                        <button class="button ${getTeacherViewMode('anticheat') === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'grid')">Grid</button>
+                        <button class="button ${getTeacherViewMode('anticheat') === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'list')">Table</button>
+                    </div>
                 </div>
-                <div id="activeSessionsTable"></div>
+                <div id="activeSessionsContainer"></div>
             </div>
         `;
 
@@ -1891,43 +2079,104 @@ async function renderTeacherLiveProctoring(renderId) {
 }
 
 function renderTeacherSessionsTable(sessions) {
-    UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
-        const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
-        let statusClass = 'badge-active';
-        if (s.status === 'Flagged') statusClass = 'badge-inactive';
-        else if (s.status === 'Warning') statusClass = 'badge-warn';
-        else if (s.status === 'Idle') statusClass = 'secondary';
+    TeacherState.lastSessions = sessions;
+    const container = document.getElementById('activeSessionsContainer');
+    if (!container) return;
 
-        const onlineIndicator = s.is_online ?
-            '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
-            '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+    const viewMode = getTeacherViewMode('anticheat');
+    if (viewMode === 'grid') {
+        if (!sessions || sessions.length === 0) {
+            container.innerHTML = '<div class="empty">No active proctored sessions at the moment.</div>';
+            return;
+        }
 
-        return `
-            <tr data-attempt-id="${s.attempt_id}">
-                <td>
-                    <div class="flex-center-y">
-                        ${onlineIndicator}
-                        <div class="bold small">${escapeHtml(s.full_name)}</div>
-                    </div>
-                    <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
-                </td>
-                <td>
-                    <div class="small">${escapeHtml(s.assessment_title)}</div>
-                    <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
-                </td>
-                <td><div class="small">${elapsed} min</div></td>
-                <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
-                <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
-                <td>
-                    <div class="flex gap-5">
-                        <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                        <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
-                        <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
-                    </div>
-                </td>
-            </tr>
+        container.innerHTML = `
+            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+                ${sessions.map(s => {
+                    const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
+                    let statusClass = 'badge-active';
+                    if (s.status === 'Flagged') statusClass = 'badge-inactive';
+                    else if (s.status === 'Warning') statusClass = 'badge-warn';
+                    else if (s.status === 'Idle') statusClass = 'secondary';
+
+                    const onlineIndicator = s.is_online ?
+                        '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+                        '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+
+                    return `
+                        <div class="card flex-between flex-column m-0" style="height:100%; border: 1px solid var(--border)" data-attempt-id="${s.attempt_id}">
+                            <div>
+                                <div class="flex-between">
+                                    <div class="flex-center-y">
+                                        ${onlineIndicator}
+                                        <div class="bold small">${escapeHtml(s.full_name)}</div>
+                                    </div>
+                                    <span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span>
+                                </div>
+                                <div class="tiny text-muted ml-15 mb-10 text-ellipsis" title="${escapeAttr(s.user_email)}">${escapeHtml(s.user_email)}</div>
+                                <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                <div class="small">
+                                    <strong>Exam:</strong> ${escapeHtml(s.assessment_title)}
+                                    <div class="mt-5"><span class="badge badge-purple tiny">${s.assessment_type.toUpperCase()}</span></div>
+                                </div>
+                                <div class="small mt-10">
+                                    <strong>Duration:</strong> ${elapsed} min
+                                </div>
+                                <div class="small mt-5 flex-center-y gap-5">
+                                    <strong>Violations:</strong>
+                                    <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span>
+                                </div>
+                            </div>
+                            <div class="flex gap-5 mt-15 w-full">
+                                <button class="button small tiny w-full" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                                <button class="button secondary tiny w-full" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                                <button class="button danger tiny w-full" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
         `;
-    }, { emptyMessage: 'No active proctored sessions at the moment.' });
+    } else {
+        container.innerHTML = `<div id="activeSessionsTable"></div>`;
+        UI.renderTable('activeSessionsTable', ['Student', 'Exam', 'Duration', 'Status', 'Violations', 'Actions'], sessions, (s) => {
+            const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
+            let statusClass = 'badge-active';
+            if (s.status === 'Flagged') statusClass = 'badge-inactive';
+            else if (s.status === 'Warning') statusClass = 'badge-warn';
+            else if (s.status === 'Idle') statusClass = 'secondary';
+
+            const onlineIndicator = s.is_online ?
+                '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
+                '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
+
+            return `
+                <tr data-attempt-id="${s.attempt_id}">
+                    <td>
+                        <div class="flex-center-y">
+                            ${onlineIndicator}
+                            <div class="bold small">${escapeHtml(s.full_name)}</div>
+                        </div>
+                        <div class="tiny text-muted ml-15">${escapeHtml(s.user_email)}</div>
+                    </td>
+                    <td>
+                        <div class="small">${escapeHtml(s.assessment_title)}</div>
+                        <span class="badge tiny">${s.assessment_type.toUpperCase()}</span>
+                    </td>
+                    <td><div class="small">${elapsed} min</div></td>
+                    <td><span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span></td>
+                    <td><span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span></td>
+                    <td>
+                        <div class="flex gap-5">
+                            <button class="button small tiny w-auto" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                            <button class="button secondary tiny w-auto" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                            <button class="button danger tiny w-auto" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }, { emptyMessage: 'No active proctored sessions at the moment.' });
+    }
 }
 
 function addTeacherLiveViolationToFeed(v) {
