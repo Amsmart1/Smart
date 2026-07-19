@@ -341,83 +341,250 @@ async function showLessonForm(courseId, lesson = null) {
   content.innerHTML = `
     <div class="card">
       <h2 class="m-0">${isEdit ? 'Edit Lesson' : 'Add Lesson'}</h2>
-      <form id="lessonForm" class="mt-20">
-        <label>Lesson Title</label>
-        <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" required>
+      <div class="grid-2 mt-20">
+        <div>
+          <form id="lessonForm">
+            <label>Lesson Title</label>
+            <input type="text" id="lessonTitle" placeholder="Lesson Title" value="${isEdit ? escapeHtml(lesson.title) : ''}" required>
 
-        <label>Topic</label>
-        <select id="lessonTopicId" required>
-          <option value="">-- Select Topic --</option>
-          ${topics.map(t => `<option value="${t.id}" ${lesson?.topic_id === t.id ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
-        </select>
-        ${topics.length === 0 ? '<p class="tiny danger-text mt-5">No topics found. Please create a topic first.</p>' : ''}
+            <label>Topic</label>
+            <select id="lessonTopicId" required>
+              <option value="">-- Select Topic --</option>
+              ${topics.map(t => `<option value="${t.id}" ${lesson?.topic_id === t.id ? 'selected' : ''}>${escapeHtml(t.title)}</option>`).join('')}
+            </select>
+            ${topics.length === 0 ? '<p class="tiny danger-text mt-5">No topics found. Please create a topic first.</p>' : ''}
 
-        <label class="mt-10">Video URL (Optional)</label>
-        <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
-        <label>Content</label>
-        <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
-        <label>Order Index</label>
-        <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
-        <div class="flex gap-10 mt-20">
-          <button type="submit" class="button w-auto px-40" ${topics.length === 0 ? 'disabled' : ''}>${isEdit ? 'Update Lesson' : 'Save Lesson'}</button>
-          <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
+            <label class="mt-10">Video URL (Optional)</label>
+            <input type="url" id="lessonVideoUrl" placeholder="https://youtube.com/..." value="${isEdit ? escapeHtml(lesson.video_url || '') : ''}">
+
+            <label>Content</label>
+            <textarea id="lessonContent" placeholder="Lesson content..." rows="10">${isEdit ? escapeHtml(UI.htmlToPlainText(lesson.content)) : ''}</textarea>
+
+            <label>Order Index</label>
+            <input type="number" id="lessonOrder" placeholder="Order Index" value="${isEdit ? lesson.order_index : 0}">
+
+            <div class="flex gap-10 mt-20">
+              <button type="submit" class="button w-auto px-40" ${topics.length === 0 ? 'disabled' : ''}>${isEdit ? 'Update Lesson' : 'Save Lesson'}</button>
+              <button type="button" class="button secondary w-auto px-40" onclick="editCourse('${courseId}')">Cancel</button>
+            </div>
+          </form>
         </div>
-      </form>
+
+        <div class="bg-light p-15 border-radius-md" style="max-height: 700px; overflow-y: auto;">
+          <h3 class="m-0 mb-10 small">Import Content from Knowledge Base</h3>
+          <p class="tiny text-muted mb-15">Select content from Course, Topics, or Materials (PDFs) to load and edit before saving as a lesson.</p>
+
+          <label>Select Source Content</label>
+          <select id="kbSourceSelect" class="w-100 mb-10" disabled>
+            <option value="">-- Loading knowledge items... --</option>
+          </select>
+
+          <div id="kbLoadMoreContainer" style="display: none;" class="mb-15">
+            <button type="button" id="kbLoadMoreBtn" class="button secondary tiny w-100">Load More Content</button>
+          </div>
+
+          <div id="kbPreviewSection" style="display: none;">
+            <label class="mt-10">Edit Selected Content</label>
+            <textarea id="kbContentEdit" class="w-100" rows="8" placeholder="Edit content before importing..."></textarea>
+
+            <div class="flex gap-10 mt-10">
+              <button type="button" id="kbApplyBtn" class="button tiny w-auto">Overwrite Lesson Content</button>
+              <button type="button" id="kbAppendBtn" class="button secondary tiny w-auto">Append to Lesson</button>
+            </div>
+          </div>
+
+          <div id="kbEmptyMessage" class="tiny text-muted mt-10" style="display: none;">
+            No knowledge base items found for this course. Ensure you have topics or uploaded PDF materials indexed under "Materials".
+          </div>
+        </div>
+      </div>
     </div>
   `;
-  document.getElementById('lessonForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    const originalText = btn.textContent;
-    btn.textContent = 'Saving...';
 
-    try {
-      const title = document.getElementById('lessonTitle').value.trim();
-      const vTitle = Validator.required(title, 'Lesson title');
-      if (!vTitle.valid) {
-          UI.showNotification(vTitle.message, 'warn');
-          btn.disabled = false;
-          btn.textContent = originalText;
-          return;
+  // REGISTER THE SUBMIT LISTENER IMMEDIATELY - Preventing the Page-Reload Race Condition
+  const formElement = document.getElementById('lessonForm');
+  if (formElement) {
+    formElement.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Saving...';
+
+      try {
+        const title = document.getElementById('lessonTitle').value.trim();
+        const vTitle = Validator.required(title, 'Lesson title');
+        if (!vTitle.valid) {
+            UI.showNotification(vTitle.message, 'warn');
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+
+        const videoUrl = document.getElementById('lessonVideoUrl').value || null;
+        if (videoUrl && !isValidUrl(videoUrl)) {
+            UI.showNotification('Please enter a valid URL for the video.', 'error');
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+
+        const topicId = document.getElementById('lessonTopicId').value;
+        if (!topicId) {
+            UI.showNotification('Please select a topic for this lesson.', 'error');
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+
+        const data = {
+            ...lesson,
+            id: isEdit ? lesson.id : crypto.randomUUID(),
+            course_id: courseId,
+            topic_id: topicId,
+            title: document.getElementById('lessonTitle').value,
+            video_url: videoUrl,
+            content: document.getElementById('lessonContent').value,
+            order_index: parseInt(document.getElementById('lessonOrder').value) || 0
+        };
+        await SupabaseDB.saveLesson(data);
+        UI.showNotification('Lesson saved successfully', 'success');
+        editCourse(courseId);
+      } catch (err) {
+        UI.showNotification('Error saving lesson: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
+    });
+  }
 
-      const videoUrl = document.getElementById('lessonVideoUrl').value || null;
-      if (videoUrl && !isValidUrl(videoUrl)) {
-          UI.showNotification('Please enter a valid URL for the video.', 'error');
-          btn.disabled = false;
-          btn.textContent = originalText;
-          return;
-      }
+  // Bind side-panel action elements
+  const kbSelect = document.getElementById('kbSourceSelect');
+  const kbPreviewSec = document.getElementById('kbPreviewSection');
+  const kbContentEdit = document.getElementById('kbContentEdit');
+  const kbEmptyMsg = document.getElementById('kbEmptyMessage');
+  const kbApplyBtn = document.getElementById('kbApplyBtn');
+  const kbAppendBtn = document.getElementById('kbAppendBtn');
+  const kbLoadMoreContainer = document.getElementById('kbLoadMoreContainer');
+  const kbLoadMoreBtn = document.getElementById('kbLoadMoreBtn');
 
-      const topicId = document.getElementById('lessonTopicId').value;
-      if (!topicId) {
-          UI.showNotification('Please select a topic for this lesson.', 'error');
-          btn.disabled = false;
-          btn.textContent = originalText;
-          return;
-      }
+  let kbEmbeddings = [];
+  let kbPage = 1;
+  const kbPageSize = 50;
+  let kbTotal = 0;
 
-      const data = {
-          ...lesson,
-          id: isEdit ? lesson.id : crypto.randomUUID(),
-          course_id: courseId,
-          topic_id: topicId,
-          title: document.getElementById('lessonTitle').value,
-          video_url: videoUrl,
-          content: document.getElementById('lessonContent').value,
-          order_index: parseInt(document.getElementById('lessonOrder').value) || 0
-      };
-      await SupabaseDB.saveLesson(data);
-      UI.showNotification('Lesson saved successfully', 'success');
-      editCourse(courseId);
-    } catch (e) {
-      UI.showNotification('Error saving lesson: ' + e.message, 'error');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = originalText;
+  async function loadKnowledgePage(page) {
+    if (kbLoadMoreBtn) {
+      kbLoadMoreBtn.disabled = true;
+      kbLoadMoreBtn.textContent = 'Loading more...';
     }
-  });
+    try {
+      const res = await SupabaseDB.getKnowledgeEmbeddings(courseId, { page, pageSize: kbPageSize });
+      if (renderId !== window.currentRenderId) return;
+
+      const newItems = res.data || [];
+      kbTotal = res.total || 0;
+      kbEmbeddings = kbEmbeddings.concat(newItems);
+
+      updateDropdownUI();
+    } catch (e) {
+      console.warn('Failed to load knowledge embeddings page:', e);
+      UI.showNotification('Failed to load more knowledge base content.', 'error');
+    } finally {
+      if (kbLoadMoreBtn) {
+        kbLoadMoreBtn.disabled = false;
+        kbLoadMoreBtn.textContent = 'Load More Content';
+      }
+    }
+  }
+
+  function updateDropdownUI() {
+    if (kbEmbeddings.length === 0) {
+      if (kbSelect) {
+        kbSelect.innerHTML = '<option value="">-- No items available --</option>';
+        kbSelect.disabled = true;
+      }
+      if (kbEmptyMsg) kbEmptyMsg.style.display = 'block';
+      if (kbLoadMoreContainer) kbLoadMoreContainer.style.display = 'none';
+    } else {
+      if (kbSelect) {
+        const selectedValue = kbSelect.value;
+        kbSelect.innerHTML = `
+          <option value="">-- Select a knowledge item --</option>
+          ${kbEmbeddings.map((item, index) => {
+            const type = item.source_type ? item.source_type.toUpperCase() : 'UNKNOWN';
+            const title = item.metadata?.title || 'Untitled';
+            const snippet = item.content ? (item.content.trim().slice(0, 50) + (item.content.trim().length > 50 ? '...' : '')) : '';
+            return `<option value="${index}" ${selectedValue === String(index) ? 'selected' : ''}>[${type}] ${escapeHtml(title)} - ${escapeHtml(snippet)}</option>`;
+          }).join('')}
+        `;
+        kbSelect.disabled = false;
+      }
+      if (kbEmptyMsg) kbEmptyMsg.style.display = 'none';
+
+      // Check if we need a load-more button
+      if (kbLoadMoreContainer && kbLoadMoreBtn) {
+        if (kbEmbeddings.length < kbTotal) {
+          kbLoadMoreContainer.style.display = 'block';
+        } else {
+          kbLoadMoreContainer.style.display = 'none';
+        }
+      }
+    }
+  }
+
+  // Setup listeners
+  if (kbSelect) {
+    kbSelect.addEventListener('change', (e) => {
+      const idx = e.target.value;
+      if (idx === "") {
+        if (kbPreviewSec) kbPreviewSec.style.display = 'none';
+      } else {
+        const selectedItem = kbEmbeddings[parseInt(idx)];
+        if (selectedItem) {
+          if (kbContentEdit) kbContentEdit.value = selectedItem.content || '';
+          if (kbPreviewSec) kbPreviewSec.style.display = 'block';
+        }
+      }
+    });
+  }
+
+  if (kbApplyBtn) {
+    kbApplyBtn.addEventListener('click', () => {
+      const editedContent = kbContentEdit ? kbContentEdit.value : '';
+      const lessonContentTextarea = document.getElementById('lessonContent');
+      if (lessonContentTextarea) {
+        lessonContentTextarea.value = editedContent;
+        UI.showNotification('Lesson content overwritten with knowledge item.', 'success');
+      }
+    });
+  }
+
+  if (kbAppendBtn) {
+    kbAppendBtn.addEventListener('click', () => {
+      const editedContent = kbContentEdit ? kbContentEdit.value : '';
+      const lessonContentTextarea = document.getElementById('lessonContent');
+      if (lessonContentTextarea) {
+        if (lessonContentTextarea.value.trim()) {
+          lessonContentTextarea.value += '\n\n' + editedContent;
+        } else {
+          lessonContentTextarea.value = editedContent;
+        }
+        UI.showNotification('Knowledge item appended to lesson content.', 'success');
+      }
+    });
+  }
+
+  if (kbLoadMoreBtn) {
+    kbLoadMoreBtn.addEventListener('click', () => {
+      kbPage++;
+      loadKnowledgePage(kbPage);
+    });
+  }
+
+  // Load page 1 initially
+  await loadKnowledgePage(kbPage);
 }
 async function editLesson(lessonId, courseId) {
   const renderId = ++window.currentRenderId;

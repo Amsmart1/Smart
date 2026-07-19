@@ -1042,6 +1042,23 @@ class SupabaseDB {
         });
     }
 
+    static async getKnowledgeEmbeddings(courseId, options = {}) {
+        const { page = 1, pageSize = 50 } = options;
+        const from = (page - 1) * pageSize;
+        const to = from + pageSize - 1;
+
+        return this._request(async () => {
+            const { data, count, error } = await supabaseClient
+                .from('knowledge_embeddings')
+                .select('*', { count: 'exact' })
+                .eq('course_id', courseId)
+                .neq('source_type', 'lesson')
+                .range(from, to);
+            if (error) throw error;
+            return { data: data || [], total: count || 0, page, pageSize };
+        });
+    }
+
     static async saveLesson(lesson) {
         const data = await this._upsert('lessons', lesson);
         if (data?.[0]?.course_id && typeof window !== 'undefined' && window.AIManager && typeof window.AIManager.indexCourse === 'function') {
