@@ -1972,6 +1972,29 @@ async function renderAntiCheat() {
   await showHistorical();
 }
 
+async function renderTeacherLiveProctoringPage() {
+  const renderId = ++window.currentRenderId;
+  const content = document.getElementById('pageContent');
+  if (!content) return;
+  clearActiveCountdowns();
+
+  // Cleanup existing live monitoring on teacher side
+  if (TeacherState._liveProctoringInterval) {
+    clearInterval(TeacherState._liveProctoringInterval);
+    TeacherState._liveProctoringInterval = null;
+  }
+  if (TeacherState._liveViolationsChannel) {
+    window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+    TeacherState._liveViolationsChannel = null;
+  }
+
+  content.innerHTML = `
+    <div id="anticheat-tab-content"></div>
+  `;
+
+  await renderTeacherLiveProctoring(renderId);
+}
+
 async function renderTeacherLiveProctoring(renderId) {
     const area = document.getElementById('anticheat-tab-content');
     if (!area) return;
@@ -4353,7 +4376,7 @@ function initNav() {
         button.classList.add('active');
         const page = button.dataset.page;
         DiscussionManager.cleanup();
-        if (page !== 'anticheat') {
+        if (page !== 'anticheat' && page !== 'live-proctoring') {
             if (TeacherState._liveProctoringInterval) {
                 clearInterval(TeacherState._liveProctoringInterval);
                 TeacherState._liveProctoringInterval = null;
@@ -4377,6 +4400,7 @@ function initNav() {
         else if(page === 'live') renderLiveClasses();
         else if(page === 'calendar') renderCalendar();
         else if(page === 'anticheat') renderAntiCheat();
+        else if(page === 'live-proctoring') renderTeacherLiveProctoringPage();
         else if(page === 'settings') renderSettings();
         else if(page === 'help') renderHelp();
       });
@@ -4806,6 +4830,7 @@ window.renderGradeBook = renderGradeBook;
 window.renderAnalytics = renderAnalytics;
 window.renderHelp = renderHelp;
 window.renderAntiCheat = renderAntiCheat;
+window.renderTeacherLiveProctoringPage = renderTeacherLiveProctoringPage;
 window.renderSettings = renderSettings;
 window.showCertForm = showCertForm;
 window.issueCert = issueCert;
