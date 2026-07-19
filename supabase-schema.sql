@@ -69,8 +69,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
--- Public helpers with mandatory status and reset blocking
--- Public helpers with mandatory status check
+-- Public helpers with mandatory status check (reverted extra reset status check, only block on active/flagged)
 -- Returns NULL if user is inactive or flagged
 CREATE OR REPLACE FUNCTION get_auth_email() RETURNS VARCHAR AS $$
 DECLARE
@@ -85,6 +84,7 @@ BEGIN
     INTO v_email, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
+    -- Reverted extra reset status check, so we only block on active/flagged
     IF v_email IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_email;
     END IF;
@@ -106,6 +106,7 @@ BEGIN
     INTO v_role, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
+    -- Reverted extra reset status check, so we only block on active/flagged
     IF v_role IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_role;
     END IF;
@@ -1786,11 +1787,13 @@ CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH RO
 -- 5b. Security Field Protection
 -- Prevents unauthorized manipulation of security critical fields (lockouts, flags)
 -- while allowing trusted backend RPCs (like authenticate_user) to manage them.
+-- Authenticate_user and finalize_password_reset_secure set app.trusted_internal_update before touching these fields.
 CREATE OR REPLACE FUNCTION tr_protect_user_lockout() RETURNS TRIGGER AS $$
 BEGIN
   -- ABAC: Only administrators or trusted system-level contexts (postgres/service_role/supabase_admin)
   -- can modify sensitive security fields. This prevents client-side privilege escalation.
   -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres' or 'supabase_admin'.
+  -- Check for modifications to sensitive user lockout/flag state fields
   IF (OLD.failed_attempts IS DISTINCT FROM NEW.failed_attempts OR
       OLD.locked_until IS DISTINCT FROM NEW.locked_until OR
       OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
@@ -2236,7 +2239,7 @@ DECLARE
   v_user RECORD;
   v_secret RECORD;
 BEGIN
-  -- Signal that this is a trusted internal update from authenticate_user
+  -- Signal that this is a trusted internal update from authenticate_user before touching security fields
   PERFORM set_config('app.trusted_internal_update', 'true', true);
 
   SELECT
@@ -2474,7 +2477,7 @@ CREATE OR REPLACE FUNCTION finalize_password_reset_secure(
 DECLARE
     v_user RECORD;
 BEGIN
-    -- Signal that this is a trusted internal update from finalize_password_reset_secure
+    -- Signal that this is a trusted internal update from finalize_password_reset_secure before touching security fields
     PERFORM set_config('app.trusted_internal_update', 'true', true);
 
     -- 1. Validate User
