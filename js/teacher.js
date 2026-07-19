@@ -1861,24 +1861,45 @@ async function monitorLiveSession(attemptId, email) {
     const pulse = document.getElementById('surveillance-pulse');
     const audioQueue = [];
     let isPlayingAudio = false;
+    let activeAudio = null;
 
     const playNextAudio = async () => {
-        if (audioQueue.length === 0 || isPlayingAudio) return;
+        if (!surveillanceActive || audioQueue.length === 0 || isPlayingAudio) return;
         isPlayingAudio = true;
         const path = audioQueue.shift();
         try {
             const url = await SupabaseDB.createSignedUrl('proctoring', path);
-            const audio = new Audio(url);
-            audio.onended = () => {
+            if (!surveillanceActive) {
+                isPlayingAudio = false;
+                return;
+            }
+            activeAudio = new Audio(url);
+            activeAudio.onended = () => {
+                activeAudio = null;
                 isPlayingAudio = false;
                 playNextAudio();
             };
-            await audio.play();
+            await activeAudio.play();
         } catch (e) {
             console.warn('Audio playback failed:', e);
+            activeAudio = null;
             isPlayingAudio = false;
             playNextAudio();
         }
+    };
+
+    const stopAudioPlayback = () => {
+        audioQueue.length = 0;
+        if (activeAudio) {
+            try {
+                activeAudio.pause();
+                activeAudio.src = '';
+            } catch (e) {
+                console.warn('Failed to stop audio:', e);
+            }
+            activeAudio = null;
+        }
+        isPlayingAudio = false;
     };
 
     toggle.onchange = (e) => {
@@ -1887,6 +1908,8 @@ async function monitorLiveSession(attemptId, email) {
         if (surveillanceActive) {
             UI.showNotification('Live surveillance mode active', 'success');
             playNextAudio();
+        } else {
+            stopAudioPlayback();
         }
     };
 
@@ -1943,6 +1966,7 @@ async function monitorLiveSession(attemptId, email) {
 
         const cleanup = () => {
             surveillanceActive = false;
+            stopAudioPlayback();
             window.supabaseClient?.removeChannel(channel);
         };
 
@@ -1969,9 +1993,29 @@ async function terminateSession(attemptId, email) {
     if (!await UI.confirm(`Are you sure you want to terminate the session for ${email}? This will stop their assessment immediately.`, 'Terminate Session')) return;
 
     try {
+        let assessmentId = null;
+        let assessmentType = null;
+        let courseId = null;
+        let teacherEmail = null;
+
+        if (attemptId) {
+            const { data: attemptLogs } = await SupabaseDB.getViolations(null, null, null, { attemptId, all: true });
+            if (attemptLogs && attemptLogs.length > 0) {
+                const ref = attemptLogs[0];
+                assessmentId = ref.assessment_id;
+                assessmentType = ref.assessment_type;
+                courseId = ref.course_id;
+                teacherEmail = ref.teacher_email;
+            }
+        }
+
         await SupabaseDB.saveViolation({
             attempt_id: attemptId,
             user_email: email,
+            assessment_id: assessmentId,
+            assessment_type: assessmentType,
+            course_id: courseId,
+            teacher_email: teacherEmail,
             type: 'SESSION_TERMINATED',
             severity: 'CRITICAL',
             score: 100,
@@ -1992,6 +2036,22 @@ async function sendMessageToStudent(email, attemptId = null) {
     if (!msg) return;
 
     try {
+        let assessmentId = null;
+        let assessmentType = null;
+        let courseId = null;
+        let teacherEmail = null;
+
+        if (attemptId) {
+            const { data: attemptLogs } = await SupabaseDB.getViolations(null, null, null, { attemptId, all: true });
+            if (attemptLogs && attemptLogs.length > 0) {
+                const ref = attemptLogs[0];
+                assessmentId = ref.assessment_id;
+                assessmentType = ref.assessment_type;
+                courseId = ref.course_id;
+                teacherEmail = ref.teacher_email;
+            }
+        }
+
         const user = await SessionManager.getCurrentUser();
         await SupabaseDB.notifyUser({
             email: email,
@@ -2005,6 +2065,10 @@ async function sendMessageToStudent(email, attemptId = null) {
             await SupabaseDB.saveViolation({
                 attempt_id: attemptId,
                 user_email: email,
+                assessment_id: assessmentId,
+                assessment_type: assessmentType,
+                course_id: courseId,
+                teacher_email: teacherEmail,
                 type: 'STAFF_MESSAGE',
                 severity: 'INFO',
                 score: 0,
@@ -2055,50 +2119,72 @@ async function showTeacherLiveFeedModal(teacherEmail) {
     `, { maxWidth: '1200px' });
 
     const grid = document.getElementById('live-feed-grid');
+    let inFlight = false;
+    let isClosed = false;
 
     const updateFeed = async () => {
-        const sessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail, withLatestSnapshots: true });
-        if (!sessions || sessions.length === 0) {
-            grid.innerHTML = '<div class="empty p-40" style="grid-column: 1/-1">No active sessions currently streaming.</div>';
-            return;
-        }
+        if (inFlight || isClosed) return;
+        inFlight = true;
 
-        const proms = sessions.map(async s => {
-            let snapUrl = null;
-            if (s.latestSnapshotPath) {
-                snapUrl = await SupabaseDB.createSignedUrl('proctoring', s.latestSnapshotPath);
+        try {
+            const sessions = await SupabaseDB.getLiveProctoringSessions({ teacherEmail, withLatestSnapshots: true });
+            if (isClosed) return;
+
+            if (!sessions || sessions.length === 0) {
+                grid.innerHTML = '<div class="empty p-40" style="grid-column: 1/-1">No active sessions currently streaming.</div>';
+                return;
             }
-            return { ...s, snapUrl };
-        });
 
-        const sessionsWithSnaps = await Promise.all(proms);
+            const proms = sessions.map(async s => {
+                let snapUrl = null;
+                if (s.latestSnapshotPath) {
+                    try {
+                        snapUrl = await SupabaseDB.createSignedUrl('proctoring', s.latestSnapshotPath);
+                    } catch (urlErr) {
+                        console.warn('Failed to sign snapshot URL:', urlErr);
+                    }
+                }
+                return { ...s, snapUrl };
+            });
 
-        grid.innerHTML = sessionsWithSnaps.map(s => `
-            <div class="card p-0 overflow-hidden animate-fade-in" style="border: 2px solid ${s.violation_count > 5 ? 'var(--danger)' : (s.violation_count > 0 ? 'var(--warn)' : 'var(--border)')}">
-                <div class="p-10 flex-between bg-light">
-                    <div class="flex-center-y gap-5">
-                        <div class="${s.is_online ? 'pulse-indicator' : ''}" style="width:6px; height:6px; background:${s.is_online ? '#48bb78' : '#cbd5e0'}; border-radius:50%"></div>
-                        <div>
-                            <div class="bold tiny">${escapeHtml(s.full_name)}</div>
-                            <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+            const sessionsWithSnaps = await Promise.all(proms);
+            if (isClosed) return;
+
+            grid.innerHTML = sessionsWithSnaps.map(s => `
+                <div class="card p-0 overflow-hidden animate-fade-in" style="border: 2px solid ${s.violation_count > 5 ? 'var(--danger)' : (s.violation_count > 0 ? 'var(--warn)' : 'var(--border)')}">
+                    <div class="p-10 flex-between bg-light">
+                        <div class="flex-center-y gap-5">
+                            <div class="${s.is_online ? 'pulse-indicator' : ''}" style="width:6px; height:6px; background:${s.is_online ? '#48bb78' : '#cbd5e0'}; border-radius:50%"></div>
+                            <div>
+                                <div class="bold tiny">${escapeHtml(s.full_name)}</div>
+                                <div class="tiny text-muted">${escapeHtml(s.assessment_title)}</div>
+                            </div>
+                        </div>
+                        <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'badge-active'} tiny">${s.violation_count} V</span>
+                    </div>
+                    <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
+                        ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
+                        <div class="absolute bottom-5 right-5 flex gap-5">
+                            <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
                         </div>
                     </div>
-                    <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'badge-active'} tiny">${s.violation_count} V</span>
                 </div>
-                <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
-                    ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
-                    <div class="absolute bottom-5 right-5 flex gap-5">
-                        <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                    </div>
-                </div>
-            </div>
-        `).join('');
+            `).join('');
+        } catch (err) {
+            console.error('Error refreshing live feed:', err);
+            if (!isClosed && grid.children.length === 0) {
+                grid.innerHTML = '<div class="empty p-40" style="grid-column: 1/-1; color: var(--danger)">Error loading live feed data.</div>';
+            }
+        } finally {
+            inFlight = false;
+        }
     };
 
     updateFeed();
     const interval = setInterval(updateFeed, 15000);
 
     const cleanup = () => {
+        isClosed = true;
         clearInterval(interval);
     };
 

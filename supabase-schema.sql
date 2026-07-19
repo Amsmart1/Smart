@@ -3903,7 +3903,18 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
     v_sql TEXT;
+    v_derived_teacher_email VARCHAR;
 BEGIN
+    -- Secure derivation: scope based on caller's identity
+    IF is_admin() THEN
+        v_derived_teacher_email := p_teacher_email;
+    ELSE
+        v_derived_teacher_email := get_auth_email();
+        IF v_derived_teacher_email IS NULL THEN
+            RETURN;
+        END IF;
+    END IF;
+
     -- Resilience: Ensure attempt_id column exists before trying to query it
     -- This handles cases where the script might be partially failing or running against old schemas
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'violations' AND column_name = 'attempt_id') THEN
@@ -3925,7 +3936,7 @@ BEGIN
         FROM violations v
         WHERE v.timestamp > NOW() - INTERVAL ''4 hours''';
 
-    IF p_teacher_email IS NOT NULL THEN
+    IF v_derived_teacher_email IS NOT NULL THEN
         v_sql := v_sql || ' AND v.teacher_email = $1';
     END IF;
 
@@ -3955,12 +3966,13 @@ BEGIN
     LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = ''assignment''
     ORDER BY lv.last_act DESC';
 
-    IF p_teacher_email IS NOT NULL THEN
-        RETURN QUERY EXECUTE v_sql USING p_teacher_email;
+    IF v_derived_teacher_email IS NOT NULL THEN
+        RETURN QUERY EXECUTE v_sql USING v_derived_teacher_email;
     ELSE
         RETURN QUERY EXECUTE v_sql;
     END IF;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION get_active_proctored_sessions(VARCHAR) TO authenticated, anon;
+REVOKE ALL ON FUNCTION get_active_proctored_sessions(VARCHAR) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION get_active_proctored_sessions(VARCHAR) TO authenticated;
