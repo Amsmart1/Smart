@@ -51,6 +51,26 @@ function setTeacherViewMode(viewName, mode) {
                 }).catch(e => console.error('Error fetching live proctoring sessions for view mode:', e));
             }
         }
+    } else if (viewName === 'analytics') {
+        const data = TeacherState.lastAnalyticsData;
+        if (data && document.getElementById('analyticsDashboard')) {
+            const buttons = document.querySelectorAll('[onclick*="setTeacherViewMode(\'analytics\'"]');
+            buttons.forEach(btn => {
+                const isGrid = btn.getAttribute('onclick').includes("'grid'");
+                if (isGrid) {
+                    btn.className = `button ${mode === 'grid' ? '' : 'secondary'} small w-auto m-0`;
+                    btn.style.background = mode === 'grid' ? 'var(--primary, #4f46e5)' : '';
+                    btn.style.color = mode === 'grid' ? 'white' : '';
+                } else {
+                    btn.className = `button ${mode === 'list' ? '' : 'secondary'} small w-auto m-0`;
+                    btn.style.background = mode === 'list' ? 'var(--primary, #4f46e5)' : '';
+                    btn.style.color = mode === 'list' ? 'white' : '';
+                }
+            });
+            renderAnalyticsUI(data);
+        } else {
+            renderAnalytics();
+        }
     }
 }
 
@@ -5682,6 +5702,8 @@ window.renderInterventionRows = renderInterventionRows;
 window.initTableInteractivity = initTableInteractivity;
 window.renderAnalyticsCharts = renderAnalyticsCharts;
 window.renderAttendanceHeatmap = renderAttendanceHeatmap;
+window.renderAssessmentCards = renderAssessmentCards;
+window.renderInterventionCards = renderInterventionCards;
 
 window.clearAnalyticsFilters = () => {
     const cs = document.getElementById('analyticsCourseSelect');
@@ -5718,6 +5740,8 @@ async function renderAnalytics() {
     TeacherState.myCourses = courses || [];
     TeacherState.myCourseIds = TeacherState.myCourses.map(c => c.id);
 
+    const viewMode = getTeacherViewMode('analytics');
+
     content.innerHTML = `
       <div class="card mb-20 flex-between flex-wrap gap-15">
         <div>
@@ -5738,6 +5762,10 @@ async function renderAnalytics() {
           <div class="flex gap-5 border-left pl-10 ml-5">
               <button class="button secondary w-auto small" onclick="window.exportAnalyticsData('csv')" style="background:#f0fdf4; color:#166534; border-color:#bbf7d0">CSV</button>
               <button class="button secondary w-auto small" onclick="window.exportAnalyticsData('pdf')" style="background:#fef2f2; color:#991b1b; border-color:#fecaca">PDF</button>
+          </div>
+          <div class="button-group flex ml-5" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
+              <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('analytics', 'grid')">Grid</button>
+              <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('analytics', 'list')">Table</button>
           </div>
         </div>
       </div>
@@ -5839,6 +5867,43 @@ async function renderAnalyticsDashboard(courseId, semester = null, bypassCache =
   }
 }
 
+function renderAssessmentCards(items) {
+    return (items || []).map(a => `
+        <div class="card border p-15 flex-between flex-column animate-fade-in" style="background:var(--bg); border:1px solid var(--border); border-radius:8px; height: 100%; min-height: 140px; box-shadow: 0 1px 3px rgba(0,0,0,0.05)">
+          <div class="w-100">
+            <div class="flex-between flex-wrap gap-5 mb-5" style="align-items: center">
+              <span class="badge tiny ${a.type === 'quiz' ? 'badge-warn' : 'badge-active'}">${_safeEscapeHtml(a.type ? a.type.toUpperCase() : '')}</span>
+              <span class="tiny text-muted bold">${a.submission_count || 0} subs</span>
+            </div>
+            <h4 class="m-0 text-ellipsis" style="font-size:14px; max-width:100%; font-weight:600" title="${_safeEscapeAttr(a.title)}">${_safeEscapeHtml(a.title)}</h4>
+            <div class="tiny text-muted text-ellipsis mt-5" style="max-width:100%">${_safeEscapeHtml(a.course_title || '')}</div>
+          </div>
+          <div class="w-100 mt-15 border-top pt-10 flex-between" style="align-items: center">
+            <span class="tiny text-muted">Average:</span>
+            <span class="bold" style="font-size:15px; color: var(--primary, #4f46e5)">${a.avg_score ? parseFloat(a.avg_score).toFixed(1) + '%' : '---'}</span>
+          </div>
+        </div>
+    `).join('') || '<div class="empty" style="grid-column: 1/-1">No assessments found.</div>';
+}
+
+function renderInterventionCards(items) {
+    return (items || []).map(s => `
+        <div class="card border p-15 flex-between flex-column animate-fade-in" style="background:var(--bg); border:1px solid var(--border); border-radius:8px; height: 100%; min-height: 140px; box-shadow: 0 1px 3px rgba(0,0,0,0.05)">
+          <div class="w-100">
+            <div class="flex-between flex-wrap gap-5 mb-5" style="align-items: center">
+              <span class="badge ${s.risk_level === 'CRITICAL' ? 'badge-inactive' : 'badge-warn'} tiny">${_safeEscapeHtml(s.risk_level || 'UNKNOWN')}</span>
+              <span class="bold ${s.risk_level === 'CRITICAL' ? 'danger-text' : 'warning-text'}" style="font-size:15px">${parseFloat(s.total_avg || 0).toFixed(1)}%</span>
+            </div>
+            <h4 class="m-0 text-ellipsis" style="font-size:14px; max-width:100%; font-weight:600" title="${_safeEscapeAttr(s.full_name)}">${_safeEscapeHtml(s.full_name)}</h4>
+            <div class="tiny text-muted text-ellipsis mt-5" style="max-width:100%">${_safeEscapeHtml(s.email)}</div>
+          </div>
+          <div class="w-100 mt-15 border-top pt-10 flex-end" style="align-items: center">
+            <button class="button secondary tiny w-auto m-0" onclick="window.viewStudentDetails('${_safeEscapeAttr(s.email)}')">View Details</button>
+          </div>
+        </div>
+    `).join('') || '<div class="empty success-text" style="grid-column: 1/-1">All students are performing well.</div>';
+}
+
 function renderAnalyticsUI(data) {
   const dashboard = document.getElementById('analyticsDashboard');
   if (!dashboard) return;
@@ -5847,6 +5912,7 @@ function renderAnalyticsUI(data) {
   const totalSeats = summary.reduce((sum, c) => sum + (parseInt(c.total_students) || 0), 0);
   const uniqueStudentsCount = new Set(students.map(s => s.email)).size;
   const avgScore = gaps?.course_average || 0;
+  const viewMode = getTeacherViewMode('analytics');
 
   dashboard.innerHTML = `
     <div class="stats-grid mb-20 animate-fade-in">
@@ -5890,7 +5956,7 @@ function renderAnalyticsUI(data) {
 
     <div class="grid-3 gap-20">
       <div class="card">
-        <h3>Exam Performance Trends</h3>
+        <h3>Assessments Performance Trends</h3>
         <canvas id="performanceChart" height="250"></canvas>
       </div>
       <div class="card">
@@ -5909,42 +5975,54 @@ function renderAnalyticsUI(data) {
             <h3 class="m-0">Assessment Breakdown</h3>
             <input type="text" id="assessmentSearch" placeholder="Search assessments..." class="small m-0" style="width:200px">
         </div>
-        <div class="p-0 mt-10" style="overflow-x:auto">
-          <table>
-            <thead>
-                <tr>
-                    <th class="pointer sortable" data-sort="title">Assessment ↕</th>
-                    <th class="pointer sortable" data-sort="type">Type ↕</th>
-                    <th class="pointer sortable" data-sort="avg_score">Avg Score ↕</th>
-                    <th class="pointer sortable" data-sort="submission_count">Count ↕</th>
-                </tr>
-            </thead>
-            <tbody id="assessmentTableBody">
-              ${renderAssessmentRows(assessments)}
-            </tbody>
-          </table>
-        </div>
+        ${viewMode === 'grid' ? `
+          <div id="assessmentGrid" class="grid gap-15" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: 10px">
+            ${renderAssessmentCards(assessments)}
+          </div>
+        ` : `
+          <div class="p-0 mt-10" style="overflow-x:auto">
+            <table>
+              <thead>
+                  <tr>
+                      <th class="pointer sortable" data-sort="title">Assessment ↕</th>
+                      <th class="pointer sortable" data-sort="type">Type ↕</th>
+                      <th class="pointer sortable" data-sort="avg_score">Avg Score ↕</th>
+                      <th class="pointer sortable" data-sort="submission_count">Count ↕</th>
+                  </tr>
+              </thead>
+              <tbody id="assessmentTableBody">
+                ${renderAssessmentRows(assessments)}
+              </tbody>
+            </table>
+          </div>
+        `}
       </div>
       <div class="card">
         <div class="flex-between flex-wrap gap-10 mb-15">
             <h3 class="m-0 danger-text">Intervention Insights</h3>
             <input type="text" id="interventionSearch" placeholder="Search students..." class="small m-0" style="width:200px">
         </div>
-        <div class="p-0 mt-10" style="overflow-x:auto">
-          <table>
-            <thead>
-                <tr>
-                    <th class="pointer sortable" data-sort="full_name">Student ↕</th>
-                    <th class="pointer sortable" data-sort="email">Email ↕</th>
-                    <th class="pointer sortable" data-sort="total_avg">Avg ↕</th>
-                    <th class="pointer sortable" data-sort="risk_level">Risk ↕</th>
-                </tr>
-            </thead>
-            <tbody id="interventionTableBody">
-              ${renderInterventionRows(gaps?.low_performing_students || [])}
-            </tbody>
-          </table>
-        </div>
+        ${viewMode === 'grid' ? `
+          <div id="interventionGrid" class="grid gap-15" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: 10px">
+            ${renderInterventionCards(gaps?.low_performing_students || [])}
+          </div>
+        ` : `
+          <div class="p-0 mt-10" style="overflow-x:auto">
+            <table>
+              <thead>
+                  <tr>
+                      <th class="pointer sortable" data-sort="full_name">Student ↕</th>
+                      <th class="pointer sortable" data-sort="email">Email ↕</th>
+                      <th class="pointer sortable" data-sort="total_avg">Avg ↕</th>
+                      <th class="pointer sortable" data-sort="risk_level">Risk ↕</th>
+                  </tr>
+              </thead>
+              <tbody id="interventionTableBody">
+                ${renderInterventionRows(gaps?.low_performing_students || [])}
+              </tbody>
+            </table>
+          </div>
+        `}
       </div>
     </div>
 
@@ -6009,6 +6087,8 @@ function initTableInteractivity(data) {
         );
         const body = document.getElementById('assessmentTableBody');
         if (body) body.innerHTML = renderAssessmentRows(filtered);
+        const grid = document.getElementById('assessmentGrid');
+        if (grid) grid.innerHTML = renderAssessmentCards(filtered);
     };
 
     const updateInterTable = () => {
@@ -6019,6 +6099,8 @@ function initTableInteractivity(data) {
         );
         const body = document.getElementById('interventionTableBody');
         if (body) body.innerHTML = renderInterventionRows(filtered);
+        const grid = document.getElementById('interventionGrid');
+        if (grid) grid.innerHTML = renderInterventionCards(filtered);
     };
 
     // Remove existing listeners to prevent duplication
@@ -6073,13 +6155,17 @@ function initTableInteractivity(data) {
                 const filtered = list.filter(a =>
                     a.title.toLowerCase().includes(term) || (a.course_title || '').toLowerCase().includes(term)
                 );
-                tbody.innerHTML = renderAssessmentRows(filtered);
+                if (tbody) tbody.innerHTML = renderAssessmentRows(filtered);
+                const grid = document.getElementById('assessmentGrid');
+                if (grid) grid.innerHTML = renderAssessmentCards(filtered);
             } else {
                 const term = newInterSearch.value.toLowerCase();
                 const filtered = list.filter(s =>
                     s.full_name.toLowerCase().includes(term) || s.email.toLowerCase().includes(term)
                 );
-                tbody.innerHTML = renderInterventionRows(filtered);
+                if (tbody) tbody.innerHTML = renderInterventionRows(filtered);
+                const grid = document.getElementById('interventionGrid');
+                if (grid) grid.innerHTML = renderInterventionCards(filtered);
             }
         });
     });
@@ -6131,6 +6217,8 @@ window.viewStudentDetails = async (email) => {
 
         const { data: violations } = await SupabaseDB.getViolations(null, email, user.email, { all: true });
         const { data: attendance } = await SupabaseDB.getAttendance(null, email, { all: true });
+
+        if (renderId !== window.currentRenderId) return;
 
         const modalHtml = `
             <div class="student-details-modal">
