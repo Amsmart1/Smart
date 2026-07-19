@@ -18,6 +18,23 @@ const corsHeaders = {
 };
 
 /**
+ * Helper to compute cosine similarity between two numeric vectors.
+ */
+function cosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+  let dotProduct = 0.0;
+  let normA = 0.0;
+  let normB = 0.0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
  * Provides instant, cost-efficient, high-fidelity predefined answers for common platform inquiries.
  * Returns a markdown response string if matched, or null to fallback to the Gemini model.
  */
@@ -205,8 +222,8 @@ module.exports = async function handler(req, res) {
     payload.email = userEmail;
     payload.role = userRole;
 
-    // Process materials RAG inside tutor if direct request (so that semantic search works!)
-    if (type === 'tutor' && !signature) {
+    // Process materials RAG inside tutor (single-source of truth logic inside Vercel!)
+    if (type === 'tutor') {
       const supabaseUrl = process.env.SUPABASE_URL;
       const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
       const { course_id, message } = payload;
@@ -217,36 +234,12 @@ module.exports = async function handler(req, res) {
         payload.course_title = course.title;
       }
 
-      // 2. Identify the active topic(s) using lexical (keyword) analysis on the user message
-      const normMessage = message.toLowerCase();
-      let activeTopic = null;
-      let highestTopicScore = 0;
-
-      for (const topic of topics) {
-        const topicWords = topic.title.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-        let score = 0;
-        for (const word of topicWords) {
-          if (normMessage.includes(word)) score += 10;
-        }
-        if (topic.description) {
-          const descWords = topic.description.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-          for (const word of descWords) {
-            if (normMessage.includes(word)) score += 1;
-          }
-        }
-        if (score > highestTopicScore) {
-          highestTopicScore = score;
-          activeTopic = topic;
-        }
-      }
-
-      payload.active_topic = activeTopic;
-
-      // 3. Generate embedding for user message
+      // 2. Generate embedding for user message
       const apiKey = resolveApiKey('generate_embedding', payload);
       const embeddingModel = resolveModelId('generate_embedding', payload);
       const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
       let matches = [];
+      let userEmbedding = null;
 
       if (apiKey) {
         try {
@@ -262,18 +255,9 @@ module.exports = async function handler(req, res) {
 
           if (embedRes.ok) {
             const embedData = await embedRes.json();
-            const embedding = embedData.embedding.values;
+            userEmbedding = embedData.embedding.values;
 
-            // Read threshold dynamically from course metadata if configured, allowing fully customizable tuning per course
-            const customThreshold = (course && course.metadata && typeof course.metadata.match_threshold === 'number')
-              ? course.metadata.match_threshold
-              : 0.3; // Default fallback to 0.3
-
-            const customMatchCount = (course && course.metadata && typeof course.metadata.match_count === 'number')
-              ? course.metadata.match_count
-              : 20; // Default fallback to 20 candidates
-
-            // Broader candidate set retrieval
+            // Broader candidate set retrieval: Retrieve exactly 20 matches (Requirement 10)
             const matchResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/match_knowledge`, {
               method: 'POST',
               headers: {
@@ -283,9 +267,9 @@ module.exports = async function handler(req, res) {
                 'x-session-id': req.headers['x-session-id'] || ''
               },
               body: JSON.stringify({
-                query_embedding: embedding,
-                match_threshold: customThreshold,
-                match_count: customMatchCount,
+                query_embedding: userEmbedding,
+                match_threshold: 0.25, // inclusive default threshold
+                match_count: 20, // Retrieve exactly 20 matches
                 p_course_id: course_id
               })
             });
@@ -299,7 +283,47 @@ module.exports = async function handler(req, res) {
         }
       }
 
-      // 4. Hybrid retrieval, re-ranking & structured context build will be handled inside handleCourseTutor
+      // 3. Topic lookup using cosine similarity (Requirement 1 & 5)
+      // Occurs strictly AFTER semantic search/user embedding generation
+      let activeTopic = null;
+      if (userEmbedding) {
+        let topicEmbeddings = [];
+        try {
+          const topicEmbedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?course_id=eq.${course_id}&source_type=eq.topic&select=source_id,embedding`, {
+            headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          });
+          if (topicEmbedsRes.ok) {
+            topicEmbeddings = await topicEmbedsRes.json();
+          }
+        } catch (e) {
+          console.error('Failed to fetch topic embeddings for topic detection:', e);
+        }
+
+        let highestSimilarity = -1.0;
+        for (const tEmbed of topicEmbeddings) {
+          if (!tEmbed.embedding) continue;
+          let parsedEmbedding;
+          try {
+            parsedEmbedding = typeof tEmbed.embedding === 'string' ? JSON.parse(tEmbed.embedding) : tEmbed.embedding;
+          } catch (e) {
+            console.warn('Failed to parse topic embedding, skipping:', e);
+            continue;
+          }
+          const sim = cosineSimilarity(userEmbedding, parsedEmbedding);
+          if (sim > highestSimilarity) {
+            highestSimilarity = sim;
+            activeTopic = topics.find(t => t.id === tEmbed.source_id) || null;
+          }
+        }
+
+        // Enforce a reasonable threshold for topic detection to avoid false positives
+        if (highestSimilarity < 0.3) {
+          activeTopic = null;
+        }
+      }
+
+      payload.active_topic = activeTopic;
+      payload.user_embedding = userEmbedding;
       payload.semantic_matches = matches;
       payload.course_metadata = { course, topics, lessons, materials };
     }
@@ -330,7 +354,7 @@ module.exports = async function handler(req, res) {
         return await handleVoiceAI(payload, res);
 
       case 'index_course':
-        return await handleIndexCourse(payload, res);
+        return await handleIndexCourse(payload, res, req);
 
       default:
         res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -383,40 +407,10 @@ async function fetchCourseMetadata(courseId, supabaseUrl, supabaseAnonKey) {
 }
 
 /**
- * Simple TF-IDF like lexical scorer
- */
-function computeLexicalScore(text, query) {
-  if (!text || !query) return 0;
-  const stopWords = new Set(['the', 'and', 'a', 'of', 'to', 'is', 'in', 'that', 'it', 'for', 'on', 'with', 'as', 'at', 'by', 'an']);
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-  if (queryWords.length === 0) return 0;
-
-  const contentLower = text.toLowerCase();
-  let matches = 0;
-  for (const word of queryWords) {
-    // Safely escape special regex characters to prevent runtime crashes
-    const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    try {
-      const regex = new RegExp(`\\b${escapedWord}\\b`, 'g');
-      const wordMatches = contentLower.match(regex);
-      if (wordMatches) {
-        matches += wordMatches.length;
-      }
-    } catch (e) {
-      // Fallback direct substring index match if regex fails
-      if (contentLower.includes(word.toLowerCase())) {
-        matches += 1;
-      }
-    }
-  }
-  return matches / queryWords.length;
-}
-
-/**
  * Feature 1 & 6: Course-aware Tutor
  */
 async function handleCourseTutor(payload, res) {
-  let { message, history = [], semantic_matches = [], course_metadata = {}, active_topic = null } = payload;
+  let { message, history = [], semantic_matches = [], course_metadata = {}, active_topic = null, user_embedding = null } = payload;
 
   if (!message || typeof message !== 'string') {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -479,7 +473,7 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
-  // 1. Build larger candidate pool of semantic matches and structural pieces
+  // 1. Build candidate pool of semantic matches and structural pieces (Requirement 10 & 11)
   const candidates = [];
   const { course, topics = [], lessons = [], materials = [] } = course_metadata;
 
@@ -502,8 +496,8 @@ async function handleCourseTutor(payload, res) {
         source_type: 'lesson',
         source_id: l.id,
         content: `Lesson Title: ${l.title}\nContent Chunk: ${l.content || ''}`,
-        metadata: { type: 'lesson', title: l.title },
-        similarity: 0.4 // lower default similarity
+        metadata: { type: 'lesson', title: l.title, topic_id: l.topic_id },
+        similarity: 0.35 // lower default similarity
       });
     }
   });
@@ -515,39 +509,39 @@ async function handleCourseTutor(payload, res) {
         source_id: m.id,
         content: `Material Title: ${m.title}\nDescription: ${m.description || ''}`,
         metadata: { type: 'material', title: m.title },
-        similarity: 0.4
+        similarity: 0.35
       });
     }
   });
 
-  // 2. Compute Hybrid Scores: 0.5 * Semantic + 0.5 * Lexical, plus structural boosting
-  const queryLower = message.toLowerCase();
+  // 2. Perform semantic topic-aware rerank (Requirement 11)
+  // Completely removed lexical keyword scoring as per Requirement 1.
   candidates.forEach(c => {
-    const lexicalScore = computeLexicalScore(c.content, message);
-    c.lexical_score = lexicalScore;
-    c.hybrid_score = (0.5 * c.similarity) + (0.5 * Math.min(1.0, lexicalScore));
+    let score = c.similarity;
 
-    // Structural boost: if the chunk aligns with the active topic
+    // Structural boost: if the chunk aligns with the cosine-detected active topic
     if (active_topic) {
       const activeTopicTitle = active_topic.title.toLowerCase();
       const contentLower = c.content.toLowerCase();
-      const hasTopicRef = contentLower.includes(activeTopicTitle) ||
-                          (c.metadata?.topic && String(c.metadata.topic).toLowerCase().includes(activeTopicTitle));
-      if (hasTopicRef) {
-        c.hybrid_score += 0.15; // 15% structural boost
+      const isSameTopic = (c.metadata?.topic_id === active_topic.id) ||
+                          (c.metadata?.topic && String(c.metadata.topic).toLowerCase().includes(activeTopicTitle)) ||
+                          contentLower.includes(activeTopicTitle);
+      if (isSameTopic) {
+        score += 0.15; // 15% structural/semantic boost
       }
     }
+    c.reranked_score = score;
   });
 
   // Re-rank candidates descending
-  candidates.sort((a, b) => b.hybrid_score - a.hybrid_score);
+  candidates.sort((a, b) => b.reranked_score - a.reranked_score);
 
   // Confidence thresholds and metadata-based filtering
   // Enforce Course Boundary: tutor must refuse if the top candidate score is below our strict threshold
-  const CONFIDENCE_THRESHOLD = 0.45;
+  const CONFIDENCE_THRESHOLD = 0.4;
   const bestCandidate = candidates[0];
 
-  if (!bestCandidate || bestCandidate.hybrid_score < CONFIDENCE_THRESHOLD) {
+  if (!bestCandidate || bestCandidate.reranked_score < CONFIDENCE_THRESHOLD) {
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       content: "I am sorry, but I cannot find sufficiently verified evidence in the course materials to answer your question. I am designed to assist you strictly using the official course curriculum and resources. Could you please specify or rephrase your question regarding our course topics?",
@@ -560,7 +554,7 @@ async function handleCourseTutor(payload, res) {
     return;
   }
 
-  // Filter down to the top 5 highest-quality chunks for the LLM context
+  // Filter down to exactly the top 5 highest-quality chunks (Requirement 10)
   const selectedChunks = candidates.slice(0, 5);
 
   // 3. Build highly structured prompts sections without using JSON.stringify
@@ -750,7 +744,8 @@ async function indexText({
     chunkOptions = null,
     supabaseUrl = null,
     supabaseAnonKey = null,
-    payload = null
+    payload = null,
+    geminiChunks = null
 }) {
 
     const normalizeText = (t) => {
@@ -758,6 +753,29 @@ async function indexText({
     };
 
     const chunkText = (normalizedText) => {
+        if (sourceType === 'material' && geminiChunks && Array.isArray(geminiChunks)) {
+            console.log(`Using ${geminiChunks.length} pre-segmented chunks from Gemini for material ${sourceId}`);
+            return geminiChunks.map((c, idx) => {
+                let pathHeader = `Document: ${title}`;
+                if (c.chapter) pathHeader += ` > Chapter: ${c.chapter}`;
+                if (c.section) pathHeader += ` > Section: ${c.section}`;
+                if (c.topic) pathHeader += ` > Topic: ${c.topic}`;
+
+                return {
+                    content: `Hierarchy Context: ${pathHeader}\nStructure: ${(c.structure_type || 'segment').toUpperCase()}\nContent Segment:\n${c.content}`,
+                    metadata: {
+                        type: 'material_pdf',
+                        title: title,
+                        chunk_index: idx,
+                        structure_type: c.structure_type || 'segment',
+                        chapter: c.chapter || null,
+                        section: c.section || null,
+                        topic: c.topic || null
+                    }
+                };
+            });
+        }
+
         const splitSemantically = (rawText, limit) => {
             const paragraphs = rawText.split(/\r?\n{2,}/);
             const subChunks = [];
@@ -905,16 +923,7 @@ async function indexText({
         }
     };
 
-    const generateEmbeddings = async (chunks) => {
-        if (chunks.length === 0) return [];
-        // Optimize batch size from 10 to 100 (Google Gemini API's native maximum limit per batch)
-        // to reduce HTTP overhead and complete heavy embedding operations 10x faster.
-        const batchSize = 100;
-        const batches = [];
-        for (let i = 0; i < chunks.length; i += batchSize) {
-            batches.push(chunks.slice(i, i + batchSize));
-        }
-
+    const generateEmbeddingsForBatch = async (batch) => {
         const apiKeyVal = resolveApiKey('generate_batch_embeddings', payload || {});
         const embeddingModel = resolveModelId('generate_batch_embeddings', payload || {});
         const cleanEmbeddingModel = embeddingModel.replace(/^models\//, '');
@@ -932,9 +941,14 @@ async function indexText({
                             throw new Error(`Failed after ${attempt} retries. Status: ${res.status}. Text: ${await res.text()}`);
                         }
                     } else {
-                        throw new Error(`Non-retriable error. Status: ${res.status}. Text: ${await res.text()}`);
+                        const nonRetriableError = new Error(`Non-retriable error. Status: ${res.status}. Text: ${await res.text()}`);
+                        nonRetriableError.isNonRetriable = true;
+                        throw nonRetriableError;
                     }
                 } catch (err) {
+                    if (err.isNonRetriable) {
+                        throw err;
+                    }
                     if (attempt >= maxRetries) {
                         throw err;
                     }
@@ -946,27 +960,23 @@ async function indexText({
             }
         };
 
-        const batchResults = await parallelLimit(batches, 4, async (batch) => {
-            const embedResponse = await fetchWithBackoff(
-                `https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKeyVal}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        requests: batch.map(c => ({
-                            model: `models/${cleanEmbeddingModel}`,
-                            content: { parts: [{ text: c.content }] },
-                            outputDimensionality: 768
-                        }))
-                    })
-                }
-            );
+        const embedResponse = await fetchWithBackoff(
+            `https://generativelanguage.googleapis.com/v1beta/models/${cleanEmbeddingModel}:batchEmbedContents?key=${apiKeyVal}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    requests: batch.map(c => ({
+                        model: `models/${cleanEmbeddingModel}`,
+                        content: { parts: [{ text: c.content }] },
+                        outputDimensionality: 768
+                    }))
+                })
+            }
+        );
 
-            const embedResult = await embedResponse.json();
-            return embedResult.embeddings.map(e => e.values);
-        });
-
-        return batchResults.flat();
+        const embedResult = await embedResponse.json();
+        return embedResult.embeddings.map(e => e.values);
     };
 
     const activeVersion = resolveModelId('generate_batch_embeddings', payload || {});
@@ -1038,15 +1048,28 @@ async function indexText({
     };
 
     const normalizedText = normalizeText(text);
-
     const chunks = chunkText(normalizedText);
+
+    // Fetch transactional last_chunk_index to support resumption (Requirement 7)
+    let lastChunkIndex = -1;
+    if (sourceType === 'material') {
+        const state = await getIndexingState(supabaseUrl, supabaseAnonKey, sourceId);
+        if (state && typeof state.last_chunk_index === 'number') {
+            lastChunkIndex = state.last_chunk_index;
+        }
+    }
 
     // Fetch already indexed chunk indexes from DB
     const { chunkIndexes: existingChunkIndexes, versionMismatch } = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, sourceId, activeVersion);
 
-    const isAtomicReplace = versionMismatch || (existingChunkIndexes.size === 0);
+    const isAtomicReplace = versionMismatch || (existingChunkIndexes.size === 0 && lastChunkIndex === -1);
 
-    const chunksToProcess = isAtomicReplace ? chunks : chunks.filter(c => !existingChunkIndexes.has(c.metadata?.chunk_index));
+    const chunksToProcess = isAtomicReplace
+        ? chunks
+        : chunks.filter(c => {
+            const idx = c.metadata?.chunk_index;
+            return idx > lastChunkIndex && !existingChunkIndexes.has(idx);
+        });
 
     if (chunksToProcess.length === 0) {
         console.log(`✓ All chunks for ${sourceType} ${sourceId} are already fully indexed. Skipping.`);
@@ -1055,23 +1078,43 @@ async function indexText({
 
     console.log(`Found ${chunksToProcess.length} chunks to process (out of ${chunks.length} total, isAtomicReplace: ${isAtomicReplace}) for ${sourceType} ${sourceId}.`);
 
-    const embeddings = await generateEmbeddings(chunksToProcess);
+    // Process chunk insertion in sequential transactional batches of 100
+    const batchSize = 100;
+    for (let i = 0; i < chunksToProcess.length; i += batchSize) {
+        const batch = chunksToProcess.slice(i, i + batchSize);
+        console.log(`Embedding and inserting batch ${i / batchSize + 1} (${batch.length} chunks) for ${sourceType} ${sourceId}`);
 
-    await upsertKnowledgeEmbeddings({
-        sourceType,
-        sourceId,
-        courseId,
-        title,
-        chunks: chunksToProcess,
-        embeddings,
-        isAtomicReplace
-    });
+        const batchEmbeddings = await generateEmbeddingsForBatch(batch);
+
+        await upsertKnowledgeEmbeddings({
+            sourceType,
+            sourceId,
+            courseId,
+            title,
+            chunks: batch,
+            embeddings: batchEmbeddings,
+            isAtomicReplace: isAtomicReplace && (i === 0) // Atomic replace on the very first batch only
+        });
+
+        // Update the database last_chunk_index transition status (Requirement 7)
+        if (sourceType === 'material') {
+            const maxBatchIndex = Math.max(...batch.map(c => c.metadata?.chunk_index || 0));
+            lastChunkIndex = maxBatchIndex;
+            await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
+                material_id: sourceId,
+                course_id: courseId,
+                last_chunk_index: lastChunkIndex,
+                status: 'embedding',
+                current_step: 'embedding'
+            });
+        }
+    }
 }
 
 /**
  * Feature 6: Knowledge Base Indexing Support
  */
-async function handleIndexCourse(payload, res) {
+async function handleIndexCourse(payload, res, req) {
   const { course_id, material_id } = payload;
   if (!course_id) {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -1159,19 +1202,56 @@ async function handleIndexCourse(payload, res) {
       course = courseList?.[0] || null;
     }
 
-    // Query existing embeddings from knowledge_embeddings for this course to avoid duplicate work
-    const embedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?course_id=eq.${course_id}&select=source_type,source_id`, {
-      headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
-    });
-    const existingEmbeds = embedsRes.ok ? await embedsRes.json() : [];
-    const existingCourses = new Set(existingEmbeds.filter(e => e.source_type === 'course').map(e => e.source_id));
-    const existingTopics = new Set(existingEmbeds.filter(e => e.source_type === 'topic').map(e => e.source_id));
-    const existingLessons = new Set(existingEmbeds.filter(e => e.source_type === 'lesson').map(e => e.source_id));
+    // Query existing embeddings using the optimized distinct RPC (Requirement 6)
+    let existingCourses = new Set();
+    let existingTopics = new Set();
+    let existingLessons = new Set();
 
-    // Prepare a list of asynchronous, concurrent tasks for parallel limit pool execution
+    const sessionId = req?.headers['x-session-id'] || '';
+
+    try {
+      const distinctRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/get_distinct_knowledge_sources`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId
+        },
+        body: JSON.stringify({ p_course_id: course_id })
+      });
+
+      if (distinctRes.ok) {
+        const existingEmbeds = await distinctRes.json();
+        existingEmbeds.forEach(e => {
+          if (e.source_type === 'course') existingCourses.add(e.source_id);
+          else if (e.source_type === 'topic') existingTopics.add(e.source_id);
+          else if (e.source_type === 'lesson') existingLessons.add(e.source_id);
+        });
+      } else {
+        console.warn(`RPC get_distinct_knowledge_sources returned status: ${distinctRes.status}. Falling back to select.`);
+        const embedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?course_id=eq.${course_id}&select=source_type,source_id`, {
+          headers: {
+            'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+            'x-session-id': sessionId
+          }
+        });
+        const existingEmbeds = embedsRes.ok ? await embedsRes.json() : [];
+        existingEmbeds.forEach(e => {
+          if (e.source_type === 'course') existingCourses.add(e.source_id);
+          else if (e.source_type === 'topic') existingTopics.add(e.source_id);
+          else if (e.source_type === 'lesson') existingLessons.add(e.source_id);
+        });
+      }
+    } catch (rpcErr) {
+      console.error('Error fetching distinct knowledge sources:', rpcErr);
+    }
+
+    // Prepare list of asynchronous concurrent tasks for parallel execution (Requirement 4)
     const tasks = [];
 
-    // 1. Index course info itself (only if course-level indexing)
+    // 1. Index course info itself
     if (course && !existingCourses.has(course_id)) {
       tasks.push(async () => {
         console.log(`Indexing course info for course: ${course.title}`);
@@ -1188,7 +1268,7 @@ async function handleIndexCourse(payload, res) {
       });
     }
 
-    // 2. Index topics (only if course-level indexing)
+    // 2. Index topics
     if (topics && Array.isArray(topics)) {
       for (const t of topics) {
         if (!existingTopics.has(t.id)) {
@@ -1209,9 +1289,8 @@ async function handleIndexCourse(payload, res) {
       }
     }
 
-    // 3. Index lessons (only if course-level indexing)
+    // 3. Index lessons
     if (lessons && Array.isArray(lessons)) {
-      // Build topics map for lookup
       const topicsMap = {};
       if (topics && Array.isArray(topics)) {
         topics.forEach(t => {
@@ -1242,7 +1321,7 @@ async function handleIndexCourse(payload, res) {
       }
     }
 
-    // 4. Index materials (using full robust state machine for PDFs)
+    // 4. Index materials (using full robust state machine for PDFs and parallelized concurrency)
     if (materials && Array.isArray(materials)) {
       for (const m of materials) {
         tasks.push(async () => {
@@ -1271,6 +1350,7 @@ async function handleIndexCourse(payload, res) {
             let currentStep = 'none';
             let retryCount = 0;
             let timingLogs = {};
+            let savedChunks = null;
 
             if (state) {
               extractedText = state.extracted_text || '';
@@ -1278,12 +1358,12 @@ async function handleIndexCourse(payload, res) {
               currentStep = state.current_step || 'none';
               retryCount = state.retry_count || 0;
               timingLogs = state.timing_logs || {};
+              savedChunks = state.chunks || null;
             }
 
             // If PDF file URL changed or no state exists, do a fresh start for this material
             if (!state || state.file_url !== fileUrl) {
               console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
-              // Delete existing embeddings for this material
               const deleteUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${m.id}`;
               await fetch(deleteUrl, {
                 method: 'DELETE',
@@ -1298,6 +1378,7 @@ async function handleIndexCourse(payload, res) {
               currentStep = 'none';
               retryCount = 0;
               timingLogs = {};
+              savedChunks = null;
 
               state = {
                 material_id: m.id,
@@ -1308,7 +1389,8 @@ async function handleIndexCourse(payload, res) {
                 status: 'pending',
                 current_step: 'none',
                 timing_logs: {},
-                retry_count: 0
+                retry_count: 0,
+                last_chunk_index: -1
               };
               await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
             }
@@ -1320,11 +1402,11 @@ async function handleIndexCourse(payload, res) {
             }
 
             try {
-              // Stage 1: Download & Text Extraction (Skip if extractedText is already truthy and populated to support full resumption)
-              if (extractedText && extractedText.trim().length > 0) {
-                console.log(`✓ PDF text already extracted for ${m.title}. Skipping extraction.`);
+              // Stage 1: Download & Text Extraction with Gemini-based Structural Segmentation (Requirement 8)
+              if (savedChunks && Array.isArray(savedChunks) && savedChunks.length > 0) {
+                console.log(`✓ Chunks already segmented and saved for ${m.title}. Skipping extraction.`);
               } else {
-                console.log(`Starting PDF download and extraction for: ${m.title}`);
+                console.log(`Starting PDF download and structured extraction for: ${m.title}`);
                 const extStart = Date.now();
 
                 await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
@@ -1354,26 +1436,129 @@ async function handleIndexCourse(payload, res) {
                           }
                         },
                         {
-                          text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                          text: `Analyze this PDF document and perform complete structural segmentation. Break the document down into logical, coherent chunks based on chapters, sections, topics, weeks, lessons, definitions, examples, exercises, or general segments.
+
+Output MUST be a valid JSON object matching the following schema:
+{
+  "chunks": [
+    {
+      "chapter": "Chapter name or empty string",
+      "section": "Section name or empty string",
+      "topic": "Topic name or empty string",
+      "structure_type": "one of: chapter, section, topic, week, lesson, definition, example, exercise, segment",
+      "content": "Verbatim extracted text content of this chunk"
+    }
+  ]
+}
+
+Strict requirements:
+- Do not summarize or alter the text content; extract the verbatim document text.
+- Ensure every chunk content is complete, coherent, and around 1000-2500 characters max. If a section is very long, split it into multiple chunks with the same hierarchy metadata.
+- Output ONLY the raw JSON block. No conversational preamble, no markdown formatting.`
                         }
                       ]
                     }
-                  ]
+                  ],
+                  generationConfig: {
+                    responseMimeType: 'application/json'
+                  }
                 };
 
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(requestBody)
-                });
+                // Better PDF extraction retry logic using exponential backoff (Requirement 9)
+                let response;
+                let attempt = 0;
+                const maxRetries = 5;
+                const initialDelay = 2000;
 
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw new Error(`Gemini PDF parse API returned status ${response.status}: ${errorText}`);
+                while (attempt < maxRetries) {
+                  try {
+                    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(requestBody)
+                    });
+
+                    if (response.ok) {
+                      break;
+                    }
+
+                    if (response.status === 429 || response.status >= 500) {
+                      attempt++;
+                      if (attempt >= maxRetries) {
+                        throw new Error(`Gemini PDF parse API failed after ${maxRetries} attempts with status ${response.status}: ${await response.text()}`);
+                      }
+                      const delay = initialDelay * Math.pow(2, attempt) + Math.random() * 1000;
+                      console.warn(`Extraction failed with ${response.status}. Retrying in ${Math.round(delay)}ms...`);
+                      await new Promise(resolve => setTimeout(resolve, delay));
+                    } else {
+                      const nonRetriableError = new Error(`Non-retriable Gemini parse error: ${response.status} ${await response.text()}`);
+                      nonRetriableError.isNonRetriable = true;
+                      throw nonRetriableError;
+                    }
+                  } catch (err) {
+                    if (err.isNonRetriable) {
+                      throw err;
+                    }
+                    attempt++;
+                    if (attempt >= maxRetries) {
+                      throw err;
+                    }
+                    const delay = initialDelay * Math.pow(2, attempt) + Math.random() * 1000;
+                    console.warn(`Extraction error: ${err.message || err}. Retrying in ${Math.round(delay)}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                  }
                 }
 
                 const data = await response.json();
-                extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                const rawResult = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+                let parsedChunks = [];
+                try {
+                    const parsedJson = JSON.parse(rawResult.trim());
+                    if (parsedJson && Array.isArray(parsedJson.chunks)) {
+                        parsedChunks = parsedJson.chunks;
+                    }
+                } catch (parseErr) {
+                    console.warn("Failed to parse structural JSON from Gemini. Falling back to plain text extraction.", parseErr);
+                }
+
+                if (parsedChunks.length > 0) {
+                    extractedText = parsedChunks.map(c => c.content).join('\n\n');
+                    savedChunks = parsedChunks;
+                } else {
+                    // Fallback to plain text extraction request (zero regression / robust fallback)
+                    console.log("Using plain text extraction fallback...");
+                    const fallbackRequestBody = {
+                      contents: [
+                        {
+                          parts: [
+                            {
+                              inline_data: {
+                                mime_type: 'application/pdf',
+                                data: base64Data
+                              }
+                            },
+                            {
+                              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                            }
+                          ]
+                        }
+                      ]
+                    };
+
+                    const fallbackResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(fallbackRequestBody)
+                    });
+
+                    if (!fallbackResponse.ok) {
+                      throw new Error(`Fallback Gemini PDF Parse Error: ${await fallbackResponse.text()}`);
+                    }
+                    const fallbackData = await fallbackResponse.json();
+                    extractedText = fallbackData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                    savedChunks = null;
+                }
 
                 if (!extractedText || extractedText.trim().length === 0) {
                   throw new Error("Gemini extracted zero text from this PDF document.");
@@ -1383,36 +1568,39 @@ async function handleIndexCourse(payload, res) {
                 status = 'extracted';
                 currentStep = 'extraction';
 
-                await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                  ...state,
-                  extracted_text: extractedText,
-                  status,
-                  current_step: currentStep,
-                  timing_logs: timingLogs
-                });
+                state = {
+                    ...state,
+                    extracted_text: extractedText,
+                    chunks: savedChunks,
+                    status,
+                    current_step: currentStep,
+                    timing_logs: timingLogs
+                };
+                await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
                 console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
               }
 
-              // Stage 2 & 3: Chunk, Embed and Store using shared indexText()
-              console.log(`Indexing text for PDF: ${m.title}`);
+              // Stage 2 & 3: Chunk, Embed and Store
+              console.log(`Indexing text/chunks for PDF: ${m.title}`);
               const indexStart = Date.now();
 
               await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                ...state,
-                status: 'embedding',
-                current_step: 'embedding'
+                  ...state,
+                  status: 'embedding',
+                  current_step: 'embedding'
               });
 
               await indexText({
-                sourceType: 'material',
-                sourceId: m.id,
-                courseId: course_id,
-                title: m.title,
-                text: extractedText,
-                chunkOptions: payload.chunk_options,
-                supabaseUrl,
-                supabaseAnonKey,
-                payload
+                  sourceType: 'material',
+                  sourceId: m.id,
+                  courseId: course_id,
+                  title: m.title,
+                  text: extractedText,
+                  chunkOptions: payload.chunk_options,
+                  supabaseUrl,
+                  supabaseAnonKey,
+                  payload,
+                  geminiChunks: savedChunks
               });
 
               timingLogs.embedding = Date.now() - indexStart;
@@ -1421,11 +1609,11 @@ async function handleIndexCourse(payload, res) {
               currentStep = 'completed';
 
               await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                ...state,
-                status,
-                current_step: currentStep,
-                error_message: null,
-                timing_logs: timingLogs
+                  ...state,
+                  status,
+                  current_step: currentStep,
+                  error_message: null,
+                  timing_logs: timingLogs
               });
               console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
 
@@ -1434,11 +1622,11 @@ async function handleIndexCourse(payload, res) {
               const errStr = materialError.message || String(materialError);
 
               await upsertIndexingState(supabaseUrl, supabaseAnonKey, {
-                ...state,
-                status: 'failed',
-                current_step: currentStep,
-                error_message: errStr,
-                retry_count: retryCount + 1
+                  ...state,
+                  status: 'failed',
+                  current_step: currentStep,
+                  error_message: errStr,
+                  retry_count: retryCount + 1
               });
 
               if (material_id) {
@@ -1446,7 +1634,7 @@ async function handleIndexCourse(payload, res) {
               }
             }
           } else {
-            // Fallback to title and description for non-PDFs or failed extractions
+            // Fallback to title and description for non-PDFs
             console.log(`Indexing metadata for non-PDF material: ${m.title}`);
             await indexText({
               sourceType: 'material',
@@ -1463,7 +1651,7 @@ async function handleIndexCourse(payload, res) {
       }
     }
 
-    // Execute all tasks in parallel using the bounded concurrency pool to respect API rate limits
+    // Execute all tasks in parallel using the bounded concurrency pool to respect API rate limits (Requirement 4)
     await parallelLimit(tasks, 4, async (task) => await task());
 
     res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });

@@ -23,9 +23,12 @@ CREATE TABLE IF NOT EXISTS material_indexing_states (
   error_message TEXT,
   timing_logs JSONB DEFAULT '{}'::jsonb, -- Telemetry for monitoring stage execution speeds
   retry_count INTEGER DEFAULT 0,
+  last_chunk_index INTEGER DEFAULT -1,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE material_indexing_states ADD COLUMN IF NOT EXISTS last_chunk_index INTEGER DEFAULT -1;
 
 -- 3. HIGH-PERFORMANCE SEARCH & OPERATIONAL INDEXES
 -- Indexing course_id for fast queries filtered by course context
@@ -71,3 +74,33 @@ CREATE POLICY "Indexing States: Teachers Manage" ON material_indexing_states FOR
 
 -- 6. SYSTEM-WIDE SECURITY GRANTS
 GRANT ALL ON TABLE material_indexing_states TO anon, authenticated, postgres, service_role;
+
+-- RPC for fetching unique source_type and source_id pairs from knowledge_embeddings
+CREATE OR REPLACE FUNCTION get_distinct_knowledge_sources(p_course_id UUID)
+RETURNS TABLE (
+  source_type VARCHAR,
+  source_id UUID
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- Enterprise Grade Security: Validate access context
+  IF NOT (
+    is_admin() OR
+    EXISTS (SELECT 1 FROM courses WHERE id = p_course_id AND teacher_email = get_auth_email()) OR
+    EXISTS (SELECT 1 FROM enrollments WHERE course_id = p_course_id AND student_email = get_auth_email())
+  ) THEN
+    RAISE EXCEPTION 'Access Denied: get_distinct_knowledge_sources authorization failed';
+  END IF;
+
+  RETURN QUERY
+  SELECT DISTINCT ke.source_type, ke.source_id
+  FROM knowledge_embeddings ke
+  WHERE ke.course_id = p_course_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION get_distinct_knowledge_sources(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_distinct_knowledge_sources(UUID) TO authenticated, anon;
