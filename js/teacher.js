@@ -109,11 +109,11 @@ async function renderDashboard() {
 
     content.innerHTML = `
     <div class="stats-grid">
-      <div class="stat-card"><h4>My Courses</h4><div class="value">${escapeHtml(coursesCount)}</div></div>
-      <div class="stat-card"><h4>Assignments</h4><div class="value">${escapeHtml(assignmentsCount)}</div></div>
-      <div class="stat-card"><h4>Total Submissions</h4><div class="value">${escapeHtml(submissionsCount)}</div></div>
-      <div class="stat-card warn"><h4>Pending Grading</h4><div class="value">${escapeHtml(pendingCount)}</div></div>
-      <div class="stat-card ${violationsCount > 0 ? 'danger' : ''}"><h4>Security Alerts</h4><div class="value">${escapeHtml(violationsCount)}</div></div>
+      <div class="stat-card" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'courses\\']')?.click()"><h4>My Courses</h4><div class="value">${escapeHtml(coursesCount)}</div></div>
+      <div class="stat-card" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'assignments\\']')?.click()"><h4>Assignments</h4><div class="value">${escapeHtml(assignmentsCount)}</div></div>
+      <div class="stat-card" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'grading\\']')?.click()"><h4>Total Submissions</h4><div class="value">${escapeHtml(submissionsCount)}</div></div>
+      <div class="stat-card warn" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'grading\\']')?.click()"><h4>Pending Grading</h4><div class="value">${escapeHtml(pendingCount)}</div></div>
+      <div class="stat-card ${violationsCount > 0 ? 'danger' : ''}" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'live-proctoring\\']')?.click()"><h4>Security Alerts</h4><div class="value">${escapeHtml(violationsCount)}</div></div>
     </div>
       <section><h3>Teacher Overview</h3><p>Welcome back! You have ${escapeHtml(pendingCount)} submissions waiting to be graded.</p></section>
     `;
@@ -2046,11 +2046,7 @@ async function renderAntiCheat() {
     <div class="flex-between mb-20">
         <div>
             <h2 class="m-0">Security Monitoring</h2>
-            <p class="small text-muted mt-5">Oversee academic integrity and manage proctoring parameters.</p>
-        </div>
-        <div class="flex gap-10">
-            <button class="button secondary small w-auto" id="teacher-view-records-btn">📜 View Historical Records</button>
-            <button class="button small w-auto" id="teacher-view-live-btn" style="background:#5b2ea6">📺 Live Proctoring Center</button>
+            <p class="small text-muted mt-5">Overview of historical assessments with detected integrity violations.</p>
         </div>
     </div>
     <div id="anticheat-tab-content"></div>
@@ -2066,13 +2062,6 @@ async function renderAntiCheat() {
       window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
       TeacherState._liveViolationsChannel = null;
     }
-
-    document.getElementById('teacher-view-records-btn').classList.remove('secondary');
-    document.getElementById('teacher-view-records-btn').style.background = 'var(--purple)';
-    document.getElementById('teacher-view-records-btn').style.color = 'white';
-    document.getElementById('teacher-view-live-btn').classList.add('secondary');
-    document.getElementById('teacher-view-live-btn').style.background = '';
-    document.getElementById('teacher-view-live-btn').style.color = '';
 
     UI.showLoading('anticheat-tab-content', 'Loading security summary...');
     try {
@@ -2098,20 +2087,6 @@ async function renderAntiCheat() {
         `;
     }
   };
-
-  const showLive = async () => {
-    document.getElementById('teacher-view-live-btn').classList.remove('secondary');
-    document.getElementById('teacher-view-live-btn').style.background = '#5b2ea6';
-    document.getElementById('teacher-view-live-btn').style.color = 'white';
-    document.getElementById('teacher-view-records-btn').classList.add('secondary');
-    document.getElementById('teacher-view-records-btn').style.background = '';
-    document.getElementById('teacher-view-records-btn').style.color = '';
-
-    await renderTeacherLiveProctoring(renderId);
-  };
-
-  document.getElementById('teacher-view-records-btn').onclick = showHistorical;
-  document.getElementById('teacher-view-live-btn').onclick = showLive;
 
   // Default to historical view (keeping the functional default intact)
   await showHistorical();
@@ -2166,7 +2141,10 @@ async function renderTeacherLiveProctoring(renderId) {
 
         const activeCount = sessions.length;
         const totalViolations = sessions.reduce((acc, s) => acc + parseInt(s.violation_count || 0), 0);
-        const accuracy = 96.3;
+
+        // Calculate dynamic detection accuracy based on actual sessions data
+        const flaggedSessions = sessions.filter(s => s.status === 'Flagged' || s.status === 'Warning' || parseInt(s.violation_count) > 5).length;
+        const accuracy = sessions.length > 0 ? parseFloat((100 - (flaggedSessions / sessions.length) * 100).toFixed(1)) : 100.0;
 
         area.innerHTML = `
             <div class="flex-between mb-20">
