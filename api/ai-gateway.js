@@ -302,7 +302,14 @@ module.exports = async function handler(req, res) {
         let highestSimilarity = -1.0;
         for (const tEmbed of topicEmbeddings) {
           if (!tEmbed.embedding) continue;
-          const sim = cosineSimilarity(userEmbedding, tEmbed.embedding);
+          let parsedEmbedding;
+          try {
+            parsedEmbedding = typeof tEmbed.embedding === 'string' ? JSON.parse(tEmbed.embedding) : tEmbed.embedding;
+          } catch (e) {
+            console.warn('Failed to parse topic embedding, skipping:', e);
+            continue;
+          }
+          const sim = cosineSimilarity(userEmbedding, parsedEmbedding);
           if (sim > highestSimilarity) {
             highestSimilarity = sim;
             activeTopic = topics.find(t => t.id === tEmbed.source_id) || null;
@@ -347,7 +354,7 @@ module.exports = async function handler(req, res) {
         return await handleVoiceAI(payload, res);
 
       case 'index_course':
-        return await handleIndexCourse(payload, res);
+        return await handleIndexCourse(payload, res, req);
 
       default:
         res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -934,9 +941,14 @@ async function indexText({
                             throw new Error(`Failed after ${attempt} retries. Status: ${res.status}. Text: ${await res.text()}`);
                         }
                     } else {
-                        throw new Error(`Non-retriable error. Status: ${res.status}. Text: ${await res.text()}`);
+                        const nonRetriableError = new Error(`Non-retriable error. Status: ${res.status}. Text: ${await res.text()}`);
+                        nonRetriableError.isNonRetriable = true;
+                        throw nonRetriableError;
                     }
                 } catch (err) {
+                    if (err.isNonRetriable) {
+                        throw err;
+                    }
                     if (attempt >= maxRetries) {
                         throw err;
                     }
@@ -1102,7 +1114,7 @@ async function indexText({
 /**
  * Feature 6: Knowledge Base Indexing Support
  */
-async function handleIndexCourse(payload, res) {
+async function handleIndexCourse(payload, res, req) {
   const { course_id, material_id } = payload;
   if (!course_id) {
     res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -1195,13 +1207,16 @@ async function handleIndexCourse(payload, res) {
     let existingTopics = new Set();
     let existingLessons = new Set();
 
+    const sessionId = req?.headers['x-session-id'] || '';
+
     try {
       const distinctRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/get_distinct_knowledge_sources`, {
         method: 'POST',
         headers: {
           'apikey': supabaseAnonKey,
           'Authorization': `Bearer ${supabaseAnonKey}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId
         },
         body: JSON.stringify({ p_course_id: course_id })
       });
@@ -1216,7 +1231,11 @@ async function handleIndexCourse(payload, res) {
       } else {
         console.warn(`RPC get_distinct_knowledge_sources returned status: ${distinctRes.status}. Falling back to select.`);
         const embedsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?course_id=eq.${course_id}&select=source_type,source_id`, {
-          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          headers: {
+            'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+            'x-session-id': sessionId
+          }
         });
         const existingEmbeds = embedsRes.ok ? await embedsRes.json() : [];
         existingEmbeds.forEach(e => {
@@ -1472,9 +1491,14 @@ Strict requirements:
                       console.warn(`Extraction failed with ${response.status}. Retrying in ${Math.round(delay)}ms...`);
                       await new Promise(resolve => setTimeout(resolve, delay));
                     } else {
-                      throw new Error(`Non-retriable Gemini parse error: ${response.status} ${await response.text()}`);
+                      const nonRetriableError = new Error(`Non-retriable Gemini parse error: ${response.status} ${await response.text()}`);
+                      nonRetriableError.isNonRetriable = true;
+                      throw nonRetriableError;
                     }
                   } catch (err) {
+                    if (err.isNonRetriable) {
+                      throw err;
+                    }
                     attempt++;
                     if (attempt >= maxRetries) {
                       throw err;
