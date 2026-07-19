@@ -2120,6 +2120,16 @@ async function renderTeacherLiveProctoringPage() {
 }
 
 async function renderTeacherLiveProctoring(renderId) {
+    // Clean up any existing live interval/subscription before re-rendering/refreshing to avoid leaks and conflicts
+    if (TeacherState._liveProctoringInterval) {
+        clearInterval(TeacherState._liveProctoringInterval);
+        TeacherState._liveProctoringInterval = null;
+    }
+    if (TeacherState._liveViolationsChannel) {
+        window.supabaseClient?.removeChannel(TeacherState._liveViolationsChannel);
+        TeacherState._liveViolationsChannel = null;
+    }
+
     const area = document.getElementById('anticheat-tab-content');
     if (!area) return;
 
@@ -2349,6 +2359,9 @@ function addTeacherLiveViolationToFeed(v) {
 }
 
 async function monitorLiveSession(attemptId, email) {
+    if (attemptId === 'null' || attemptId === 'undefined' || !attemptId) {
+        attemptId = null;
+    }
     const backdrop = UI.showModal('Live Session Monitor: ' + email, `
         <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
             <div class="flex-center-y gap-10">

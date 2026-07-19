@@ -3305,6 +3305,9 @@ async function updateProctoringStatus(status) {
 }
 
 async function monitorLiveSession(attemptId, email) {
+    if (attemptId === 'null' || attemptId === 'undefined' || !attemptId) {
+        attemptId = null;
+    }
     const backdrop = UI.showModal('Live Session Monitor: ' + email, `
         <div class="flex-between mb-15 p-10 bg-light border-radius-sm">
             <div class="flex-center-y gap-10">

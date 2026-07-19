@@ -84,6 +84,24 @@
             this.state.isActive = true;
             this.state.startTime = Date.now();
             this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
+
+            if (this.proctor) {
+                try {
+                    await this.proctor.start();
+                } catch (err) {
+                    console.error('Anti-Cheat: Failed to start ProctorEngine streams:', err);
+                    this.state.isActive = false;
+                    // Standardize error message for user visibility
+                    let friendlyMsg = 'Failed to access camera, microphone, or screen sharing. Please check permissions and try again.';
+                    if (err.name === 'NotAllowedError') {
+                        friendlyMsg = 'Permission denied: Please allow camera/microphone access in your browser settings to take the exam.';
+                    } else if (err.name === 'NotFoundError') {
+                        friendlyMsg = 'Required device (camera/microphone) not found. Please connect your device and try again.';
+                    }
+                    throw new Error(friendlyMsg);
+                }
+            }
+
             this.emit('ASSESSMENT_STARTED', {
                 attemptId: this.state.attemptId,
                 assessmentId: this.state.assessmentId,
@@ -285,6 +303,13 @@
          * Pauses all proctoring activities if active.
          */
         async pauseProctoring() {
+            if (this.proctor) {
+                try {
+                    await this.proctor.pause();
+                } catch (err) {
+                    console.error('Anti-Cheat: Failed to pause ProctorEngine:', err);
+                }
+            }
             this.emit('ASSESSMENT_PAUSED', { attemptId: this.state.attemptId });
         }
 
@@ -292,6 +317,13 @@
          * Resumes all proctoring activities if active.
          */
         async resumeProctoring() {
+            if (this.proctor) {
+                try {
+                    await this.proctor.resume();
+                } catch (err) {
+                    console.error('Anti-Cheat: Failed to resume ProctorEngine:', err);
+                }
+            }
             this.emit('ASSESSMENT_RESUMED', { attemptId: this.state.attemptId });
         }
 
@@ -839,8 +871,17 @@
             this.emit('ASSESSMENT_STOPPED', { attemptId: this.state.attemptId, duration });
 
             this.state.isActive = false;
+
+            if (this.proctor) {
+                try {
+                    await this.proctor.stop();
+                } catch (err) {
+                    console.error('Anti-Cheat: Error stopping ProctorEngine during destroy:', err);
+                }
+                this.proctor = null;
+            }
+
             this.state.attemptId = null;
-            this.proctor = null;
 
             if (this._tabInterval) {
                 clearInterval(this._tabInterval);
