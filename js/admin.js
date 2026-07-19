@@ -3115,6 +3115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
  */
 let _liveProctoringInterval = null;
 let _liveViolationsChannel = null;
+let _activeLiveFeedInterval = null;
 
 async function renderLiveProctoring() {
     const renderId = ++window.currentRenderId;
@@ -3665,6 +3666,11 @@ async function sendMessageToStudent(email, attemptId = null) {
 }
 
 async function showLiveFeedModal() {
+    if (_activeLiveFeedInterval) {
+        clearInterval(_activeLiveFeedInterval);
+        _activeLiveFeedInterval = null;
+    }
+
     const backdrop = UI.showModal('Real-time Proctoring Feed', `
         <div id="live-feed-grid" class="grid-3 gap-15">
             <div class="flex-center p-40" style="grid-column: 1/-1"><div class="loading-spinner"></div></div>
@@ -3734,11 +3740,14 @@ async function showLiveFeedModal() {
     };
 
     updateFeed();
-    const interval = setInterval(updateFeed, 15000);
+    _activeLiveFeedInterval = setInterval(updateFeed, 15000);
 
     const cleanup = () => {
         isClosed = true;
-        clearInterval(interval);
+        if (_activeLiveFeedInterval) {
+            clearInterval(_activeLiveFeedInterval);
+            _activeLiveFeedInterval = null;
+        }
     };
 
     // Use MutationObserver on body to safely catch DOM removals and prevent any interval leaks

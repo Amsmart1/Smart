@@ -10,6 +10,7 @@ const TeacherState = {
   analyticsCache: new Map(),
   _liveProctoringInterval: null,
   _liveViolationsChannel: null,
+  _activeLiveFeedInterval: null,
   viewModes: {},
   lastSessions: null
 };
@@ -2655,6 +2656,11 @@ async function exportProctoringReport(teacherEmail) {
 }
 
 async function showTeacherLiveFeedModal(teacherEmail) {
+    if (TeacherState._activeLiveFeedInterval) {
+        clearInterval(TeacherState._activeLiveFeedInterval);
+        TeacherState._activeLiveFeedInterval = null;
+    }
+
     const backdrop = UI.showModal('Real-time Proctoring Feed', `
         <div id="live-feed-grid" class="grid-3 gap-15">
             <div class="flex-center p-40" style="grid-column: 1/-1"><div class="loading-spinner"></div></div>
@@ -2724,11 +2730,14 @@ async function showTeacherLiveFeedModal(teacherEmail) {
     };
 
     updateFeed();
-    const interval = setInterval(updateFeed, 15000);
+    TeacherState._activeLiveFeedInterval = setInterval(updateFeed, 15000);
 
     const cleanup = () => {
         isClosed = true;
-        clearInterval(interval);
+        if (TeacherState._activeLiveFeedInterval) {
+            clearInterval(TeacherState._activeLiveFeedInterval);
+            TeacherState._activeLiveFeedInterval = null;
+        }
     };
 
     // Use MutationObserver on body to safely catch DOM removals and prevent any interval leaks
