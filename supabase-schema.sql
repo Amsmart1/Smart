@@ -1809,10 +1809,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- Bind the lockout protection trigger to the users table
 DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
 CREATE TRIGGER tr_user_lockout_protection
 BEFORE UPDATE ON users
-FOR EACH ROW EXECUTE PROCEDURE tr_protect_user_lockout();
+FOR EACH ROW
+EXECUTE PROCEDURE tr_protect_user_lockout();
 
 -- 5. Validation Triggers
 
