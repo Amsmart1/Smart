@@ -84,7 +84,7 @@ BEGIN
     INTO v_email, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    -- Verify that the user is active, flagged is false, and we only block on these two status fields
+    -- Reverted extra reset status check, so we only block on active/flagged
     IF v_email IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_email;
     END IF;
@@ -106,7 +106,7 @@ BEGIN
     INTO v_role, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    -- Verify that the user role is retrieved and active is true, flagged is false (no reset check)
+    -- Reverted extra reset status check, so we only block on active/flagged
     IF v_role IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
         RETURN v_role;
     END IF;

@@ -137,14 +137,14 @@ async function renderDashboard() {
 
     <h3 class="mb-15 mt-30">Academic Management & Support</h3>
     <div class="stats-grid">
-      <div class="stat-card" style="border-left-color: var(--p)">
+      <div class="stat-card" style="border-left-color: var(--p); cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'users\\']')?.click()">
         <h4>Students / Teachers</h4>
         <div class="value">${escapeHtml(stats.students)} / ${escapeHtml(stats.teachers)}</div>
       </div>
-      <div class="stat-card"><h4>Active Courses</h4><div class="value">${escapeHtml(stats.courses)}</div></div>
+      <div class="stat-card" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'courses\\']')?.click()"><h4>Active Courses</h4><div class="value">${escapeHtml(stats.courses)}</div></div>
       <div class="stat-card"><h4>Enrollments</h4><div class="value">${escapeHtml(stats.enrollments)}</div></div>
-      <div class="stat-card"><h4>Active Broadcasts</h4><div class="value">${escapeHtml(stats.activeBroadcasts)}</div></div>
-      <div class="stat-card" style="border-left-color: var(--warn)"><h4>Support Tickets</h4><div class="value">${escapeHtml(stats.openTickets)}</div></div>
+      <div class="stat-card" style="cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'broadcasts\\']')?.click()"><h4>Active Broadcasts</h4><div class="value">${escapeHtml(stats.activeBroadcasts)}</div></div>
+      <div class="stat-card" style="border-left-color: var(--warn); cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'support\\']')?.click()"><h4>Support Tickets</h4><div class="value">${escapeHtml(stats.openTickets)}</div></div>
     </div>
 
     <div class="stats-grid">
@@ -158,8 +158,8 @@ async function renderDashboard() {
     <div class="stats-grid">
       <div class="stat-card" style="border-left-color: var(--danger)"><h4>Locked Accounts</h4><div class="value">${escapeHtml(stats.locked)}</div></div>
       <div class="stat-card" style="border-left-color: var(--danger)"><h4>Flagged Accounts</h4><div class="value">${escapeHtml(stats.flagged)}</div></div>
-      <div class="stat-card" style="border-left-color: var(--danger)"><h4>Security Resets</h4><div class="value">${escapeHtml(stats.pendingResets)}</div></div>
-      <div class="stat-card" style="border-left-color: var(--danger)"><h4>Violations</h4><div class="value">${escapeHtml(stats.violations)}</div></div>
+      <div class="stat-card" style="border-left-color: var(--danger); cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'resets\\']')?.click()"><h4>Security Resets</h4><div class="value">${escapeHtml(stats.pendingResets)}</div></div>
+      <div class="stat-card" style="border-left-color: var(--danger); cursor: pointer" onclick="document.querySelector('aside button[data-page=\\'violations\\']')?.click()"><h4>Violations</h4><div class="value">${escapeHtml(stats.violations)}</div></div>
     </div>
 
     <h3 class="mb-15 mt-30">System Status</h3>
@@ -3142,7 +3142,10 @@ async function renderLiveProctoring() {
         const status = pControl?.status || 'active';
         const activeCount = sessions.length;
         const totalViolations = sessions.reduce((acc, s) => acc + parseInt(s.violation_count || 0), 0);
-        const accuracy = 96.3; // Simulated or calculated from AI feedback
+
+        // Calculate dynamic detection accuracy based on actual sessions data
+        const flaggedSessions = sessions.filter(s => s.status === 'Flagged' || s.status === 'Warning' || parseInt(s.violation_count) > 5).length;
+        const accuracy = sessions.length > 0 ? parseFloat((100 - (flaggedSessions / sessions.length) * 100).toFixed(1)) : 100.0;
 
         content.innerHTML = `
             <div class="flex-between mb-20">
