@@ -92,11 +92,13 @@
                     console.error('Anti-Cheat: Failed to start ProctorEngine streams:', err);
                     this.state.isActive = false;
                     // Standardize error message for user visibility
-                    let friendlyMsg = 'Failed to access camera, microphone, or screen sharing. Please check permissions and try again.';
+                    let friendlyMsg = err.message || 'Failed to access camera, microphone, or screen sharing. Please check permissions and try again.';
                     if (err.name === 'NotAllowedError') {
                         friendlyMsg = 'Permission denied: Please allow camera/microphone access in your browser settings to take the exam.';
                     } else if (err.name === 'NotFoundError') {
                         friendlyMsg = 'Required device (camera/microphone) not found. Please connect your device and try again.';
+                    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                        friendlyMsg = 'Webcam or microphone is already in use by another application (like Zoom, Teams, or Discord). Please close other apps and try again.';
                     }
                     throw new Error(friendlyMsg);
                 }

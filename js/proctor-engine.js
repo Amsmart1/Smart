@@ -1018,11 +1018,19 @@
       this.faceDetector.stop();
       this.noiseDetector.stop();
 
-      if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'recording' && typeof this.state.mediaRecorder.pause === 'function') {
-        this.state.mediaRecorder.pause();
+      try {
+        if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'recording' && typeof this.state.mediaRecorder.pause === 'function') {
+          this.state.mediaRecorder.pause();
+        }
+      } catch (err) {
+        this.debug('Error pausing screen MediaRecorder:', err);
       }
-      if (this.state.audioRecorder && this.state.audioRecorder.state === 'recording' && typeof this.state.audioRecorder.pause === 'function') {
-        this.state.audioRecorder.pause();
+      try {
+        if (this.state.audioRecorder && this.state.audioRecorder.state === 'recording' && typeof this.state.audioRecorder.pause === 'function') {
+          this.state.audioRecorder.pause();
+        }
+      } catch (err) {
+        this.debug('Error pausing audio MediaRecorder:', err);
       }
 
       this.emit('session:paused', {});
@@ -1037,11 +1045,19 @@
       this.state.isPaused = false;
       this.debug('Proctoring resumed');
 
-      if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'paused' && typeof this.state.mediaRecorder.resume === 'function') {
-        this.state.mediaRecorder.resume();
+      try {
+        if (this.state.mediaRecorder && this.state.mediaRecorder.state === 'paused' && typeof this.state.mediaRecorder.resume === 'function') {
+          this.state.mediaRecorder.resume();
+        }
+      } catch (err) {
+        this.debug('Error resuming screen MediaRecorder:', err);
       }
-      if (this.state.audioRecorder && this.state.audioRecorder.state === 'paused' && typeof this.state.audioRecorder.resume === 'function') {
-        this.state.audioRecorder.resume();
+      try {
+        if (this.state.audioRecorder && this.state.audioRecorder.state === 'paused' && typeof this.state.audioRecorder.resume === 'function') {
+          this.state.audioRecorder.resume();
+        }
+      } catch (err) {
+        this.debug('Error resuming audio MediaRecorder:', err);
       }
 
       if (this.config.faceDetection.enabled && this._webcamVideo) {
@@ -1223,7 +1239,7 @@
     async _startWebcam(existingElement) {
       const cfg = this.config.webcam;
 
-      const constraints = {
+      let constraints = {
         video: {
           width: { ideal: cfg.width },
           height: { ideal: cfg.height },
@@ -1239,13 +1255,42 @@
       try {
         this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err) {
-        // Try video-only if audio fails
-        if (cfg.audio && (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
+        if (err.name === 'OverconstrainedError') {
+          this.debug('OverconstrainedError encountered, trying fallback SD constraints');
+          constraints.video = {
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          };
+          try {
+            this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (errSD) {
+            this.debug('Fallback SD failed, trying basic video-only/audio constraints');
+            constraints.video = true;
+            try {
+              this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+            } catch (errBasic) {
+              this._handleWebcamError(errBasic);
+            }
+          }
+        } else if (cfg.audio && (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
           this.debug('Audio access denied, falling back to video-only');
           constraints.audio = false;
-          this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+          try {
+            this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+          } catch (fallbackErr) {
+            if (fallbackErr.name === 'OverconstrainedError') {
+              constraints.video = true;
+              try {
+                this.state.webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+              } catch (fallbackOverconstrainedErr) {
+                this._handleWebcamError(fallbackOverconstrainedErr);
+              }
+            } else {
+              this._handleWebcamError(fallbackErr);
+            }
+          }
         } else {
-          throw err;
+          this._handleWebcamError(err);
         }
       }
 
@@ -1278,6 +1323,31 @@
         width: this._webcamVideo.videoWidth,
         height: this._webcamVideo.videoHeight,
       });
+    }
+
+    /**
+     * Standardizes and maps webcam/microphone capture errors to user-friendly messages.
+     * @private
+     * @param {Error} err
+     */
+    _handleWebcamError(err) {
+      let friendlyMsg = err.message || 'Failed to access camera or microphone.';
+      const name = err.name || '';
+
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        friendlyMsg = 'Permission denied: Please allow camera and microphone access in your browser settings to take the exam.';
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        friendlyMsg = 'Required device (camera or microphone) not found. Please connect your device and try again.';
+      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+        friendlyMsg = 'Webcam or microphone is already in use by another application (like Zoom, Teams, or Discord). Please close other apps and try again.';
+      } else if (name === 'OverconstrainedError') {
+        friendlyMsg = 'Webcam does not support the requested video resolution/constraints.';
+      }
+
+      const error = new Error(friendlyMsg);
+      error.name = name;
+      error.originalError = err;
+      throw error;
     }
 
     /**
@@ -1526,8 +1596,12 @@
     async _finalizeScreenRecording() {
       if (!this.state.mediaRecorder) return;
 
-      if (this.state.mediaRecorder.state !== 'inactive') {
-        this.state.mediaRecorder.stop();
+      try {
+        if (this.state.mediaRecorder.state !== 'inactive') {
+          this.state.mediaRecorder.stop();
+        }
+      } catch (err) {
+        this.debug('Error stopping screen MediaRecorder:', err);
       }
 
       if (this.state.screenStream) {
@@ -1626,8 +1700,12 @@
     async _finalizeAudioRecording() {
       if (!this.state.audioRecorder) return;
 
-      if (this.state.audioRecorder.state !== 'inactive') {
-        this.state.audioRecorder.stop();
+      try {
+        if (this.state.audioRecorder.state !== 'inactive') {
+          this.state.audioRecorder.stop();
+        }
+      } catch (err) {
+        this.debug('Error stopping audio MediaRecorder:', err);
       }
 
       this.emit('audio:finalized', {
@@ -1651,6 +1729,11 @@
      */
     _startSnapshots() {
       if (!this._webcamVideo) return;
+
+      if (this._snapshotTimer) {
+        clearInterval(this._snapshotTimer);
+        this._snapshotTimer = null;
+      }
 
       const interval = this.config.webcam.snapshotInterval;
       this.debug('Starting snapshot interval: ' + interval + 'ms');
@@ -2030,6 +2113,13 @@
      * @private
      */
     _startConnectionMonitor() {
+      if (this._connectionCheckTimer) {
+        clearInterval(this._connectionCheckTimer);
+        this._connectionCheckTimer = null;
+      }
+      window.removeEventListener('online', this._boundOnOnline);
+      window.removeEventListener('offline', this._boundOnOffline);
+
       window.addEventListener('online', this._boundOnOnline);
       window.addEventListener('offline', this._boundOnOffline);
 

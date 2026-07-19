@@ -2064,7 +2064,7 @@ class SupabaseDB {
             let result = data || [];
 
             if (options.withLatestSnapshots) {
-                const attemptIds = result.map(s => s.attempt_id).filter(id => id !== null && id !== undefined && id !== '' && id !== 'null' && id !== 'undefined');
+                const attemptIds = result.map(s => s.attempt_id).filter(id => id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
                 if (attemptIds.length > 0) {
                     // Fetch latest snapshots for all attempts in a single query
                     const { data: snaps, error: snapErr } = await supabaseClient
@@ -2127,7 +2127,7 @@ class SupabaseDB {
     }
 
     static async getCourseAnalyticsSummary(teacherEmail, courseId = null, semester = null) {
-        const { data, error } = await supabaseClient.rpc('get_course_analytics_summary', {
+        const { data, error = null } = await supabaseClient.rpc('get_course_analytics_summary', {
             p_teacher_email: teacherEmail,
             p_course_id: courseId,
             p_semester: semester
@@ -2137,7 +2137,7 @@ class SupabaseDB {
     }
 
     static async getStudentPerformanceComparison(courseId = null, semester = null) {
-        const { data, error } = await supabaseClient.rpc('get_student_performance_comparison', {
+        const { data, error = null } = await supabaseClient.rpc('get_student_performance_comparison', {
             p_course_id: courseId,
             p_semester: semester
         });
@@ -2146,7 +2146,7 @@ class SupabaseDB {
     }
 
     static async getAssessmentPerformanceAnalysis(courseId = null, semester = null) {
-        const { data, error } = await supabaseClient.rpc('get_assessment_performance_analysis', {
+        const { data, error = null } = await supabaseClient.rpc('get_assessment_performance_analysis', {
             p_course_id: courseId,
             p_semester: semester
         });
@@ -2155,7 +2155,7 @@ class SupabaseDB {
     }
 
     static async getLearningGapsAndInterventions(courseId = null, semester = null) {
-        const { data, error } = await supabaseClient.rpc('get_learning_gaps_and_interventions', {
+        const { data, error = null } = await supabaseClient.rpc('get_learning_gaps_and_interventions', {
             p_course_id: courseId,
             p_semester: semester
         });
@@ -2164,7 +2164,7 @@ class SupabaseDB {
     }
 
     static async getTeacherSemesters(teacherEmail) {
-        const { data, error } = await supabaseClient.rpc('get_teacher_semesters', {
+        const { data, error = null } = await supabaseClient.rpc('get_teacher_semesters', {
             p_teacher_email: teacherEmail
         });
         if (error) throw error;
@@ -2172,7 +2172,7 @@ class SupabaseDB {
     }
 
     static async getAttendanceHeatmapData(teacherEmail, courseId = null, semester = null) {
-        const { data, error } = await supabaseClient.rpc('get_attendance_heatmap_data', {
+        const { data, error = null } = await supabaseClient.rpc('get_attendance_heatmap_data', {
             p_teacher_email: teacherEmail,
             p_course_id: courseId,
             p_semester: semester
@@ -2214,11 +2214,22 @@ class SupabaseDB {
     static async getViolations(assessmentId = null, userEmail = null, teacherEmail = null, options = {}) {
         let { assessmentType = null, severity = null, attemptId = null } = options;
 
-        // Sanitize UUID parameters to prevent invalid input syntax for UUID 400 Bad Requests
-        if (attemptId === 'null' || attemptId === 'undefined' || !attemptId) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+        // Reject invalid UUIDs upfront if they are provided, preventing type syntax errors
+        if (attemptId !== null && attemptId !== undefined && attemptId !== '' && attemptId !== 'null' && attemptId !== 'undefined') {
+            if (!uuidRegex.test(attemptId)) {
+                return { data: [], total: 0 };
+            }
+        } else {
             attemptId = null;
         }
-        if (assessmentId === 'null' || assessmentId === 'undefined' || !assessmentId) {
+
+        if (assessmentId !== null && assessmentId !== undefined && assessmentId !== '' && assessmentId !== 'null' && assessmentId !== 'undefined') {
+            if (!uuidRegex.test(assessmentId)) {
+                return { data: [], total: 0 };
+            }
+        } else {
             assessmentId = null;
         }
 
