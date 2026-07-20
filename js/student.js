@@ -32,6 +32,9 @@ const StudyTracker = {
         this.currentSessionId = crypto.randomUUID();
         this.lastDuration = 0;
 
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        this.skipSync = !uuidRegex.test(courseId);
+
         // Show UI indicator
         const display = document.getElementById('studyTimerDisplay');
         if (display) display.style.display = 'block';
@@ -50,6 +53,7 @@ const StudyTracker = {
 
     async heartbeat() {
         if (!this.courseId || !this.currentSessionId) return;
+        if (this.skipSync) return;
 
         const now = new Date();
         const duration = Math.max(1, Math.floor((now - this.startTime) / 1000));
@@ -104,7 +108,7 @@ const StudyTracker = {
         const duration = Math.floor((now - this.startTime) / 1000);
 
         // Minimum 2 seconds to record a session
-        if (duration >= 2 && user && this.courseId) {
+        if (duration >= 2 && user && this.courseId && !this.skipSync) {
             try {
                 await SupabaseDB.saveStudySession({
                     id: this.currentSessionId,

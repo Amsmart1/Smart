@@ -2975,20 +2975,26 @@ BEGIN
 
     FOR v_q IN SELECT * FROM jsonb_array_elements(v_quiz.questions)
     LOOP
-        v_total_points := v_total_points + (v_q->>'points')::INTEGER;
-        v_student_answer := p_answers->>(v_idx::TEXT);
-        v_correct_answer := v_q->>'correct';
+        DECLARE
+            v_pts INTEGER;
+        BEGIN
+            -- Hardened casting: handle floats and missing points keys gracefully
+            v_pts := COALESCE(NULLIF(TRIM(v_q->>'points'), ''), '5')::NUMERIC::INTEGER;
+            v_total_points := v_total_points + v_pts;
+            v_student_answer := p_answers->>(v_idx::TEXT);
+            v_correct_answer := v_q->>'correct';
 
-        IF v_student_answer IS NOT NULL AND
-           trim(lower(v_student_answer)) = trim(lower(v_correct_answer)) THEN
-            v_score := v_score + (v_q->>'points')::INTEGER;
-        END IF;
+            IF v_student_answer IS NOT NULL AND
+               trim(lower(v_student_answer)) = trim(lower(v_correct_answer)) THEN
+                v_score := v_score + v_pts;
+            END IF;
+        END;
 
         v_idx := v_idx + 1;
     END LOOP;
 
     SELECT
-        CASE WHEN v_total_points > 0 THEN ROUND((v_score::FLOAT / v_total_points::FLOAT) * 100) ELSE 0 END as score,
+        CASE WHEN v_total_points > 0 THEN ROUND((v_score::NUMERIC / v_total_points::NUMERIC) * 100)::INTEGER ELSE 0 END as score,
         v_total_points as total_points
     INTO v_result;
 
@@ -3687,6 +3693,15 @@ CREATE POLICY "Violations: Insert" ON violations FOR INSERT WITH CHECK (
   EXISTS (SELECT 1 FROM enrollments WHERE course_id = violations.course_id AND student_email = get_auth_email()) AND
   EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND status = 'published')
 );
+
+DROP POLICY IF EXISTS "Violations: Teacher Insert" ON violations;
+CREATE POLICY "Violations: Teacher Insert" ON violations FOR INSERT WITH CHECK (
+  is_teacher() AND (
+    teacher_email = get_auth_email() OR
+    EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND teacher_email = get_auth_email())
+  )
+);
+
 DROP POLICY IF EXISTS "Violations: Delete" ON violations;
 CREATE POLICY "Violations: Delete" ON violations FOR DELETE USING (
   is_teacher() AND EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND teacher_email = get_auth_email())

@@ -215,3 +215,12 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Teacher INSERT policy on Violations table to allow live warning/termination messages
+DROP POLICY IF EXISTS "Violations: Teacher Insert" ON violations;
+CREATE POLICY "Violations: Teacher Insert" ON violations FOR INSERT WITH CHECK (
+  is_teacher() AND (
+    teacher_email = get_auth_email() OR
+    EXISTS (SELECT 1 FROM courses WHERE id = violations.course_id AND teacher_email = get_auth_email())
+  )
+);
