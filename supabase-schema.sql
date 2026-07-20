@@ -84,8 +84,8 @@ BEGIN
     INTO v_email, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    -- Verify that the user is active, flagged is false, and we only block on these two status fields
-    IF v_email IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
+    -- Reverted extra reset status check to ensure we only block on active/flagged
+    IF v_email IS NOT NULL AND v_active IS TRUE AND v_flagged IS FALSE THEN
         RETURN v_email;
     END IF;
   END IF;
@@ -106,8 +106,8 @@ BEGIN
     INTO v_role, v_active, v_flagged
     FROM users WHERE email = v_email_raw;
 
-    -- Verify that the user role is retrieved and active is true, flagged is false (no reset check)
-    IF v_role IS NOT NULL AND v_active = TRUE AND v_flagged = FALSE THEN
+    -- Reverted extra reset status check to ensure we only block on active/flagged
+    IF v_role IS NOT NULL AND v_active IS TRUE AND v_flagged IS FALSE THEN
         RETURN v_role;
     END IF;
   END IF;
@@ -1800,7 +1800,7 @@ BEGIN
       OLD.flagged IS DISTINCT FROM NEW.flagged)
       AND NOT is_admin()
       AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin')
-      AND COALESCE(current_setting('app.trusted_internal_update', true), 'false') <> 'true' THEN
+      AND COALESCE(current_setting('app.trusted_internal_update', true), 'false') != 'true' THEN
 
       RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
   END IF;
@@ -2351,14 +2351,14 @@ BEGIN
       )
     );
   ELSE
-    -- Increment failed attempts
-    UPDATE users SET failed_attempts = failed_attempts + 1 WHERE email = p_email;
+    -- Increment failed attempts safely
+    UPDATE users SET failed_attempts = COALESCE(failed_attempts, 0) + 1 WHERE email = p_email;
 
     -- Lock account if too many attempts
     IF v_user.failed_attempts + 1 >= 5 THEN
-        UPDATE users SET locked_until = NOW() + INTERVAL '30 minutes', failed_attempts = 0, lockouts = lockouts + 1 WHERE email = p_email;
+        UPDATE users SET locked_until = NOW() + INTERVAL '30 minutes', failed_attempts = 0, lockouts = COALESCE(lockouts, 0) + 1 WHERE email = p_email;
         -- Flag if too many lockouts
-        IF v_user.lockouts + 1 >= 3 THEN
+        IF COALESCE(v_user.lockouts, 0) + 1 >= 3 THEN
             UPDATE users SET flagged = TRUE WHERE email = p_email;
         END IF;
 
