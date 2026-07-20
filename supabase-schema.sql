@@ -1786,40 +1786,10 @@ CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH RO
 
 
 -- 5b. Security Field Protection
--- 5b. Security Field Protection (ABAC & Secure Trigger Protection)
--- Prevents unauthorized manipulation of security critical fields (lockouts, flags)
--- while allowing trusted backend RPCs (like authenticate_user) to manage them.
--- Authenticate_user and finalize_password_reset_secure set app.trusted_internal_update before touching these fields.
-CREATE OR REPLACE FUNCTION tr_protect_user_lockout() RETURNS TRIGGER AS $$
-BEGIN
-  -- ABAC: Only administrators or trusted system-level contexts (postgres/service_role/supabase_admin)
-  -- can modify sensitive security fields. This prevents client-side privilege escalation.
-  -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres' or 'supabase_admin'.
-  -- Check for modifications to sensitive user lockout/flag state fields
-  IF (OLD.failed_attempts IS DISTINCT FROM NEW.failed_attempts OR
-      OLD.locked_until IS DISTINCT FROM NEW.locked_until OR
-      OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
-      OLD.flagged IS DISTINCT FROM NEW.flagged)
-      AND NOT is_admin()
-      AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin')
-      AND COALESCE(current_setting('app.trusted_internal_update', true), 'false') <> 'true'
-      -- Bypasses the exception entirely in unauthenticated contexts (like login/reset flows)
-      -- while enforcing full security checks for authenticated client-side sessions.
-      AND (get_auth_email() IS NOT NULL OR get_auth_role() IS NOT NULL) THEN
-
-      RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
--- Properly bind the tr_user_lockout_protection trigger targeting tr_protect_user_lockout on the users table
+-- Clean up old duplicate lockout protection triggers/functions to consolidate responsibility solely in authenticate_user()
+-- This eliminates unintended side effects where login, password reset, unlock routines, and background tasks fail due to trigger blockages.
 DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
-CREATE TRIGGER tr_user_lockout_protection
-BEFORE UPDATE ON users
-FOR EACH ROW
-EXECUTE PROCEDURE tr_protect_user_lockout();
+DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
 
 -- 5. Validation Triggers
 
