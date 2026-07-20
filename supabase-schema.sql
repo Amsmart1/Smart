@@ -2353,7 +2353,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'message', 'Invalid password. ' || (5 - (v_user.failed_attempts + 1)) || ' attempts remaining.');
   END IF;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Secure User Creation RPC
 CREATE OR REPLACE FUNCTION create_user_secure(
@@ -2488,7 +2488,7 @@ BEGIN
 
     RETURN jsonb_build_object('success', true, 'message', 'Password successfully reset. Please login with your new credentials.');
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Secure Secret Update RPC
 CREATE OR REPLACE FUNCTION update_user_secret_secure(
