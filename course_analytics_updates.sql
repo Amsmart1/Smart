@@ -1,6 +1,10 @@
 -- Enterprise Grade Course Analytics Insights
 -- Comprehensive audit and implementation of centralized course analytics with hardened security and correct logic
 
+-- Clean up legacy user lockout trigger and function to centralize security in authenticate_user
+DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
+DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
+
 -- Ensure semester column exists in courses table
 DO $$
 BEGIN

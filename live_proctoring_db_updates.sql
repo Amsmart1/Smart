@@ -1,3 +1,7 @@
+-- Clean up legacy user lockout trigger and function to centralize security in authenticate_user
+DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
+DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
+
 -- Ensure Violations table has the correct effort-linked attempt_id column
 -- and remove the redundant session_id column.
 ALTER TABLE violations DROP COLUMN IF EXISTS session_id CASCADE;
