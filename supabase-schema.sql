@@ -1785,39 +1785,6 @@ DROP TRIGGER IF EXISTS tr_violation_data_inherit ON violations;
 CREATE TRIGGER tr_violation_data_inherit BEFORE INSERT ON violations FOR EACH ROW EXECUTE PROCEDURE tr_inherit_course_data();
 
 
--- 5b. Security Field Protection
--- 5b. Security Field Protection (ABAC & Secure Trigger Protection)
--- Prevents unauthorized manipulation of security critical fields (lockouts, flags)
--- while allowing trusted backend RPCs (like authenticate_user) to manage them.
--- Authenticate_user and finalize_password_reset_secure set app.trusted_internal_update before touching these fields.
-CREATE OR REPLACE FUNCTION tr_protect_user_lockout() RETURNS TRIGGER AS $$
-BEGIN
-  -- ABAC: Only administrators or trusted system-level contexts (postgres/service_role/supabase_admin)
-  -- can modify sensitive security fields. This prevents client-side privilege escalation.
-  -- In Supabase, RPCs with SECURITY DEFINER run as 'postgres' or 'supabase_admin'.
-  -- Check for modifications to sensitive user lockout/flag state fields
-  IF (OLD.failed_attempts IS DISTINCT FROM NEW.failed_attempts OR
-      OLD.locked_until IS DISTINCT FROM NEW.locked_until OR
-      OLD.lockouts IS DISTINCT FROM NEW.lockouts OR
-      OLD.flagged IS DISTINCT FROM NEW.flagged)
-      AND NOT is_admin()
-      AND current_user NOT IN ('postgres', 'service_role', 'supabase_admin')
-      AND COALESCE(current_setting('app.trusted_internal_update', true), 'false') <> 'true' THEN
-
-      RAISE EXCEPTION 'Unauthorized: Only administrators can modify security lockout state.';
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
--- Properly bind the tr_user_lockout_protection trigger targeting tr_protect_user_lockout on the users table
-DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users;
-CREATE TRIGGER tr_user_lockout_protection
-BEFORE UPDATE ON users
-FOR EACH ROW
-EXECUTE PROCEDURE tr_protect_user_lockout();
-
 -- 5. Validation Triggers
 
 CREATE OR REPLACE FUNCTION validate_submission_time()
@@ -2243,9 +2210,6 @@ DECLARE
   v_user RECORD;
   v_secret RECORD;
 BEGIN
-  -- Confirm and signal that this is a trusted internal update from authenticate_user before touching security fields
-  PERFORM set_config('app.trusted_internal_update', 'true', true);
-
   SELECT
     id, email, full_name, phone, role, created_at, updated_at, last_login,
     failed_attempts, locked_until, lockouts, flagged, reset_request,
@@ -2481,9 +2445,6 @@ CREATE OR REPLACE FUNCTION finalize_password_reset_secure(
 DECLARE
     v_user RECORD;
 BEGIN
-    -- Confirm and signal that this is a trusted internal update from finalize_password_reset_secure before touching security fields
-    PERFORM set_config('app.trusted_internal_update', 'true', true);
-
     -- 1. Validate User
     SELECT * INTO v_user FROM users WHERE email = p_email;
     IF NOT FOUND THEN
