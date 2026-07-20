@@ -2236,7 +2236,9 @@ class SupabaseDB {
         return this._request(async () => {
             let query = supabaseClient.from('violations').select('*', { count: 'exact' });
 
-            if (attemptId) query = query.eq('attempt_id', attemptId);
+            if (attemptId && attemptId !== 'null' && attemptId !== 'undefined') {
+                query = query.eq('attempt_id', attemptId);
+            }
 
             if (teacherEmail) {
                 // Get teacher's course IDs first
@@ -2255,7 +2257,9 @@ class SupabaseDB {
                 query = query.in('assessment_id', assessmentIds);
             }
 
-            if (assessmentId) query = query.eq('assessment_id', assessmentId);
+            if (assessmentId && assessmentId !== 'null' && assessmentId !== 'undefined') {
+                query = query.eq('assessment_id', assessmentId);
+            }
             if (userEmail) query = query.eq('user_email', userEmail);
             if (assessmentType) query = query.eq('assessment_type', assessmentType);
             if (severity) query = query.eq('severity', severity);
@@ -2444,6 +2448,10 @@ class SupabaseDB {
      * Fetches all violation records for a specific assessment attempt that contain media.
      */
     static async getAttemptMedia(attemptId) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!attemptId || attemptId === 'null' || attemptId === 'undefined' || !uuidRegex.test(attemptId)) {
+            return [];
+        }
         return this._request(async () => {
             const { data, error } = await supabaseClient
                 .from('violations')
