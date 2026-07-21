@@ -5,15 +5,13 @@
 SET client_min_messages TO WARNING;
 SET client_min_messages TO NOTICE;
 
--- Enterprise-Grade Security and Auth Coordination Alignment
--- To prevent authentication lockout errors and allow unhindered account updates,
--- password resets, and unlock routines, we explicitly ensure the complete removal
--- of tr_protect_user_lockout() and its associated trigger tr_user_lockout_protection.
--- The authenticate_user() and finalize_password_reset_secure() SECURITY DEFINER RPCs
--- act as the single controlled code path and security boundary for all security and lockout states.
+-- Drop legacy/hidden lockout triggers to prevent runtime authentication errors
 DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE;
 DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE;
 DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
+DROP FUNCTION IF EXISTS protect_user_lockout() CASCADE;
+DROP FUNCTION IF EXISTS user_lockout_protection() CASCADE;
+DROP FUNCTION IF EXISTS tr_user_lockout_protection() CASCADE;
 
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
