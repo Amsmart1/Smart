@@ -96,16 +96,19 @@ BEGIN
         lv.last_act as last_activity,
         lv.total_v_count as violation_count,
         CASE
+            WHEN COALESCE(qs.status, s.status) = ''submitted'' THEN ''Completed''
             WHEN lv.high_v_count > 0 OR lv.total_v_count > 10 THEN ''Flagged''
             WHEN lv.total_v_count > 0 THEN ''Warning''
             WHEN lv.last_act < NOW() - INTERVAL ''5 minutes'' THEN ''Idle''
             ELSE ''Active''
         END as status,
-        (lv.last_act > NOW() - INTERVAL ''2 minutes'')::BOOLEAN as is_online
+        (COALESCE(qs.status, s.status) IS DISTINCT FROM ''submitted'' AND lv.last_act > NOW() - INTERVAL ''2 minutes'')::BOOLEAN as is_online
     FROM latest_violations lv
     JOIN users u ON lv.user_email = u.email
     LEFT JOIN quizzes q ON lv.assessment_id = q.id AND lv.assessment_type = ''quiz''
     LEFT JOIN assignments a ON lv.assessment_id = a.id AND lv.assessment_type = ''assignment''
+    LEFT JOIN quiz_submissions qs ON lv.attempt_id = qs.id AND lv.assessment_type = ''quiz''
+    LEFT JOIN submissions s ON lv.attempt_id = s.id AND lv.assessment_type = ''assignment''
     ORDER BY lv.last_act DESC';
 
     IF v_derived_teacher_email IS NOT NULL THEN
