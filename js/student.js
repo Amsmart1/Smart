@@ -2862,7 +2862,7 @@ async function startQuiz(quizId) {
 function renderQuizShell() {
     const quizArea = document.getElementById('quizArea');
     quizArea.innerHTML = `
-        <div class="card quiz-taking-container" style="max-width: 800px; margin: 0 auto; position: relative;">
+        <div class="card quiz-taking-container" style="max-width: 800px; margin: 0 auto; position: relative; border-radius: 16px; border: 1px solid #e2e8f0; padding: 30px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05), 0 8px 10px -6px rgba(0,0,0,0.05); background:#fff;">
             <div class="quiz-header flex-between mb-20 p-10" style="position: sticky; top:0; background:#fff; z-index:10; border-bottom:1px solid var(--border)">
                 <div>
                     <h3 class="m-0">${escapeHtml(StudentState.currentQuiz.title)}</h3>
@@ -2926,9 +2926,9 @@ function renderQuizQuestion(index) {
             const isChecked = savedAnswer !== undefined && savedAnswer.toString() === i.toString();
             return `
                 <div class="quiz-option-card ${isChecked ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, '${i}')"
-                     style="padding:15px; border:1px solid var(--border); border-radius:8px; cursor:pointer; display:flex; align-items:center; gap:15px; background:${isChecked ? '#f0f4ff' : '#fff'}; transition: all 0.2s">
-                    <div class="option-marker" style="width:30px; height:30px; border-radius:50%; background:${isChecked ? 'var(--purple)' : '#edf2f7'}; color:${isChecked ? '#fff' : 'var(--text)'}; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:0.9rem">${String.fromCharCode(65 + i)}</div>
-                    <div class="option-text" style="flex:1; font-size:1rem">${UI.renderRichText(opt)}</div>
+                     style="padding:16px 20px; border:1px solid ${isChecked ? '#4f46e5' : '#e2e8f0'}; border-radius:12px; cursor:pointer; display:flex; align-items:center; gap:15px; background:${isChecked ? '#f5f3ff' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
+                    <div class="option-marker" style="width:32px; height:32px; border-radius:50%; background:${isChecked ? 'var(--purple)' : '#f1f5f9'}; color:${isChecked ? '#fff' : '#64748b'}; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.95rem; transition: all 0.2s;">${String.fromCharCode(65 + i)}</div>
+                    <div class="option-text" style="flex:1; font-size:1rem; color: #1e293b; font-weight: 500;">${UI.renderRichText(opt)}</div>
                 </div>
             `;
         }).join('');
@@ -2938,12 +2938,12 @@ function renderQuizQuestion(index) {
         inputHtml = `
             <div class="grid-2 gap-15">
                 <div class="quiz-option-card ${isTrue ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'True')"
-                     style="padding:20px; border:1px solid var(--border); border-radius:8px; cursor:pointer; text-align:center; background:${isTrue ? '#f0f4ff' : '#fff'}; transition: all 0.2s">
-                    <div class="option-text bold" style="font-size:1.1rem">True</div>
+                     style="padding:24px; border:1px solid ${isTrue ? '#22c55e' : '#e2e8f0'}; border-radius:12px; cursor:pointer; text-align:center; background:${isTrue ? '#f0fdf4' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
+                    <div class="option-text bold" style="font-size:1.1rem; color: ${isTrue ? '#166534' : '#1e293b'};">True</div>
                 </div>
                 <div class="quiz-option-card ${isFalse ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'False')"
-                     style="padding:20px; border:1px solid var(--border); border-radius:8px; cursor:pointer; text-align:center; background:${isFalse ? '#f0f4ff' : '#fff'}; transition: all 0.2s">
-                    <div class="option-text bold" style="font-size:1.1rem">False</div>
+                     style="padding:24px; border:1px solid ${isFalse ? '#ef4444' : '#e2e8f0'}; border-radius:12px; cursor:pointer; text-align:center; background:${isFalse ? '#fef2f2' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
+                    <div class="option-text bold" style="font-size:1.1rem; color: ${isFalse ? '#991b1b' : '#1e293b'};">False</div>
                 </div>
             </div>
         `;
@@ -2953,7 +2953,9 @@ function renderQuizQuestion(index) {
                 <input type="text" class="input stylish-input" placeholder="Type your answer here..."
                     value="${savedAnswer || ''}"
                     oninput="handleShortAnswer(this, ${qIdx})"
-                    style="font-size: 1.1rem; padding: 15px; border: 2px solid #edf2f7; border-radius: 8px; width: 100%;">
+                    style="font-size: 1.1rem; padding: 16px 20px; border: 1.5px solid #cbd5e1; border-radius: 12px; width: 100%; outline: none; transition: all 0.2s; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);"
+                    onfocus="this.style.borderColor='var(--purple)'; this.style.boxShadow='0 0 0 3px rgba(124, 58, 237, 0.1)'"
+                    onblur="this.style.borderColor='#cbd5e1'; this.style.boxShadow='none'">
             </div>
         `;
     }
@@ -2978,14 +2980,38 @@ function selectQuizOption(el, qIdx, value) {
     cards.forEach(c => {
         c.classList.remove('selected');
         c.style.background = '#fff';
+        c.style.borderColor = '#e2e8f0';
         const marker = c.querySelector('.option-marker');
-        if (marker) { marker.style.background = '#edf2f7'; marker.style.color = 'var(--text)'; }
+        if (marker) { marker.style.background = '#f1f5f9'; marker.style.color = '#64748b'; }
+
+        // Dynamic TF text color reset
+        const boldText = c.querySelector('.option-text.bold');
+        if (boldText) {
+            boldText.style.color = '#1e293b';
+        }
     });
 
     el.classList.add('selected');
-    el.style.background = '#f0f4ff';
     const marker = el.querySelector('.option-marker');
-    if (marker) { marker.style.background = 'var(--purple)'; marker.style.color = '#fff'; }
+
+    // Check if True/False or MCQ
+    const isTf = el.parentElement.classList.contains('grid-2');
+    if (isTf) {
+        const text = el.querySelector('.option-text').textContent.trim();
+        if (text === 'True') {
+            el.style.background = '#f0fdf4';
+            el.style.borderColor = '#22c55e';
+            el.querySelector('.option-text').style.color = '#166534';
+        } else {
+            el.style.background = '#fef2f2';
+            el.style.borderColor = '#ef4444';
+            el.querySelector('.option-text').style.color = '#991b1b';
+        }
+    } else {
+        el.style.background = '#f5f3ff';
+        el.style.borderColor = '#4f46e5';
+        if (marker) { marker.style.background = 'var(--purple)'; marker.style.color = '#fff'; }
+    }
 
     StudentState.currentSubmission.answers[qIdx] = value;
     autoSubmitQuiz();

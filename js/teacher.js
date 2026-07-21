@@ -4052,49 +4052,67 @@ async function renderQuizzes() {
   }
 }
 
+function reindexQuizQuestions() {
+  const container = document.getElementById('quizQuestionsContainer');
+  if (!container) return;
+  const questions = container.querySelectorAll('.question');
+  questions.forEach((q, idx) => {
+    const header = q.querySelector('.q-number-header');
+    if (header) {
+      header.textContent = `QUESTION ${idx + 1}`;
+    }
+  });
+}
+window.reindexQuizQuestions = reindexQuizQuestions;
+
 function addQuizQuestionField(q = null) {
   const container = document.getElementById('quizQuestionsContainer');
   if (!container) return;
   const div = document.createElement('div');
   div.className = 'question mb-20 card';
+  // Advanced rounded style matching Screenshot
+  div.style.borderRadius = '16px';
+  div.style.border = '1px solid #e2e8f0';
+  div.style.padding = '24px';
+  div.style.background = '#fff';
+  div.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.03)';
+
   const qId = 'quiz-q-text-' + TimerManager.getTime() + Math.random().toString(36).substring(2, 9);
   div.innerHTML = `
-    <div class="flex-between mb-15">
-      <h4 class="m-0">Quiz Question</h4>
-      <button type="button" class="button danger small w-auto" onclick="this.closest('.question').remove(); updateQuizTotalPoints();">Remove Question</button>
+    <div class="flex-between mb-20" style="align-items: center;">
+      <h4 class="q-number-header m-0" style="font-size: 13px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">QUESTION</h4>
+      <button type="button" style="background: none; border: none; color: #dc2626; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; padding: 0; transition: color 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#dc2626'" onclick="this.closest('.question').remove(); updateQuizTotalPoints(); reindexQuizQuestions();">Remove</button>
     </div>
-    <div class="mb-10">
-      <label class="bold">Question Text:</label>
-      <textarea id="${qId}" class="q-text" placeholder="Enter quiz question here..." required>${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
+    <div class="mb-15">
+      <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Question Type</label>
+      <select class="q-type" onchange="toggleQuizOptions(this)" style="width: 100%; border-radius: 12px; border: 1px solid #cbd5e1; padding: 12px 16px; font-size: 1rem; color: #0f172a; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); cursor: pointer; outline: none; transition: border-color 0.2s;">
+        <option value="mcq" ${q?.type === 'mcq' ? 'selected' : ''}>Multiple Choice</option>
+        <option value="tf" ${q?.type === 'tf' ? 'selected' : ''}>True/False</option>
+        <option value="short" ${q?.type === 'short' ? 'selected' : ''}>Short Answer</option>
+      </select>
     </div>
-    <div class="grid-2 mt-10">
-      <div>
-        <label class="small">Question Type:</label>
-        <select class="q-type" onchange="toggleQuizOptions(this)">
-          <option value="mcq" ${q?.type === 'mcq' ? 'selected' : ''}>Multiple Choice</option>
-          <option value="tf" ${q?.type === 'tf' ? 'selected' : ''}>True/False</option>
-          <option value="short" ${q?.type === 'short' ? 'selected' : ''}>Short Answer</option>
-        </select>
-      </div>
-      <div>
-        <label class="small">Points</label>
-        <input type="number" class="q-points" placeholder="Points" value="${q ? q.points : 5}">
-      </div>
+    <div class="mb-15">
+      <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Points</label>
+      <input type="number" class="q-points" placeholder="Points" value="${q ? q.points : 5}" style="width: 100%; border-radius: 12px; border: 1px solid #cbd5e1; padding: 12px 16px; font-size: 1rem; color: #0f172a; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); outline: none; transition: border-color 0.2s;">
+    </div>
+    <div class="mb-15">
+      <textarea id="${qId}" class="q-text" placeholder="What is the question?" required style="width: 100%; min-height: 80px; border-radius: 12px; border: 1px solid #cbd5e1; padding: 14px 16px; font-size: 1.1rem; color: #0f172a; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); outline: none; transition: border-color 0.2s; resize: vertical;">${q ? escapeHtml(UI.htmlToPlainText(q.text)) : ''}</textarea>
     </div>
     <div class="q-options mt-10">
       ${renderQuizOptions(q)}
     </div>
-    <div class="mt-10">
-      <label class="small">Hint (optional)</label>
-      <input type="text" class="q-hint" placeholder="Hint..." value="${q?.hint ? escapeHtml(q.hint) : ''}">
-      <label class="small">Explanation (optional)</label>
-      <textarea class="q-explanation" placeholder="Explanation for correct answer..." rows="2">${q?.explanation ? escapeHtml(UI.htmlToPlainText(q.explanation)) : ''}</textarea>
+    <div class="mt-20 p-15 border-radius-md" style="background: #f8fafc; border: 1px solid #f1f5f9;">
+      <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Hint (optional)</label>
+      <input type="text" class="q-hint input stylish-input mb-15" placeholder="Hint..." value="${q?.hint ? escapeHtml(q.hint) : ''}" style="width: 100%; background: #fff;">
+      <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Explanation (optional)</label>
+      <textarea class="q-explanation input stylish-input" placeholder="Explanation for correct answer..." rows="2" style="width: 100%; background: #fff; resize: vertical;">${q?.explanation ? escapeHtml(UI.htmlToPlainText(q.explanation)) : ''}</textarea>
     </div>
   `;
   container.appendChild(div);
   div.querySelector('.q-points').addEventListener('input', updateQuizTotalPoints);
   div.querySelector('.q-points').addEventListener('change', updateQuizTotalPoints);
   updateQuizTotalPoints();
+  reindexQuizQuestions();
 }
 
 function updateQuizTotalPoints() {
@@ -4105,16 +4123,111 @@ function updateQuizTotalPoints() {
 }
 
 const renderQuizOptions = (q) => {
-  if (q?.type === 'tf') return `<select class="q-correct"><option value="True" ${q.correct === 'True' ? 'selected' : ''}>True</option><option value="False" ${q.correct === 'False' ? 'selected' : ''}>False</option></select>`;
-  if (q?.type === 'short') return `<input type="text" class="q-correct" placeholder="Correct Answer (Exact Match)" value="${q.correct || ''}">`;
-  const id = TimerManager.getTime() + Math.random();
-  return `<div class="mcq-options">${(q?.options || ['','','','']).map((opt, i) => `<div>Option ${i+1}: <input type="text" class="opt-val" value="${escapeHtml(opt)}"> <input type="radio" name="correct-${id}" ${q?.correct === i.toString() ? 'checked' : ''} value="${i}"> Correct</div>`).join('')}</div>`;
+  if (q?.type === 'tf') {
+    const isTrue = q?.correct === 'True' || !q?.correct;
+    const isFalse = q?.correct === 'False';
+    const id = 'tf-' + TimerManager.getTime() + Math.random().toString(36).substring(2, 9);
+    return `
+      <input type="hidden" class="q-correct" value="${isTrue ? 'True' : 'False'}">
+      <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Select Correct Answer</label>
+      <div class="tf-options-grid grid-2 gap-15 mt-10">
+        <label class="quiz-tf-card flex-between p-15 border-radius-md" style="border: 1px solid ${isTrue ? '#22c55e' : '#cbd5e1'}; cursor: pointer; background: ${isTrue ? '#f0fdf4' : '#fff'}; transition: all 0.2s; align-items: center; border-radius: 12px;">
+          <span class="bold" style="color: #0f172a;">True</span>
+          <input type="radio" name="tf-correct-${id}" class="tf-radio-input" value="True" ${isTrue ? 'checked' : ''} onchange="selectFormTfCorrect(this)" style="margin: 0; cursor: pointer;">
+        </label>
+        <label class="quiz-tf-card flex-between p-15 border-radius-md" style="border: 1px solid ${isFalse ? '#22c55e' : '#cbd5e1'}; cursor: pointer; background: ${isFalse ? '#f0fdf4' : '#fff'}; transition: all 0.2s; align-items: center; border-radius: 12px;">
+          <span class="bold" style="color: #0f172a;">False</span>
+          <input type="radio" name="tf-correct-${id}" class="tf-radio-input" value="False" ${isFalse ? 'checked' : ''} onchange="selectFormTfCorrect(this)" style="margin: 0; cursor: pointer;">
+        </label>
+      </div>
+    `;
+  }
+  if (q?.type === 'short') {
+    return `
+      <div>
+        <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Correct Answer (Exact Match)</label>
+        <input type="text" class="q-correct input stylish-input" placeholder="Type correct answer..." value="${q?.correct || ''}" style="width: 100%; border-radius: 12px; border: 1px solid #cbd5e1; padding: 12px 16px; font-size: 1rem; color: #0f172a; outline: none; background: #fff;">
+      </div>
+    `;
+  }
+  const id = 'mcq-' + TimerManager.getTime() + Math.random().toString(36).substring(2, 9);
+  return `
+    <label class="small bold" style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; display: block;">Options</label>
+    <div class="mcq-options-grid flex-column gap-10">
+      ${(q?.options || ['', '', '', '']).map((opt, i) => {
+        const isCorrect = q?.correct === i.toString();
+        return `
+          <div class="mcq-option-row flex-between gap-10 p-10 border-radius-md" style="background: #fff; border: 1px solid #cbd5e1; align-items: center; border-radius: 12px; padding: 10px 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+            <div style="flex: 1; display: flex; align-items: center; gap: 10px;">
+              <input type="text" class="opt-val" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" required style="width: 100%; background: transparent; border: none; padding: 6px 0; font-size: 1rem; color: #0f172a; outline: none;">
+            </div>
+            <label class="mcq-correct-label flex flex-center-y" style="cursor: pointer; margin: 0; user-select: none;">
+              <input type="radio" name="correct-${id}" class="mcq-radio-input" value="${i}" ${isCorrect ? 'checked' : ''} onchange="selectFormMcqCorrect(this)" style="display: none;">
+              <span class="mcq-correct-btn" style="
+                padding: 10px 18px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                transition: all 0.2s;
+                display: inline-block;
+                text-align: center;
+                ${isCorrect ? 'background: #00aa4f; color: #fff;' : 'background: #f1f5f9; color: #64748b;'}
+              ">Correct</span>
+            </label>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
 };
 
 const toggleQuizOptions = (select) => {
   const qItem = select.closest('.question');
   const container = qItem.querySelector('.q-options');
   if (container) container.innerHTML = renderQuizOptions({ type: select.value });
+};
+
+window.selectFormMcqCorrect = function(radioInput) {
+  const optionsGrid = radioInput.closest('.mcq-options-grid');
+  if (!optionsGrid) return;
+  const labels = optionsGrid.querySelectorAll('.mcq-correct-label');
+  labels.forEach(lbl => {
+    const radio = lbl.querySelector('.mcq-radio-input');
+    const btn = lbl.querySelector('.mcq-correct-btn');
+    if (radio && btn) {
+      if (radio.checked) {
+        btn.style.background = '#00aa4f';
+        btn.style.color = '#fff';
+      } else {
+        btn.style.background = '#f1f5f9';
+        btn.style.color = '#64748b';
+      }
+    }
+  });
+};
+
+window.selectFormTfCorrect = function(radioInput) {
+  const qItem = radioInput.closest('.question');
+  if (!qItem) return;
+  const hiddenInput = qItem.querySelector('.q-correct');
+  if (hiddenInput) {
+    hiddenInput.value = radioInput.value;
+  }
+  const cards = qItem.querySelectorAll('.quiz-tf-card');
+  cards.forEach(card => {
+    const radio = card.querySelector('.tf-radio-input');
+    if (radio) {
+      if (radio.checked) {
+        card.style.border = '1px solid #22c55e';
+        card.style.background = '#f0fdf4';
+      } else {
+        card.style.border = '1px solid #cbd5e1';
+        card.style.background = '#fff';
+      }
+    }
+  });
 };
 
 const shuffleQuizQuestions = () => {
