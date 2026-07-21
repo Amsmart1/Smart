@@ -917,14 +917,35 @@ async function renderGrading(page = 1) {
     ]);
     if (renderId !== window.currentRenderId) return;
     const { data: assignments } = assignmentsRes;
-    const { data: submittedSubs, total } = submissionsRes;
+    const { data: rawSubmittedSubs, total } = submissionsRes;
+
+    const submittedSubs = [];
+    const groupSeen = new Set();
+    if (rawSubmittedSubs && Array.isArray(rawSubmittedSubs)) {
+        rawSubmittedSubs.forEach(s => {
+            const assignment = assignments.find(a => a.id === s.assignment_id);
+            if (assignment && assignment.assignment_type === 'group') {
+                const group = (assignment.groups || []).find(g => (g.members || []).includes(s.student_email));
+                if (group) {
+                    const key = `${s.assignment_id}_${group.id}`;
+                    if (groupSeen.has(key)) return;
+                    groupSeen.add(key);
+                    s._isGroup = true;
+                    s._groupTitle = group.title;
+                    s._groupMembers = group.members;
+                    s._groupLeader = group.leader;
+                }
+            }
+            submittedSubs.push(s);
+        });
+    }
 
     content.innerHTML = `
       <div class="card mb-20">
         <div class="flex-between flex-wrap gap-15">
             <h2 class="m-0">Grading Queue</h2>
             <div class="flex gap-10 flex-center-y flex-wrap">
-                <div class="small text-muted">${escapeHtml(total)} Submissions Pending</div>
+                <div class="small text-muted">${escapeHtml(submittedSubs.length)} Submissions Pending</div>
                 <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
                     <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'grid')">Grid</button>
                     <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'list')">Table</button>
@@ -967,10 +988,17 @@ async function renderGrading(page = 1) {
                                     <h3 class="m-0 text-ellipsis" title="${escapeAttr(assignment?.title || 'Unknown')}">${escapeHtml(assignment?.title || 'Unknown')}</h3>
                                     <div class="tiny text-muted mb-10">Assignment ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
                                     <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
-                                    <div class="small">
-                                        <strong>Student:</strong> ${escapeHtml(studentName)}
-                                    </div>
-                                    <div class="tiny text-muted mb-10">${escapeHtml(s.student_email)}</div>
+                                    ${s._isGroup ? `
+                                        <div class="small">
+                                            <strong>Group:</strong> ${escapeHtml(s._groupTitle)}
+                                        </div>
+                                        <div class="tiny text-muted mb-10">Members: ${escapeHtml(s._groupMembers.join(', '))}</div>
+                                    ` : `
+                                        <div class="small">
+                                            <strong>Student:</strong> ${escapeHtml(studentName)}
+                                        </div>
+                                        <div class="tiny text-muted mb-10">${escapeHtml(s.student_email)}</div>
+                                    `}
                                     <div class="small mb-10">
                                         <strong>Submitted:</strong> ${new Date(s.submitted_at).toLocaleString()}
                                     </div>
@@ -1001,8 +1029,13 @@ async function renderGrading(page = 1) {
                         <div class="tiny text-muted">ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
                     </td>
                     <td>
-                        <div class="bold small">${escapeHtml(studentName)}</div>
-                        <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
+                        ${s._isGroup ? `
+                            <div class="bold small">Group: ${escapeHtml(s._groupTitle)}</div>
+                            <div class="tiny text-muted">Members: ${escapeHtml(s._groupMembers.join(', '))}</div>
+                        ` : `
+                            <div class="bold small">${escapeHtml(studentName)}</div>
+                            <div class="tiny text-muted">${escapeHtml(s.student_email)}</div>
+                        `}
                     </td>
                     <td>${new Date(s.submitted_at).toLocaleString()}</td>
                     <td>${isRegrade ? '<span class="badge badge-warn">REGRADE REQ</span>' : '<span class="badge badge-active">NEW SUB</span>'}</td>
@@ -1541,6 +1574,12 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           ${courses.map(c => `<option value="${c.id}" ${((isEdit ? assignment.course_id : courseId) === c.id) ? 'selected' : ''}>${escapeHtml(c.title)}</option>`).join('')}
         </select>
 
+        <label>Assignment Type</label>
+        <select id="assignmentType" required>
+          <option value="individual" ${isEdit && assignment.assignment_type === 'group' ? '' : 'selected'}>Individual</option>
+          <option value="group" ${isEdit && assignment.assignment_type === 'group' ? 'selected' : ''}>Group</option>
+        </select>
+
         <label>Description</label>
         <textarea id="assignmentDescription" placeholder="Description" rows="4">${isEdit ? escapeHtml(UI.htmlToPlainText(assignment.description)) : ''}</textarea>
 
@@ -1601,6 +1640,18 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           </div>
         </div>
 
+        <div id="groupConfigSection" style="display: none;" class="mt-20">
+          <hr style="border:none; border-top:1px solid var(--border); margin:20px 0" />
+          <h3>Group Management</h3>
+          <p class="small text-muted mb-15">Create groups, assign students, and select group leaders. Students can only belong to one group per assignment.</p>
+
+          <div id="groupsListContainer" class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
+            <!-- Dynamic group cards will be rendered here -->
+          </div>
+
+          <button type="button" class="button secondary small w-auto mt-15" onclick="addNewGroupCard()">+ Add Group</button>
+        </div>
+
         <div class="mt-20">
           <div class="flex-between">
             <h3 class="m-0">Questions</h3>
@@ -1618,6 +1669,185 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   `;
   if (isEdit && assignment.questions) { assignment.questions.forEach(q => addQuestionField(q)); }
   updateACPreview();
+
+  let currentGroups = isEdit ? (assignment.groups || []) : [];
+  window.courseEnrollments = [];
+
+  const renderGroups = () => {
+      const groupsListContainer = document.getElementById('groupsListContainer');
+      if (!groupsListContainer) return;
+
+      const assignedEmails = new Set();
+      currentGroups.forEach(g => {
+          (g.members || []).forEach(m => assignedEmails.add(m));
+      });
+
+      const availableStudents = window.courseEnrollments.filter(s => !assignedEmails.has(s.student_email));
+
+      groupsListContainer.innerHTML = currentGroups.map((g, gIdx) => {
+          const membersList = (g.members || []).map(email => {
+              const student = window.courseEnrollments.find(s => s.student_email === email);
+              const name = student ? student.full_name : email;
+              const isLeader = g.leader === email;
+              return `
+                <div class="flex-between list-item mb-5" style="padding: 5px 8px; background: #f7fafc; border-radius: 4px">
+                    <span class="small bold flex-center-y">
+                        ${isLeader ? '<span style="color: #d97706; margin-right: 4px">⭐</span>' : ''}
+                        ${escapeHtml(name)} <span class="tiny text-muted ml-5">(${escapeHtml(email)})</span>
+                    </span>
+                    <div class="flex gap-5">
+                        <button type="button" class="button secondary tiny w-auto m-0" style="padding: 2px 6px; font-size: 10px" onclick="setGroupLeader(${gIdx}, '${escapeAttr(email)}')">
+                            ${isLeader ? 'Dismiss Leader' : 'Make Leader'}
+                        </button>
+                        <button type="button" class="button danger tiny w-auto m-0" style="padding: 2px 6px; font-size: 10px" onclick="removeGroupMember(${gIdx}, '${escapeAttr(email)}')">
+                            Remove
+                        </button>
+                    </div>
+                </div>
+              `;
+          }).join('') || '<div class="tiny text-muted italic">No members assigned yet</div>';
+
+          const availableOptions = availableStudents.map(s => `
+              <option value="${escapeAttr(s.student_email)}">${escapeHtml(s.full_name)} (${escapeHtml(s.student_email)})</option>
+          `).join('');
+
+          return `
+            <div class="card border-light p-15 m-0" style="background: white; border: 1px solid var(--border); border-radius: 8px">
+                <div class="flex-between mb-10">
+                    <input type="text" class="input small m-0 bold group-title-input" placeholder="Group Title" value="${escapeAttr(g.title || '')}" style="width: 70%" onchange="updateGroupTitle(${gIdx}, this.value)" required />
+                    <button type="button" class="button danger tiny w-auto m-0" onclick="deleteGroupCard(${gIdx})">Delete</button>
+                </div>
+
+                <div class="members-container mt-10">
+                    <label class="tiny bold uppercase text-muted">Members</label>
+                    <div class="mt-5">${membersList}</div>
+                </div>
+
+                <div class="mt-15 pt-10" style="border-top: 1px dashed var(--border)">
+                    <label class="tiny bold uppercase text-muted">Add Member</label>
+                    <div class="flex gap-5 mt-5">
+                        <select class="input small m-0 add-member-select" style="font-size: 12px; height: 32px">
+                            <option value="">Select Student</option>
+                            ${availableOptions}
+                        </select>
+                        <button type="button" class="button secondary tiny w-auto m-0" style="height: 32px; padding: 0 10px" onclick="addGroupMember(${gIdx}, this)">Add</button>
+                    </div>
+                </div>
+            </div>
+          `;
+      }).join('') || '<div class="empty text-center w-full tiny text-muted">No groups added yet. Click "+ Add Group" to create one.</div>';
+  };
+
+  window.updateGroupTitle = (gIdx, title) => {
+      if (currentGroups[gIdx]) {
+          currentGroups[gIdx].title = title.trim();
+      }
+  };
+
+  window.deleteGroupCard = (gIdx) => {
+      currentGroups.splice(gIdx, 1);
+      renderGroups();
+  };
+
+  window.addGroupMember = (gIdx, btn) => {
+      const select = btn.parentElement.querySelector('.add-member-select');
+      const email = select.value;
+      if (!email) return UI.showNotification('Please select a student', 'warn');
+      if (currentGroups[gIdx]) {
+          if (!currentGroups[gIdx].members) currentGroups[gIdx].members = [];
+          if (!currentGroups[gIdx].members.includes(email)) {
+              currentGroups[gIdx].members.push(email);
+          }
+          renderGroups();
+      }
+  };
+
+  window.removeGroupMember = (gIdx, email) => {
+      if (currentGroups[gIdx]) {
+          currentGroups[gIdx].members = (currentGroups[gIdx].members || []).filter(m => m !== email);
+          if (currentGroups[gIdx].leader === email) {
+              currentGroups[gIdx].leader = null;
+          }
+          renderGroups();
+      }
+  };
+
+  window.setGroupLeader = (gIdx, email) => {
+      if (currentGroups[gIdx]) {
+          if (currentGroups[gIdx].leader === email) {
+              currentGroups[gIdx].leader = null;
+          } else {
+              currentGroups[gIdx].leader = email;
+          }
+          renderGroups();
+      }
+  };
+
+  window.addNewGroupCard = () => {
+      currentGroups.push({
+          id: crypto.randomUUID(),
+          title: `Group ${currentGroups.length + 1}`,
+          members: [],
+          leader: null
+      });
+      renderGroups();
+  };
+
+  const loadCourseEnrollments = async (courseId) => {
+      if (!courseId) {
+          window.courseEnrollments = [];
+          renderGroups();
+          return;
+      }
+      try {
+          const res = await SupabaseDB.getEnrollmentsByCourses([courseId], { all: true });
+          if (renderId !== window.currentRenderId) return;
+          window.courseEnrollments = (res.data || []).map(e => ({
+              student_email: e.student_email,
+              full_name: e.users?.full_name || e.student_email
+          }));
+          renderGroups();
+      } catch (e) {
+          console.error('Failed to load course enrollments:', e);
+          UI.showNotification('Error loading course students: ' + e.message, 'error');
+      }
+  };
+
+  const toggleAssignmentTypeFields = () => {
+      const type = document.getElementById('assignmentType')?.value;
+      const groupConfigSection = document.getElementById('groupConfigSection');
+      if (groupConfigSection) {
+          if (type === 'group') {
+              groupConfigSection.style.display = 'block';
+              const selectedCourseId = document.getElementById('assignmentCourseId')?.value;
+              loadCourseEnrollments(selectedCourseId);
+          } else {
+              groupConfigSection.style.display = 'none';
+          }
+      }
+  };
+  window.toggleAssignmentTypeFields = toggleAssignmentTypeFields;
+
+  // Bind change listeners to trigger toggle dynamic content
+  setTimeout(() => {
+      const typeSelect = document.getElementById('assignmentType');
+      const courseSelect = document.getElementById('assignmentCourseId');
+      if (typeSelect) {
+          typeSelect.addEventListener('change', toggleAssignmentTypeFields);
+      }
+      if (courseSelect) {
+          courseSelect.addEventListener('change', () => {
+              if (typeSelect?.value === 'group') {
+                  currentGroups.forEach(g => {
+                      g.members = [];
+                      g.leader = null;
+                  });
+                  loadCourseEnrollments(courseSelect.value);
+              }
+          });
+      }
+      toggleAssignmentTypeFields();
+  }, 0);
 
   UI.createFileUploader('assignAttachmentUploader', {
       bucket: 'assignments',
@@ -1700,12 +1930,35 @@ async function showAssignmentForm(assignment = null, courseId = null) {
 
       if (questions.length > 0 && pointsPossible !== totalQuestionPoints) {
           UI.showNotification(`Warning: Total points possible (${pointsPossible}) does not match the sum of question points (${totalQuestionPoints}). Please adjust your questions.`, 'warn');
-          // We allow saving but warn the teacher. Or we could block it.
-          // Requirement 2 says: "add validation to ensure the sum of question points equals points_possible before saving"
-          // Let's enforce it for better integrity.
           btn.disabled = false;
           btn.textContent = originalText;
           return;
+      }
+
+      // GROUP ASSIGNMENTS VALIDATIONS:
+      const assType = document.getElementById('assignmentType').value;
+      if (assType === 'group') {
+          if (currentGroups.length === 0) {
+              UI.showNotification('Please add at least one group for a Group Assignment.', 'warn');
+              btn.disabled = false;
+              btn.textContent = originalText;
+              return;
+          }
+          for (let i = 0; i < currentGroups.length; i++) {
+              const g = currentGroups[i];
+              if (!g.title || g.title.trim() === '') {
+                  UI.showNotification(`Group ${i + 1} must have a title.`, 'warn');
+                  btn.disabled = false;
+                  btn.textContent = originalText;
+                  return;
+              }
+              if (!g.members || g.members.length === 0) {
+                  UI.showNotification(`Group "${g.title}" must have at least one member.`, 'warn');
+                  btn.disabled = false;
+                  btn.textContent = originalText;
+                  return;
+              }
+          }
       }
 
       const assignmentData = {
@@ -1724,10 +1977,15 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         teacher_email: user.email,
         questions: questions,
         allowed_extensions: allowedExt,
-        attachments: attachments
+        attachments: attachments,
+        assignment_type: assType,
+        groups: assType === 'group' ? currentGroups : []
       };
       const result = await SupabaseDB.saveAssignment(assignmentData);
       if (result) {
+        if (assType === 'group') {
+            await syncGroupSubmissionsForAssignment(result.id, currentGroups);
+        }
         UI.showNotification('Assignment saved successfully', 'success');
         if (selCourseId && !assignment) editCourse(selCourseId);
         else renderAssignments();
@@ -1788,11 +2046,25 @@ async function gradeSubmission(assignmentId, studentEmail) {
 
     const submissionAnswers = submission.answers || {};
 
+    let studentMetaHtml = `<p class="small"><strong>Student:</strong> ${escapeHtml(studentEmail)}</p>`;
+    if (assignment && assignment.assignment_type === 'group') {
+        const group = (assignment.groups || []).find(g => (g.members || []).includes(studentEmail));
+        if (group) {
+            studentMetaHtml = `
+              <div>
+                  <p class="small m-0"><strong>Group Assignment:</strong> ${escapeHtml(group.title)}</p>
+                  <p class="small m-0 text-muted">Members: ${escapeHtml(group.members.join(', '))}</p>
+                  ${group.leader ? `<p class="tiny m-0" style="color:#d97706">👑 Leader: ${escapeHtml(group.leader)}</p>` : ''}
+              </div>
+            `;
+        }
+    }
+
     content.innerHTML = `
     <div class="card">
       <h2 class="m-0">Grade Submission</h2>
       <div class="flex-between mt-10">
-          <p class="small"><strong>Student:</strong> ${escapeHtml(studentEmail)}</p>
+          ${studentMetaHtml}
           <p class="small"><strong>Max Points:</strong> ${assignment.points_possible}</p>
       </div>
 
@@ -1952,10 +2224,49 @@ async function gradeSubmission(assignmentId, studentEmail) {
         regrade_request: isDraft ? (submission.regrade_request || null) : null
       };
 
+      let saveSuccess = true;
       if (await SupabaseDB.saveSubmission(updatedSubmission)) {
+          if (assignment && assignment.assignment_type === 'group') {
+              const group = (assignment.groups || []).find(g => (g.members || []).includes(studentEmail));
+              if (group) {
+                  for (const memberEmail of (group.members || [])) {
+                      if (memberEmail === studentEmail) continue;
+                      const memberExisting = await SupabaseDB.getSubmission(assignmentId, memberEmail);
+                      const memberSubmission = {
+                          ...memberExisting,
+                          id: memberExisting?.id || crypto.randomUUID(),
+                          course_id: submission.course_id,
+                          assignment_id: assignmentId,
+                          student_email: memberEmail,
+                          teacher_email: submission.teacher_email,
+                          submitted_at: submission.submitted_at,
+                          updated_at: new Date().toISOString(),
+                          answers: submission.answers,
+                          grade: updatedSubmission.grade,
+                          final_grade: updatedSubmission.final_grade,
+                          question_scores: updatedSubmission.question_scores,
+                          question_feedback: updatedSubmission.question_feedback,
+                          late_penalty_applied: updatedSubmission.late_penalty_applied,
+                          feedback: updatedSubmission.feedback,
+                          status: updatedSubmission.status,
+                          graded_at: updatedSubmission.graded_at,
+                          regrade_request: updatedSubmission.regrade_request
+                      };
+                      const resSub = await SupabaseDB.saveSubmission(memberSubmission);
+                      if (!resSub) saveSuccess = false;
+                  }
+              }
+          }
+      } else {
+          saveSuccess = false;
+      }
+
+      if (saveSuccess) {
         if (window.currentRenderId !== renderId) return;
         UI.showNotification(isDraft ? 'Draft saved successfully' : 'Submission graded successfully', 'success');
         renderGrading();
+      } else {
+        throw new Error('Grade saving or propagation failed for one or more group members');
       }
     } catch (e) {
       UI.showNotification('Error saving grade: ' + e.message, 'error');
@@ -6477,3 +6788,78 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 });
+
+async function syncGroupSubmissionsForAssignment(assignmentId, groups) {
+    try {
+        const { data: allSubs } = await SupabaseDB.getSubmissions(assignmentId, null, null, { all: true });
+        const subMap = new Map();
+        if (allSubs && Array.isArray(allSubs)) {
+            allSubs.forEach(s => subMap.set(s.student_email, s));
+        }
+
+        for (const group of groups) {
+            let canonicalSub = null;
+            for (const email of (group.members || [])) {
+                if (subMap.has(email)) {
+                    canonicalSub = subMap.get(email);
+                    break;
+                }
+            }
+
+            if (canonicalSub) {
+                for (const email of (group.members || [])) {
+                    const existing = subMap.get(email);
+                    if (!existing ||
+                        existing.status !== canonicalSub.status ||
+                        existing.grade !== canonicalSub.grade ||
+                        JSON.stringify(existing.answers) !== JSON.stringify(canonicalSub.answers)) {
+
+                        const newSub = {
+                            id: existing?.id || crypto.randomUUID(),
+                            course_id: canonicalSub.course_id,
+                            assignment_id: assignmentId,
+                            student_email: email,
+                            teacher_email: canonicalSub.teacher_email,
+                            submitted_at: canonicalSub.submitted_at,
+                            updated_at: new Date().toISOString(),
+                            answers: canonicalSub.answers,
+                            question_scores: canonicalSub.question_scores || {},
+                            question_feedback: canonicalSub.question_feedback || {},
+                            late_penalty_applied: canonicalSub.late_penalty_applied || 0,
+                            attachments: canonicalSub.attachments || [],
+                            grade: canonicalSub.grade,
+                            final_grade: canonicalSub.final_grade,
+                            feedback: canonicalSub.feedback,
+                            regrade_request: canonicalSub.regrade_request,
+                            graded_at: canonicalSub.graded_at,
+                            status: canonicalSub.status
+                        };
+
+                        await SupabaseDB.saveSubmission(newSub);
+                    }
+                }
+            } else {
+                for (const email of (group.members || [])) {
+                    if (subMap.has(email)) {
+                        await SupabaseDB.deleteSubmission(assignmentId, email);
+                    }
+                }
+            }
+        }
+
+        const assignedEmails = new Set();
+        groups.forEach(g => {
+            (g.members || []).forEach(m => assignedEmails.add(m));
+        });
+        if (allSubs && Array.isArray(allSubs)) {
+            for (const s of allSubs) {
+                if (!assignedEmails.has(s.student_email)) {
+                    await SupabaseDB.deleteSubmission(assignmentId, s.student_email);
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error in syncGroupSubmissionsForAssignment:', e);
+    }
+}
+window.syncGroupSubmissionsForAssignment = syncGroupSubmissionsForAssignment;
