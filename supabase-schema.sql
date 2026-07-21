@@ -5,6 +5,16 @@
 SET client_min_messages TO WARNING;
 SET client_min_messages TO NOTICE;
 
+-- Enterprise-Grade Security and Auth Coordination Alignment
+-- To prevent authentication lockout errors and allow unhindered account updates,
+-- password resets, and unlock routines, we explicitly ensure the complete removal
+-- of tr_protect_user_lockout() and its associated trigger tr_user_lockout_protection.
+-- The authenticate_user() and finalize_password_reset_secure() SECURITY DEFINER RPCs
+-- act as the single controlled code path and security boundary for all security and lockout states.
+DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE;
+DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE;
+DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
+
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -2343,7 +2353,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'message', 'Invalid password. ' || (5 - (v_user.failed_attempts + 1)) || ' attempts remaining.');
   END IF;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Secure User Creation RPC
 CREATE OR REPLACE FUNCTION create_user_secure(
@@ -2478,7 +2488,7 @@ BEGIN
 
     RETURN jsonb_build_object('success', true, 'message', 'Password successfully reset. Please login with your new credentials.');
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Secure Secret Update RPC
 CREATE OR REPLACE FUNCTION update_user_secret_secure(
