@@ -5,6 +5,11 @@
 SET client_min_messages TO WARNING;
 SET client_min_messages TO NOTICE;
 
+-- Drop legacy/hidden lockout triggers to prevent runtime authentication errors
+DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE;
+DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE;
+DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
+
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
