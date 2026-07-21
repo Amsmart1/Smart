@@ -302,7 +302,9 @@ CREATE TABLE IF NOT EXISTS assignments (
   questions JSONB DEFAULT '[]'::jsonb,
   attachments JSONB DEFAULT '[]'::jsonb,
   status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
-  anti_cheat_config JSONB DEFAULT '{}'::jsonb
+  anti_cheat_config JSONB DEFAULT '{}'::jsonb,
+  assignment_type VARCHAR(50) DEFAULT 'individual' CHECK (assignment_type IN ('individual', 'group')),
+  groups JSONB DEFAULT '[]'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS submissions (

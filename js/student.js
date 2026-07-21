@@ -704,6 +704,31 @@ async function showAssignmentForm(assignmentId) {
     SupabaseDB.getSubmission(assignmentId, user.email)
   ]);
 
+  let studentGroup = null;
+  const isGroupAssignment = a && a.assignment_type === 'group';
+  if (isGroupAssignment) {
+      studentGroup = (a.groups || []).find(g => (g.members || []).includes(user.email));
+      if (!studentGroup) {
+          if (formWrap) {
+              formWrap.innerHTML = `
+                <div class="card border-light p-20" style="border-left: 4px solid var(--danger)">
+                    <h3 class="danger-text m-0">👥 Not in a Group</h3>
+                    <p class="small mt-10">This is a group assignment, but you are not assigned to any group. Please contact your instructor to be added to a group.</p>
+                    <button class="button secondary mt-15 w-auto small" onclick="closeAssignmentForm()">Go Back</button>
+                </div>
+              `;
+              formWrap.classList.remove('hidden');
+              formWrap.style.display = 'block';
+              formWrap.scrollIntoView({ behavior: 'smooth' });
+          }
+          return;
+      }
+  }
+
+  const hasLeader = studentGroup && !!studentGroup.leader;
+  const isLeader = studentGroup && studentGroup.leader === user.email;
+  const canSubmit = !isGroupAssignment || !hasLeader || isLeader;
+
   if (a) StudyTracker.start(a.course_id);
   if (renderId !== window.currentRenderId) return;
 
@@ -751,6 +776,34 @@ async function showAssignmentForm(assignmentId) {
   const dueDate = new Date(a.due_date);
   const isLate = now > dueDate;
 
+  let groupBannerHtml = '';
+  if (isGroupAssignment && studentGroup) {
+      if (hasLeader) {
+          if (isLeader) {
+              groupBannerHtml = `
+                <div class="card success-border p-10 mt-10 mb-10" style="background:#f0fff4">
+                    <div class="bold success-text">👑 GROUP LEADER: ${escapeHtml(studentGroup.title)}</div>
+                    <p class="small">You are the designated group leader. You are the only one who can edit, save drafts, or submit this assignment on behalf of your group.</p>
+                </div>
+              `;
+          } else {
+              groupBannerHtml = `
+                <div class="card warn-border p-10 mt-10 mb-10" style="background:#fffcf0">
+                    <div class="bold warning-text">🔒 READ ONLY: ${escapeHtml(studentGroup.title)}</div>
+                    <p class="small">Only the group leader (<strong>${escapeHtml(studentGroup.leader)}</strong>) can edit or submit this assignment. You have read-only access to view the questions, shared drafts, submissions, and feedback.</p>
+                </div>
+              `;
+          }
+      } else {
+          groupBannerHtml = `
+            <div class="card info-border p-10 mt-10 mb-10" style="background:#f7fafc">
+                <div class="bold text-purple">👥 GROUP ASSIGNMENT: ${escapeHtml(studentGroup.title)}</div>
+                <p class="small">No group leader is assigned. Any member of the group can edit, save drafts, or submit this assignment. The submission will be shared instantly with all members.</p>
+            </div>
+          `;
+      }
+  }
+
   formWrap.innerHTML = `
     <div class="card">
       <div class="flex-between">
@@ -758,12 +811,14 @@ async function showAssignmentForm(assignmentId) {
         <button class="button secondary w-auto small" onclick="closeAssignmentForm()">Close</button>
       </div>
 
+      ${groupBannerHtml}
+
       <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
 
       ${submission && submission.status === 'submitted' ? `
         <div class="card success-border p-10 mt-10" style="background:#f0fff4">
             <div class="bold success-text">SUBMITTED</div>
-            <p class="small">You have already submitted this assignment. You can update your submission below.</p>
+            <p class="small">Your group has submitted this assignment. You can update your submission below.</p>
         </div>
       ` : ''}
 
@@ -790,9 +845,15 @@ async function showAssignmentForm(assignmentId) {
 
       <div id="qwrap-${a.id}" class="mt-20"></div>
       <div class="flex gap-10 mt-20 flex-wrap">
-        <button class="button w-auto px-40" id="submitAssignBtn" onclick="submitAssignment('${a.id}', '${user.email}', false)">Submit Assignment</button>
-        <button class="button secondary w-auto px-40" id="saveDraftBtn" onclick="submitAssignment('${a.id}', '${user.email}', true)">Save Draft</button>
-        ${submission ? `<button class="button danger w-auto px-40" onclick="deleteSubmissionById('${a.id}', '${user.email}')">Delete Submission</button>` : ''}
+        ${canSubmit ? `
+            <button class="button w-auto px-40" id="submitAssignBtn" onclick="submitAssignment('${a.id}', '${user.email}', false)">Submit Assignment</button>
+            <button class="button secondary w-auto px-40" id="saveDraftBtn" onclick="submitAssignment('${a.id}', '${user.email}', true)">Save Draft</button>
+            ${submission ? `<button class="button danger w-auto px-40" onclick="deleteSubmissionById('${a.id}', '${user.email}')">Delete Submission</button>` : ''}
+        ` : `
+            <div class="card border-light p-10 w-full" style="background:#f7fafc; border: 1px solid var(--border)">
+                <span class="small bold text-muted italic">📝 Read-Only Mode: Only group leader (${escapeHtml(studentGroup.leader)}) is permitted to edit or submit this assignment.</span>
+            </div>
+        `}
       </div>
     </div>
   `;
@@ -820,7 +881,7 @@ async function showAssignmentForm(assignmentId) {
                 <span class="tiny bold text-muted uppercase">Method:</span>
                 ${allowedTypes.map(t => `
                     <button type="button" class="button tiny w-auto q-type-btn ${activeType === t ? '' : 'secondary'}"
-                            data-type="${t}" onclick="switchSubmissionType(${idx}, '${t}')">
+                            data-type="${t}" ${canSubmit ? '' : 'disabled'} onclick="switchSubmissionType(${idx}, '${t}')">
                         ${t === 'essay' ? 'Essay' : t === 'file' ? 'File' : 'Link'}
                     </button>
                 `).join('')}
@@ -830,14 +891,14 @@ async function showAssignmentForm(assignmentId) {
 
     const essayHtml = `
         <div class="q-input-wrapper" data-type="essay" style="${activeType === 'essay' ? '' : 'display:none'}">
-            <textarea class="input q-essay" rows="6" placeholder="Your answer" data-q-idx="${idx}">${activeType === 'essay' ? escapeHtml(activeValue) : ''}</textarea>
+            <textarea class="input q-essay" rows="6" placeholder="Your answer" data-q-idx="${idx}" ${canSubmit ? '' : 'readonly style="background:#f0f0f0"'}>${activeType === 'essay' ? escapeHtml(activeValue) : ''}</textarea>
         </div>
     `;
 
     const fileHtml = `
         <div class="q-input-wrapper" data-type="file" style="${activeType === 'file' ? '' : 'display:none'}">
             <div class="small mb-5">Upload File ${q.extensions ? `(${escapeHtml(q.extensions)})` : ''}:</div>
-            <input type="file" class="input q-file" data-q-idx="${idx}" accept="${q.extensions || '*'}" onchange="previewFile(this, '${idx}')">
+            <input type="file" class="input q-file" data-q-idx="${idx}" accept="${q.extensions || '*'}" ${canSubmit ? '' : 'disabled'} onchange="previewFile(this, '${idx}')">
             <div id="preview-${idx}" class="mt-8">
                 ${(activeType === 'file' && activeValue) ? `<button type="button" class="button secondary tiny w-auto" onclick="UI.viewFile('${escapeAttr(activeValue)}', 'Current Submission')">View Current File</button>` : '<span class="small text-muted italic">No file uploaded</span>'}
             </div>
@@ -847,7 +908,7 @@ async function showAssignmentForm(assignmentId) {
     const linkHtml = `
         <div class="q-input-wrapper" data-type="link" style="${activeType === 'link' ? '' : 'display:none'}">
             <div class="small mb-5">Submission Link:</div>
-            <input type="url" class="input q-link" placeholder="https://..." data-q-idx="${idx}" value="${activeType === 'link' ? escapeHtml(activeValue) : ''}">
+            <input type="url" class="input q-link" placeholder="https://..." data-q-idx="${idx}" ${canSubmit ? '' : 'readonly style="background:#f0f0f0"'} value="${activeType === 'link' ? escapeHtml(activeValue) : ''}">
         </div>
     `;
 
@@ -3312,44 +3373,64 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
 
     // "No empty submission" is already enforced above by throwing error for any empty question.
 
-    const submission = {
-      ...existing,
-      assignment_id: assignmentId,
-      student_email: studentEmail,
-      submitted_at: isDraft ? (existing?.submitted_at || null) : new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      answers: answers,
-      attachments: existing?.attachments || [],
-      status: isDraft ? 'draft' : 'submitted',
-      // Reset grading fields on re-submission to ensure teacher re-grades fresh content
-      grade: isDraft ? (existing?.grade ?? null) : null,
-      final_grade: isDraft ? (existing?.final_grade ?? null) : null,
-      question_scores: isDraft ? (existing?.question_scores ?? {}) : {},
-      question_feedback: isDraft ? (existing?.question_feedback ?? {}) : {},
-      graded_at: isDraft ? (existing?.graded_at ?? null) : null,
-      late_penalty_applied: isDraft ? (existing?.late_penalty_applied ?? 0) : 0,
-      regrade_request: isDraft ? (existing?.regrade_request ?? null) : null
-    };
+    const a = await SupabaseDB.getAssignment(assignmentId);
+    if (renderId !== window.currentRenderId) return;
+    if (!a) throw new Error('Assignment not found');
 
-    if (await SupabaseDB.saveSubmission(submission)) {
-      if (renderId !== window.currentRenderId) return;
-      // Update Progress
-      const a = await SupabaseDB.getAssignment(assignmentId);
-      if (renderId !== window.currentRenderId) return;
-      if (a) await SupabaseDB.updateCourseProgress(a.course_id, studentEmail);
-      if (renderId !== window.currentRenderId) return;
+    const isGroup = a.assignment_type === 'group';
+    let members = [studentEmail];
+    if (isGroup) {
+        const group = (a.groups || []).find(g => (g.members || []).includes(studentEmail));
+        if (group) {
+            members = group.members || [studentEmail];
+        }
+    }
 
+    let saveSuccess = true;
+    for (const memberEmail of members) {
+        const memberExisting = await SupabaseDB.getSubmission(assignmentId, memberEmail);
+        const memberSubmission = {
+          ...memberExisting,
+          id: memberExisting?.id || crypto.randomUUID(),
+          course_id: a.course_id,
+          assignment_id: assignmentId,
+          student_email: memberEmail,
+          teacher_email: a.teacher_email,
+          submitted_at: isDraft ? (memberExisting?.submitted_at || null) : new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          answers: answers,
+          attachments: memberExisting?.attachments || [],
+          status: isDraft ? 'draft' : 'submitted',
+          // Reset grading fields on re-submission to ensure teacher re-grades fresh content
+          grade: isDraft ? (memberExisting?.grade ?? null) : null,
+          final_grade: isDraft ? (memberExisting?.final_grade ?? null) : null,
+          question_scores: isDraft ? (memberExisting?.question_scores ?? {}) : {},
+          question_feedback: isDraft ? (memberExisting?.question_feedback ?? {}) : {},
+          graded_at: isDraft ? (memberExisting?.graded_at ?? null) : null,
+          late_penalty_applied: isDraft ? (memberExisting?.late_penalty_applied ?? 0) : 0,
+          regrade_request: isDraft ? (memberExisting?.regrade_request ?? null) : null
+        };
+
+        const resSub = await SupabaseDB.saveSubmission(memberSubmission);
+        if (resSub) {
+            await SupabaseDB.updateCourseProgress(a.course_id, memberEmail);
+        } else {
+            saveSuccess = false;
+        }
+    }
+
+    if (saveSuccess) {
       UI.showNotification(isDraft ? 'Draft saved successfully!' : 'Assignment submitted successfully!', 'success');
 
       if (isDraft) {
           if (window.AntiCheat) await AntiCheat.resumeProctoring();
       } else {
           // Successfully submitted, now we can end the anti-cheat session
-      if (window.AntiCheat) await AntiCheat.destroy();
+          if (window.AntiCheat) await AntiCheat.destroy();
           renderAssignments();
       }
     } else {
-        throw new Error('Save failed');
+        throw new Error('Save failed for one or more group members');
     }
   } catch (e) {
     console.error('Submission failed:', e);
