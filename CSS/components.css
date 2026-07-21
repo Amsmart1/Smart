@@ -838,3 +838,135 @@ body:not(.landing-page) .ai-chatbot-container .ai-send-btn {
         width: 100% !important;
     }
 }
+
+/* ==========================================================================
+   PREMIUM ENTERPRISE-GRADE CARD & GRID SYSTEM
+   ========================================================================== */
+
+/* Modern view mode toggler container */
+.view-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    overflow: hidden;
+    background-color: var(--bg-card, #ffffff);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.view-mode-toggle .button {
+    border-radius: 0 !important;
+    border: none !important;
+    padding: 6px 14px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    margin: 0 !important;
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    background: transparent;
+    color: var(--text-muted, #6b7280);
+}
+
+.view-mode-toggle .button.active {
+    background: var(--primary, #4f46e5) !important;
+    color: #ffffff !important;
+}
+
+.view-mode-toggle .button:not(.active):hover {
+    background-color: var(--bg-hover, #f3f4f6) !important;
+    color: var(--text, #111827) !important;
+}
+
+/* Premium card with elevation transitions */
+.premium-grid-card {
+    background: var(--bg-card, #ffffff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.25s ease;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    height: 100%;
+}
+
+.premium-grid-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 20px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    border-color: var(--primary, #4f46e5);
+}
+
+/* High-fidelity responsive progress bar */
+.premium-progress-container {
+    width: 100%;
+    background-color: #e5e7eb;
+    border-radius: 9999px;
+    height: 8px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.premium-progress-bar {
+    height: 100%;
+    background-color: var(--primary, #4f46e5);
+    border-radius: 9999px;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Modern Pill Badges */
+.premium-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+}
+
+.premium-badge-completed {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.premium-badge-active {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+.premium-badge-locked {
+    background-color: #f3f4f6;
+    color: #4b5563;
+}
+
+.premium-badge-published {
+    background-color: #e0f2fe;
+    color: #0369a1;
+}
+
+.premium-badge-draft {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+/* Metadata lists */
+.premium-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 10px;
+    color: var(--text-muted, #6b7280);
+    font-size: 12px;
+}
+
+.premium-card-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
