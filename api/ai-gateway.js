@@ -674,10 +674,14 @@ async function parallelLimit(items, concurrency, processor) {
   return Promise.all(results);
 }
 
-async function getIndexingState(supabaseUrl, supabaseAnonKey, materialId) {
+async function getIndexingState(supabaseUrl, supabaseAnonKey, materialId, sessionId = '') {
   try {
+    const headers = { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` };
+    if (sessionId) {
+      headers['x-session-id'] = sessionId;
+    }
     const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_indexing_states?material_id=eq.${materialId}`, {
-      headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      headers
     });
     if (res.ok) {
       const data = await res.json();
@@ -689,16 +693,20 @@ async function getIndexingState(supabaseUrl, supabaseAnonKey, materialId) {
   return null;
 }
 
-async function upsertIndexingState(supabaseUrl, supabaseAnonKey, state) {
+async function upsertIndexingState(supabaseUrl, supabaseAnonKey, state, sessionId = '') {
   try {
+    const headers = {
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${supabaseAnonKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    };
+    if (sessionId) {
+      headers['x-session-id'] = sessionId;
+    }
     await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/material_indexing_states`, {
       method: 'POST',
-      headers: {
-        'apikey': supabaseAnonKey,
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation'
-      },
+      headers,
       body: JSON.stringify(state)
     });
   } catch (err) {
@@ -706,10 +714,14 @@ async function upsertIndexingState(supabaseUrl, supabaseAnonKey, state) {
   }
 }
 
-async function getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, materialId, activeVersion) {
+async function getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, materialId, activeVersion, sessionId = '') {
   try {
+    const headers = { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` };
+    if (sessionId) {
+      headers['x-session-id'] = sessionId;
+    }
     const res = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${materialId}&select=metadata,embedding_version`, {
-      headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+      headers
     });
     if (res.ok) {
       const data = await res.json();
@@ -747,6 +759,7 @@ async function indexText({
     payload = null,
     geminiChunks = null
 }) {
+    const sessionId = payload?.session_id || payload?.sessionId || '';
 
     const normalizeText = (t) => {
         return t ? t.trim() : '';
@@ -1000,13 +1013,17 @@ async function indexText({
             }));
 
             console.log(`Performing ATOMIC delete-and-insert for ${sourceType} ${sourceId}`);
+            const headers = {
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`,
+                'Content-Type': 'application/json'
+            };
+            if (sessionId) {
+                headers['x-session-id'] = sessionId;
+            }
             const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/atomic_update_embeddings`, {
                 method: 'POST',
-                headers: {
-                    'apikey': supabaseAnonKey,
-                    'Authorization': `Bearer ${supabaseAnonKey}`,
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: JSON.stringify({
                     p_source_type: sourceType,
                     p_source_id: sourceId,
@@ -1031,13 +1048,17 @@ async function indexText({
                 embedding_version: activeVersion
             }));
 
+            const headers = {
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`,
+                'Content-Type': 'application/json'
+            };
+            if (sessionId) {
+                headers['x-session-id'] = sessionId;
+            }
             const insertResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings`, {
                 method: 'POST',
-                headers: {
-                    'apikey': supabaseAnonKey,
-                    'Authorization': `Bearer ${supabaseAnonKey}`,
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: JSON.stringify(fullRecords)
             });
 
@@ -1053,14 +1074,14 @@ async function indexText({
     // Fetch transactional last_chunk_index to support resumption (Requirement 7)
     let lastChunkIndex = -1;
     if (sourceType === 'material') {
-        const state = await getIndexingState(supabaseUrl, supabaseAnonKey, sourceId);
+        const state = await getIndexingState(supabaseUrl, supabaseAnonKey, sourceId, sessionId);
         if (state && typeof state.last_chunk_index === 'number') {
             lastChunkIndex = state.last_chunk_index;
         }
     }
 
     // Fetch already indexed chunk indexes from DB
-    const { chunkIndexes: existingChunkIndexes, versionMismatch } = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, sourceId, activeVersion);
+    const { chunkIndexes: existingChunkIndexes, versionMismatch } = await getExistingChunkIndexes(supabaseUrl, supabaseAnonKey, sourceId, activeVersion, sessionId);
 
     const isAtomicReplace = versionMismatch || (existingChunkIndexes.size === 0 && lastChunkIndex === -1);
 
@@ -1106,7 +1127,7 @@ async function indexText({
                 last_chunk_index: lastChunkIndex,
                 status: 'embedding',
                 current_step: 'embedding'
-            });
+            }, sessionId);
         }
     }
 }
@@ -1131,18 +1152,24 @@ async function handleIndexCourse(payload, res, req) {
     return;
   }
 
+  const sessionId = req?.headers['x-session-id'] || payload?.session_id || payload?.sessionId || '';
+
   const lockKey = material_id ? `indexing_lock_${material_id}` : `indexing_lock_${course_id}`;
   const lockRequester = 'req_' + Math.random().toString(36).substring(2) + Date.now();
 
   try {
     // 1. Acquire Distributed Lock to prevent race conditions
+    const lockHeaders = {
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${supabaseAnonKey}`,
+      'Content-Type': 'application/json'
+    };
+    if (sessionId) {
+      lockHeaders['x-session-id'] = sessionId;
+    }
     const acquireLockRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/acquire_indexing_lock`, {
       method: 'POST',
-      headers: {
-        'apikey': supabaseAnonKey,
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-        'Content-Type': 'application/json'
-      },
+      headers: lockHeaders,
       body: JSON.stringify({
         p_lock_key: lockKey,
         p_locked_by: lockRequester,
@@ -1166,10 +1193,15 @@ async function handleIndexCourse(payload, res, req) {
     let topics = [];
     let course = null;
 
+    const baseHeaders = { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` };
+    if (sessionId) {
+      baseHeaders['x-session-id'] = sessionId;
+    }
+
     if (material_id) {
       // Indexing a single, specific material
       const materialsRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?id=eq.${material_id}&select=id,title,description,file_url,file_type`, {
-        headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+        headers: baseHeaders
       });
       if (!materialsRes.ok) throw new Error(`Failed to fetch material: ${await materialsRes.text()}`);
       materials = await materialsRes.json();
@@ -1177,16 +1209,16 @@ async function handleIndexCourse(payload, res, req) {
       // Full course level indexing
       const [materialsRes, lessonsRes, topicsRes, courseRes] = await Promise.all([
         fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/materials?course_id=eq.${course_id}&select=id,title,description,file_url,file_type`, {
-          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          headers: baseHeaders
         }),
         fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/lessons?course_id=eq.${course_id}&select=id,title,content,topic_id`, {
-          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          headers: baseHeaders
         }),
         fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/topics?course_id=eq.${course_id}&select=id,title,description`, {
-          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          headers: baseHeaders
         }),
         fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/courses?id=eq.${course_id}&select=title,description,semester`, {
-          headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` }
+          headers: baseHeaders
         })
       ]);
 
@@ -1206,8 +1238,6 @@ async function handleIndexCourse(payload, res, req) {
     let existingCourses = new Set();
     let existingTopics = new Set();
     let existingLessons = new Set();
-
-    const sessionId = req?.headers['x-session-id'] || '';
 
     try {
       const distinctRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/get_distinct_knowledge_sources`, {
@@ -1343,7 +1373,7 @@ async function handleIndexCourse(payload, res, req) {
 
           if (isPdf) {
             const mStart = Date.now();
-            let state = await getIndexingState(supabaseUrl, supabaseAnonKey, m.id);
+            let state = await getIndexingState(supabaseUrl, supabaseAnonKey, m.id, sessionId);
 
             let extractedText = '';
             let status = 'pending';
@@ -1365,12 +1395,16 @@ async function handleIndexCourse(payload, res, req) {
             if (!state || state.file_url !== fileUrl) {
               console.log(`Initializing fresh indexing state for PDF material: ${m.title}`);
               const deleteUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/knowledge_embeddings?source_id=eq.${m.id}`;
+              const deleteHeaders = {
+                'apikey': supabaseAnonKey,
+                'Authorization': `Bearer ${supabaseAnonKey}`
+              };
+              if (sessionId) {
+                deleteHeaders['x-session-id'] = sessionId;
+              }
               await fetch(deleteUrl, {
                 method: 'DELETE',
-                headers: {
-                  'apikey': supabaseAnonKey,
-                  'Authorization': `Bearer ${supabaseAnonKey}`
-                }
+                headers: deleteHeaders
               });
 
               extractedText = '';
@@ -1392,7 +1426,7 @@ async function handleIndexCourse(payload, res, req) {
                 retry_count: 0,
                 last_chunk_index: -1
               };
-              await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
+              await upsertIndexingState(supabaseUrl, supabaseAnonKey, state, sessionId);
             }
 
             // If already completed, skip processing
@@ -1413,7 +1447,7 @@ async function handleIndexCourse(payload, res, req) {
                   ...state,
                   status: 'extracting',
                   current_step: 'extraction'
-                });
+                }, sessionId);
 
                 const pdfResponse = await fetch(fileUrl);
                 if (!pdfResponse.ok) {
@@ -1576,7 +1610,7 @@ Strict requirements:
                     current_step: currentStep,
                     timing_logs: timingLogs
                 };
-                await upsertIndexingState(supabaseUrl, supabaseAnonKey, state);
+                await upsertIndexingState(supabaseUrl, supabaseAnonKey, state, sessionId);
                 console.log(`✓ Extraction completed for ${m.title} in ${timingLogs.extraction}ms`);
               }
 
@@ -1588,7 +1622,7 @@ Strict requirements:
                   ...state,
                   status: 'embedding',
                   current_step: 'embedding'
-              });
+              }, sessionId);
 
               await indexText({
                   sourceType: 'material',
@@ -1614,7 +1648,7 @@ Strict requirements:
                   current_step: currentStep,
                   error_message: null,
                   timing_logs: timingLogs
-              });
+              }, sessionId);
               console.log(`✓ Indexing successfully completed for PDF material ${m.title} in ${timingLogs.total}ms!`);
 
             } catch (materialError) {
@@ -1627,7 +1661,7 @@ Strict requirements:
                   current_step: currentStep,
                   error_message: errStr,
                   retry_count: retryCount + 1
-              });
+              }, sessionId);
 
               if (material_id) {
                 throw materialError;
