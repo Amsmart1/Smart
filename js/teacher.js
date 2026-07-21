@@ -1670,7 +1670,19 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   if (isEdit && assignment.questions) { assignment.questions.forEach(q => addQuestionField(q)); }
   updateACPreview();
 
-  let currentGroups = isEdit ? (assignment.groups || []) : [];
+  let currentGroups = [];
+  if (isEdit && assignment.groups) {
+      if (typeof assignment.groups === 'string') {
+          try {
+              currentGroups = JSON.parse(assignment.groups);
+          } catch (e) {
+              currentGroups = [];
+          }
+      } else if (Array.isArray(assignment.groups)) {
+          currentGroups = JSON.parse(JSON.stringify(assignment.groups));
+      }
+  }
+  let lastLoadedCourseId = isEdit ? assignment.course_id : courseId;
   window.courseEnrollments = [];
 
   const renderGroups = () => {
@@ -1837,12 +1849,17 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       }
       if (courseSelect) {
           courseSelect.addEventListener('change', () => {
+              const newCourseId = courseSelect.value;
+              if (newCourseId === lastLoadedCourseId) {
+                  return;
+              }
               if (typeSelect?.value === 'group') {
                   currentGroups.forEach(g => {
                       g.members = [];
                       g.leader = null;
                   });
-                  loadCourseEnrollments(courseSelect.value);
+                  lastLoadedCourseId = newCourseId;
+                  loadCourseEnrollments(newCourseId);
               }
           });
       }
@@ -1938,12 +1955,21 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       // GROUP ASSIGNMENTS VALIDATIONS:
       const assType = document.getElementById('assignmentType').value;
       if (assType === 'group') {
+          const titleInputs = document.querySelectorAll('#groupsListContainer .group-title-input');
+          titleInputs.forEach((input, idx) => {
+              if (currentGroups[idx]) {
+                  currentGroups[idx].title = input.value.trim();
+              }
+          });
+
           if (currentGroups.length === 0) {
               UI.showNotification('Please add at least one group for a Group Assignment.', 'warn');
               btn.disabled = false;
               btn.textContent = originalText;
               return;
           }
+
+          const assignedStudentEmails = new Set();
           for (let i = 0; i < currentGroups.length; i++) {
               const g = currentGroups[i];
               if (!g.title || g.title.trim() === '') {
@@ -1957,6 +1983,15 @@ async function showAssignmentForm(assignment = null, courseId = null) {
                   btn.disabled = false;
                   btn.textContent = originalText;
                   return;
+              }
+              for (const member of g.members) {
+                  if (assignedStudentEmails.has(member)) {
+                      UI.showNotification(`Student "${member}" is assigned to multiple groups. Each student can only belong to one group.`, 'warn');
+                      btn.disabled = false;
+                      btn.textContent = originalText;
+                      return;
+                  }
+                  assignedStudentEmails.add(member);
               }
           }
       }
