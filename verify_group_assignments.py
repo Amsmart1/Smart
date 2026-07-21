@@ -176,7 +176,7 @@ def run_verification():
 
             # ---- TEST 1: Teacher Dashboard Group Assignment Form ----
             print("\n--- TEST 1: Teacher Group Assignment Form ---")
-            context1 = browser.new_context(viewport={"width": 1024, "height": 768})
+            context1 = browser.new_context(viewport={"width": 1024, "height": 768}, record_video_dir="/home/jules/verification/videos")
             context1.add_init_script(get_mock_js('teacher@smartlms.edu', 'Professor Ghana', 'teacher', 'mock_teacher_1'))
             page1 = context1.new_page()
             page1.on("console", lambda msg: print(f"[Teacher Console] {msg.type}: {msg.text}"))
@@ -210,7 +210,7 @@ def run_verification():
 
             # ---- TEST 2: Student Dashboard Permissions (Leader) ----
             print("\n--- TEST 2: Student Group Leader View ---")
-            context2 = browser.new_context(viewport={"width": 1024, "height": 768})
+            context2 = browser.new_context(viewport={"width": 1024, "height": 768}, record_video_dir="/home/jules/verification/videos")
             context2.add_init_script(get_mock_js('student1@smartlms.edu', 'Isaac Newton', 'student', 'mock_student_1'))
             page2 = context2.new_page()
             page2.on("console", lambda msg: print(f"[Leader Console] {msg.type}: {msg.text}"))
@@ -231,7 +231,7 @@ def run_verification():
 
             # ---- TEST 3: Student Dashboard Permissions (Regular Member) ----
             print("\n--- TEST 3: Student Regular Member Read-Only View ---")
-            context3 = browser.new_context(viewport={"width": 1024, "height": 768})
+            context3 = browser.new_context(viewport={"width": 1024, "height": 768}, record_video_dir="/home/jules/verification/videos")
             context3.add_init_script(get_mock_js('student2@smartlms.edu', 'Albert Einstein', 'student', 'mock_student_2'))
             page3 = context3.new_page()
             page3.on("console", lambda msg: print(f"[Member Console] {msg.type}: {msg.text}"))
@@ -252,7 +252,7 @@ def run_verification():
 
             # ---- TEST 4: Teacher Grading Queue Deduplication & Grading Sync ----
             print("\n--- TEST 4: Teacher Deduplicated Grading Queue ---")
-            context4 = browser.new_context(viewport={"width": 1024, "height": 768})
+            context4 = browser.new_context(viewport={"width": 1024, "height": 768}, record_video_dir="/home/jules/verification/videos")
             context4.add_init_script(get_mock_js('teacher@smartlms.edu', 'Professor Ghana', 'teacher', 'mock_teacher_2'))
             page4 = context4.new_page()
             page4.on("console", lambda msg: print(f"[Grading Console] {msg.type}: {msg.text}"))
