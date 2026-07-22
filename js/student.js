@@ -3632,7 +3632,7 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
         const memberExisting = await SupabaseDB.getSubmission(assignmentId, memberEmail);
         const memberSubmission = {
           ...memberExisting,
-          id: memberExisting?.id || crypto.randomUUID(),
+          id: memberExisting?.id || undefined,
           course_id: a.course_id,
           assignment_id: assignmentId,
           student_email: memberEmail,
@@ -3651,6 +3651,7 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
           late_penalty_applied: isDraft ? (memberExisting?.late_penalty_applied ?? 0) : 0,
           regrade_request: isDraft ? (memberExisting?.regrade_request ?? null) : null
         };
+        if (!memberSubmission.id) delete memberSubmission.id;
 
         const resSub = await SupabaseDB.saveSubmission(memberSubmission);
         if (resSub) {
