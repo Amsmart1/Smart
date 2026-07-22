@@ -130,7 +130,7 @@ class SupabaseDB {
         'reset_request', 'notification_preferences', 'answers',
         'question_scores', 'question_feedback', 'recurring_config',
         'analytics', 'schedules', 'allowed_extensions', 'anti_cheat_config',
-        'reset_data', 'device_info'
+        'reset_data', 'device_info', 'groups'
     ];
 
     static TABLE_WHITELISTS = {
