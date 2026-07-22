@@ -940,9 +940,20 @@ async function showAssignmentForm(assignmentId) {
       }
   }
 
+  const isGradedOrReturned = submission && (submission.status === 'graded' || submission.status === 'returned');
   const hasLeader = studentGroup && !!studentGroup.leader;
   const isLeader = studentGroup && studentGroup.leader === user.email;
-  const canSubmit = !isGroupAssignment || !hasLeader || isLeader;
+  const canSubmit = (!isGroupAssignment || !hasLeader || isLeader) && !isGradedOrReturned;
+
+  let gradedBannerHtml = '';
+  if (isGradedOrReturned) {
+      gradedBannerHtml = `
+        <div class="card info-border p-10 mt-10 mb-10" style="background:#f7fafc; border-left: 4px solid var(--purple)">
+            <div class="bold text-purple">📝 GRADED / RETURNED</div>
+            <p class="small">This assignment has already been graded or returned. You can view your grades and feedback in the Grades/Feedback tab, or read details below.</p>
+        </div>
+      `;
+  }
 
   if (a) StudyTracker.start(a.course_id);
   if (renderId !== window.currentRenderId) return;
@@ -1027,6 +1038,7 @@ async function showAssignmentForm(assignmentId) {
       </div>
 
       ${groupBannerHtml}
+      ${gradedBannerHtml}
 
       <div class="small mt-10 mb-10 p-10 bg-light border-radius-sm">${UI.renderRichText(a.description)}</div>
 
@@ -1066,7 +1078,9 @@ async function showAssignmentForm(assignmentId) {
             ${submission ? `<button class="button danger w-auto px-40" onclick="deleteSubmissionById('${a.id}', '${user.email}')">Delete Submission</button>` : ''}
         ` : `
             <div class="card border-light p-10 w-full" style="background:#f7fafc; border: 1px solid var(--border)">
-                <span class="small bold text-muted italic">📝 Read-Only Mode: Only group leader (${escapeHtml(studentGroup.leader)}) is permitted to edit or submit this assignment.</span>
+                <span class="small bold text-muted italic">
+                  ${isGradedOrReturned ? '📝 Read-Only Mode: Graded/Returned submissions cannot be edited or deleted.' : `📝 Read-Only Mode: Only group leader (${escapeHtml(studentGroup?.leader)}) is permitted to edit or submit this assignment.`}
+                </span>
             </div>
         `}
       </div>
@@ -3522,11 +3536,41 @@ async function deleteSubmissionById(assignmentId, studentEmail) {
   const renderId = window.currentRenderId;
   if (confirm('Are you sure you want to delete your submission? This action cannot be undone.')) {
     try {
-      const a = await SupabaseDB.getAssignment(assignmentId);
+      const [a, existing] = await Promise.all([
+          SupabaseDB.getAssignment(assignmentId),
+          SupabaseDB.getSubmission(assignmentId, studentEmail)
+      ]);
       if (renderId !== window.currentRenderId) return;
-      await SupabaseDB.deleteSubmission(assignmentId, studentEmail);
-      if (renderId !== window.currentRenderId) return;
-      if (a) await SupabaseDB.updateCourseProgress(a.course_id, studentEmail);
+      if (!a) throw new Error('Assignment not found');
+
+      // Graded/Returned check
+      const isGradedOrReturned = existing && (existing.status === 'graded' || existing.status === 'returned');
+      if (isGradedOrReturned) {
+          throw new Error('This assignment has already been graded or returned and cannot be deleted.');
+      }
+
+      // Group / Leader check
+      const isGroup = a.assignment_type === 'group';
+      let members = [studentEmail];
+      if (isGroup) {
+          const studentGroup = (a.groups || []).find(g => (g.members || []).includes(studentEmail));
+          if (!studentGroup) {
+              throw new Error('You are not assigned to any group for this assignment.');
+          }
+          const hasLeader = studentGroup && !!studentGroup.leader;
+          const isLeader = studentGroup && studentGroup.leader === studentEmail;
+          if (hasLeader && !isLeader) {
+              throw new Error('Only the group leader is permitted to delete this assignment submission.');
+          }
+          members = studentGroup.members || [studentEmail];
+      }
+
+      // Delete and update course progress for all group members (or individual)
+      for (const memberEmail of members) {
+          await SupabaseDB.deleteSubmission(assignmentId, memberEmail);
+          await SupabaseDB.updateCourseProgress(a.course_id, memberEmail);
+      }
+
       if (renderId !== window.currentRenderId) return;
       renderAssignments();
       UI.showNotification('Submission deleted successfully.');
@@ -3570,8 +3614,33 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
   if (window.AntiCheat) await AntiCheat.pauseProctoring();
 
   try {
-    const existing = await SupabaseDB.getSubmission(assignmentId, studentEmail);
+    const [a, existing] = await Promise.all([
+        SupabaseDB.getAssignment(assignmentId),
+        SupabaseDB.getSubmission(assignmentId, studentEmail)
+    ]);
     if (renderId !== window.currentRenderId) return;
+    if (!a) throw new Error('Assignment not found');
+
+    // Graded/Returned check
+    const isGradedOrReturned = existing && (existing.status === 'graded' || existing.status === 'returned');
+    if (isGradedOrReturned) {
+        throw new Error('This assignment has already been graded or returned and cannot be modified.');
+    }
+
+    // Group / Leader check
+    const isGroupAssignment = a.assignment_type === 'group';
+    if (isGroupAssignment) {
+        const studentGroup = (a.groups || []).find(g => (g.members || []).includes(studentEmail));
+        if (!studentGroup) {
+            throw new Error('You are not assigned to any group for this assignment.');
+        }
+        const hasLeader = studentGroup && !!studentGroup.leader;
+        const isLeader = studentGroup && studentGroup.leader === studentEmail;
+        if (hasLeader && !isLeader) {
+            throw new Error('Only the group leader is permitted to edit, save drafts, or submit this assignment.');
+        }
+    }
+
     const answers = (existing && existing.answers) ? { ...existing.answers } : {};
 
     for (let idx = 0; idx < capturedAnswers.length; idx++) {
@@ -3613,10 +3682,6 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
     }
 
     // "No empty submission" is already enforced above by throwing error for any empty question.
-
-    const a = await SupabaseDB.getAssignment(assignmentId);
-    if (renderId !== window.currentRenderId) return;
-    if (!a) throw new Error('Assignment not found');
 
     const isGroup = a.assignment_type === 'group';
     let members = [studentEmail];
