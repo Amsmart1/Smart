@@ -521,6 +521,26 @@ class AIManager {
         // Placeholder-based markdown tokenizer to prevent tag clashing inside code blocks
         const placeholders = [];
 
+        // 1. Extract and preserve math formulas before standard markdown formatting
+        const mathPlaceholders = [];
+        const blockMathRegex = /\$\$\s*([\s\S]+?)\s*\$\$/g;
+        const inlineMathRegex = /\$((?!\$)[^\$ \n][^\$]*?[^\$ \n])\$|\$([^\$ \n])\$/g;
+
+        // Extract display block math
+        escaped = escaped.replace(blockMathRegex, (match, formula) => {
+            const idx = mathPlaceholders.length;
+            mathPlaceholders.push({ isBlock: true, formula });
+            return `%%%MATHPLACEHOLDER${idx}%%%`;
+        });
+
+        // Extract inline math
+        escaped = escaped.replace(inlineMathRegex, (match, formula1, formula2) => {
+            const formula = formula1 || formula2;
+            const idx = mathPlaceholders.length;
+            mathPlaceholders.push({ isBlock: false, formula });
+            return `%%%MATHPLACEHOLDER${idx}%%%`;
+        });
+
         // 1. Extract and preserve code blocks
         let temp = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)\n```/g, (match, code) => {
             const idx = placeholders.length;
@@ -567,6 +587,45 @@ class AIManager {
         // 7. Restore placeholders
         for (let i = 0; i < placeholders.length; i++) {
             temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+        }
+
+        // 8. Render and restore math placeholders
+        for (let i = 0; i < mathPlaceholders.length; i++) {
+            const item = mathPlaceholders[i];
+            // Unescape HTML entities inside mathematical formulas safely
+            const unescapedFormula = item.formula
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'");
+
+            let renderedHtml = '';
+            if (typeof window.katex !== 'undefined' && typeof window.katex.renderToString === 'function') {
+                try {
+                    renderedHtml = window.katex.renderToString(unescapedFormula, {
+                        displayMode: item.isBlock,
+                        throwOnError: false,
+                        trust: true
+                    });
+                } catch (err) {
+                    console.error('KaTeX rendering error:', err);
+                    renderedHtml = item.isBlock
+                        ? `<div class="katex-error" style="color: #ef4444; font-family: monospace; padding: 10px; background: #fee2e2; border-radius: 6px; margin: 10px 0; font-size: 0.9rem;">$$ ${item.formula} $$</div>`
+                        : `<span class="katex-error" style="color: #ef4444; font-family: monospace; background: #fee2e2; padding: 2px 4px; border-radius: 4px; font-size: 0.9rem;">$ ${item.formula} $</span>`;
+                }
+            } else {
+                // Enterprise-grade fallback styling in case KaTeX library is loaded asynchronously or blocked
+                const fallbackStyles = item.isBlock
+                    ? 'display: block; text-align: center; margin: 15px 0; font-family: "Cambria Math", "Times New Roman", serif; font-size: 1.15rem; color: #1e293b; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px dashed #cbd5e1; white-space: nowrap; overflow-x: auto;'
+                    : 'display: inline-block; font-family: "Cambria Math", "Times New Roman", serif; font-style: italic; color: #1e293b; padding: 0 4px; font-weight: 500;';
+
+                renderedHtml = item.isBlock
+                    ? `<div class="math-fallback" style="${fallbackStyles}">\\[ ${unescapedFormula} \\]</div>`
+                    : `<span class="math-fallback" style="${fallbackStyles}">\\( ${unescapedFormula} \\)</span>`;
+            }
+
+            temp = temp.replace(`%%%MATHPLACEHOLDER${i}%%%`, renderedHtml);
         }
 
         return temp;
