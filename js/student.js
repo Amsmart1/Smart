@@ -370,6 +370,11 @@ async function enroll(courseId) {
     UI.showNotification(isFull ? e.message : 'Enrollment failed: ' + e.message, isFull ? 'warn' : 'danger');
   }
 }
+window.setStudentLessonsViewMode = function(mode, courseId, fromMyCourses) {
+  localStorage.setItem('student_view_mode_lessons', mode);
+  viewCourse(courseId, fromMyCourses);
+};
+
 async function viewCourse(courseId, fromMyCourses = false) {
   const renderId = ++window.currentRenderId;
   // Ensure any active study session is stopped if navigating to course view
@@ -384,10 +389,14 @@ async function viewCourse(courseId, fromMyCourses = false) {
       return;
   }
 
-  const [topicRes, lessonRes, { data: allCourseAssignments }] = await Promise.all([
+  const me = await SessionManager.getCurrentUser();
+  if (renderId !== window.currentRenderId) return;
+
+  const [topicRes, lessonRes, { data: allCourseAssignments }, enrollRes] = await Promise.all([
       SupabaseDB.getTopics(courseId),
       SupabaseDB.getLessons(courseId),
-      SupabaseDB.getAssignments(null, courseId, null)
+      SupabaseDB.getAssignments(null, courseId, null),
+      SupabaseDB.getEnrollments(me.email)
   ]);
   if (renderId !== window.currentRenderId) return;
   const topics = topicRes.data || [];
@@ -395,6 +404,10 @@ async function viewCourse(courseId, fromMyCourses = false) {
   const courseAssignments = (allCourseAssignments || []).filter(a => a.status === 'published');
   const container = document.getElementById('pageContent');
   if (!container) return;
+
+  const enrollments = enrollRes?.data || [];
+  const enrollment = enrollments.find(e => e.course_id === courseId);
+  const completedLessonIds = enrollment?.completed_lessons || [];
 
   const backAction = fromMyCourses ? 'renderMyCourses()' : 'renderCourses()';
   const backLabel = fromMyCourses ? '← Back to My Courses' : '← Back to Catalog';
@@ -406,44 +419,246 @@ async function viewCourse(courseId, fromMyCourses = false) {
 
   const uncategorizedLessons = lessons.filter(l => !l.topic_id).sort((a, b) => a.order_index - b.order_index);
 
+  const orderedLessons = [];
+  topicsWithLessons.forEach(t => {
+      orderedLessons.push(...t.lessons);
+  });
+  orderedLessons.push(...uncategorizedLessons);
+
+  const studentViewMode = localStorage.getItem('student_view_mode_lessons') || 'grid';
+
   container.innerHTML = `
     <button class="button secondary w-auto mb-15" onclick="${backAction}">${backLabel}</button>
     <div class="grid-2 mt-20">
       <section class="card">
-        <h3 class="m-0">Lessons</h3>
+        <div class="flex-between flex-wrap gap-10 mb-15" style="border-bottom: 1px solid var(--border); padding-bottom: 10px;">
+          <h3 class="m-0">Lessons</h3>
+          <div class="view-mode-toggle">
+            <button class="button ${studentViewMode === 'grid' ? 'active' : ''}" onclick="setStudentLessonsViewMode('grid', '${escapeAttr(courseId)}', ${fromMyCourses})">Grid</button>
+            <button class="button ${studentViewMode === 'list' ? 'active' : ''}" onclick="setStudentLessonsViewMode('list', '${escapeAttr(courseId)}', ${fromMyCourses})">List</button>
+          </div>
+        </div>
         <div class="mt-15">
+          ${studentViewMode === 'grid' ? `
+            <!-- Grid View -->
+            ${topicsWithLessons.map(t => {
+                const topicLessons = t.lessons;
+                const completedTopicLessons = topicLessons.filter(l => completedLessonIds.includes(l.id)).length;
+                const topicProgress = topicLessons.length > 0 ? Math.round((completedTopicLessons / topicLessons.length) * 100) : 0;
+
+                return `
+                <div class="mb-25">
+                    <div class="p-15 bg-light border-radius-md mb-15" style="border: 1px solid var(--border)">
+                        <div class="flex-between flex-wrap gap-10">
+                            <div>
+                                <strong style="font-size: 1.1rem">${escapeHtml(t.title)}</strong>
+                                ${t.description ? `<div class="tiny text-muted m-0 mt-5">${UI.renderRichText(t.description)}</div>` : ''}
+                            </div>
+                            <div class="text-right" style="min-width: 120px">
+                                <span class="badge ${topicProgress === 100 ? 'badge-active' : 'secondary'} tiny">${completedTopicLessons}/${topicLessons.length} Completed</span>
+                            </div>
+                        </div>
+                        ${topicLessons.length > 0 ? `
+                        <div class="mt-10">
+                            <div class="flex-between tiny text-muted mb-5">
+                                <span>Topic Progress</span>
+                                <span>${topicProgress}%</span>
+                            </div>
+                            <div class="premium-progress-container">
+                                <div class="premium-progress-bar" style="width: ${topicProgress}%"></div>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+
+                    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px">
+                        ${t.lessons.map(l => {
+                            const lIdx = orderedLessons.findIndex(ol => ol.id === l.id);
+                            const isLCompleted = completedLessonIds.includes(l.id);
+                            let status = 'locked';
+                            if (isLCompleted) {
+                                status = 'completed';
+                            } else if (lIdx === 0 || completedLessonIds.includes(orderedLessons[lIdx - 1]?.id)) {
+                                status = 'active';
+                            }
+
+                            let badgeHtml = '';
+                            let btnHtml = '';
+                            if (status === 'completed') {
+                                badgeHtml = `<span class="premium-badge premium-badge-completed">✓ Completed</span>`;
+                                btnHtml = `<button class="button secondary small w-full m-0 mt-15">Review Lesson</button>`;
+                            } else if (status === 'active') {
+                                badgeHtml = `<span class="premium-badge premium-badge-active">● Active</span>`;
+                                btnHtml = `<button class="button small w-full m-0 mt-15">Start Lesson</button>`;
+                            } else {
+                                badgeHtml = `<span class="premium-badge premium-badge-locked">🔒 Locked</span>`;
+                                btnHtml = `<button class="button secondary small w-full m-0 mt-15" style="opacity: 0.6; cursor: not-allowed;" disabled>Locked</button>`;
+                            }
+
+                            const duration = l.duration || `${15 + (l.title.length % 4) * 10} mins`;
+                            const level = l.level || (lIdx % 3 === 0 ? 'Beginner' : (lIdx % 3 === 1 ? 'Intermediate' : 'Advanced'));
+                            const xp = l.xp || '100 XP';
+                            const hasVideo = !!l.video_url;
+
+                            return `
+                            <div class="premium-grid-card" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
+                                <div class="flex-between w-full">
+                                    ${badgeHtml}
+                                    <span style="font-size: 1.25rem" title="${hasVideo ? 'Video Included' : 'Reading Materials'}">${hasVideo ? '📹' : '📚'}</span>
+                                </div>
+                                <div class="w-full mt-10">
+                                    <h4 class="m-0 bold text-ellipsis" style="font-size: 1.05rem;" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</h4>
+                                    <p class="tiny text-muted mt-5 text-ellipsis-2" style="height: 32px; overflow: hidden">
+                                        Learn the fundamental concepts and practical skills covered in this lesson.
+                                    </p>
+                                    <div class="premium-card-meta">
+                                        <div class="premium-card-meta-item">⏱️ ${duration}</div>
+                                        <div class="premium-card-meta-item">🏷️ ${level}</div>
+                                        <div class="premium-card-meta-item">✨ ${xp}</div>
+                                    </div>
+                                </div>
+                                <div class="w-full">
+                                    ${btnHtml}
+                                </div>
+                            </div>
+                            `;
+                        }).join('') || '<div class="tiny text-muted italic p-10">No lessons in this topic.</div>'}
+                    </div>
+                </div>
+                `;
+            }).join('')}
+
+            ${uncategorizedLessons.length > 0 ? `
+                <div class="mb-25">
+                    <div class="p-15 bg-light border-radius-md mb-15" style="border: 1px dashed var(--danger)">
+                        <strong class="small italic danger-text">Other Uncategorized Lessons</strong>
+                    </div>
+                    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px">
+                        ${uncategorizedLessons.map(l => {
+                            const lIdx = orderedLessons.findIndex(ol => ol.id === l.id);
+                            const isLCompleted = completedLessonIds.includes(l.id);
+                            let status = 'locked';
+                            if (isLCompleted) {
+                                status = 'completed';
+                            } else if (lIdx === 0 || completedLessonIds.includes(orderedLessons[lIdx - 1]?.id)) {
+                                status = 'active';
+                            }
+
+                            let badgeHtml = '';
+                            let btnHtml = '';
+                            if (status === 'completed') {
+                                badgeHtml = `<span class="premium-badge premium-badge-completed">✓ Completed</span>`;
+                                btnHtml = `<button class="button secondary small w-full m-0 mt-15">Review Lesson</button>`;
+                            } else if (status === 'active') {
+                                badgeHtml = `<span class="premium-badge premium-badge-active">● Active</span>`;
+                                btnHtml = `<button class="button small w-full m-0 mt-15">Start Lesson</button>`;
+                            } else {
+                                badgeHtml = `<span class="premium-badge premium-badge-locked">🔒 Locked</span>`;
+                                btnHtml = `<button class="button secondary small w-full m-0 mt-15" style="opacity: 0.6; cursor: not-allowed;" disabled>Locked</button>`;
+                            }
+
+                            const duration = l.duration || `${15 + (l.title.length % 4) * 10} mins`;
+                            const level = l.level || 'Intermediate';
+                            const xp = l.xp || '100 XP';
+                            const hasVideo = !!l.video_url;
+
+                            return `
+                            <div class="premium-grid-card" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
+                                <div class="flex-between w-full">
+                                    ${badgeHtml}
+                                    <span style="font-size: 1.25rem">${hasVideo ? '📹' : '📚'}</span>
+                                </div>
+                                <div class="w-full mt-10">
+                                    <h4 class="m-0 bold text-ellipsis" style="font-size: 1.05rem;" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</h4>
+                                    <p class="tiny text-muted mt-5 text-ellipsis-2" style="height: 32px; overflow: hidden">
+                                        Learn the fundamental concepts and practical skills covered in this lesson.
+                                    </p>
+                                    <div class="premium-card-meta">
+                                        <div class="premium-card-meta-item">⏱️ ${duration}</div>
+                                        <div class="premium-card-meta-item">🏷️ ${level}</div>
+                                        <div class="premium-card-meta-item">✨ ${xp}</div>
+                                    </div>
+                                </div>
+                                <div class="w-full">
+                                    ${btnHtml}
+                                </div>
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            ` : ''}
+          ` : `
+            <!-- List View (Fallback / Dense View) -->
             ${topicsWithLessons.map(t => `
-                <div class="mb-20">
-                    <div class="p-10 bg-light border-radius-sm mb-5">
+                <div class="mb-20" style="border: 1px solid var(--border); border-radius: 12px; overflow: hidden">
+                    <div class="p-12 bg-light" style="border-bottom: 1px solid var(--border)">
                         <strong class="small">${escapeHtml(t.title)}</strong>
                         ${t.description ? `<div class="tiny text-muted m-0 mt-2">${UI.renderRichText(t.description)}</div>` : ''}
                     </div>
-                    <div class="pl-15">
-                        ${t.lessons.map(l => `
-                            <div class="question py-10" style="cursor:pointer; border-bottom: 1px solid #eee" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
-                                <span class="small bold">${escapeHtml(l.title)}</span>
+                    <div class="p-10">
+                        ${t.lessons.map(l => {
+                            const lIdx = orderedLessons.findIndex(ol => ol.id === l.id);
+                            const isLCompleted = completedLessonIds.includes(l.id);
+                            let status = 'locked';
+                            let badgeClass = 'premium-badge-locked';
+                            let statusText = '🔒 Locked';
+                            if (isLCompleted) {
+                                status = 'completed';
+                                badgeClass = 'premium-badge-completed';
+                                statusText = '✓ Completed';
+                            } else if (lIdx === 0 || completedLessonIds.includes(orderedLessons[lIdx - 1]?.id)) {
+                                status = 'active';
+                                badgeClass = 'premium-badge-active';
+                                statusText = '● Active';
+                            }
+
+                            return `
+                            <div class="flex-between py-10 px-5 list-item-hover" style="cursor:pointer; border-bottom: 1px solid #eee" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
+                                <span class="small bold" style="${status === 'locked' ? 'opacity: 0.6;' : ''}">${escapeHtml(l.title)}</span>
+                                <span class="premium-badge ${badgeClass}" style="font-size:10px">${statusText}</span>
                             </div>
-                        `).join('') || '<p class="tiny text-muted italic p-5">No lessons in this topic.</p>'}
+                            `;
+                        }).join('') || '<p class="tiny text-muted italic p-5 m-0">No lessons in this topic.</p>'}
                     </div>
                 </div>
             `).join('')}
 
             ${uncategorizedLessons.length > 0 ? `
-                <div class="mb-20">
-                    <div class="p-10 bg-light border-radius-sm mb-5">
-                        <strong class="small italic">Other Lessons</strong>
+                <div class="mb-20" style="border: 1px dashed var(--danger); border-radius: 12px; overflow: hidden">
+                    <div class="p-12 bg-light" style="border-bottom: 1px solid var(--border)">
+                        <strong class="small italic danger-text">Other Lessons</strong>
                     </div>
-                    <div class="pl-15">
-                        ${uncategorizedLessons.map(l => `
-                            <div class="question py-10" style="cursor:pointer; border-bottom: 1px solid #eee" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
-                                <span class="small bold">${escapeHtml(l.title)}</span>
+                    <div class="p-10">
+                        ${uncategorizedLessons.map(l => {
+                            const lIdx = orderedLessons.findIndex(ol => ol.id === l.id);
+                            const isLCompleted = completedLessonIds.includes(l.id);
+                            let status = 'locked';
+                            let badgeClass = 'premium-badge-locked';
+                            let statusText = '🔒 Locked';
+                            if (isLCompleted) {
+                                status = 'completed';
+                                badgeClass = 'premium-badge-completed';
+                                statusText = '✓ Completed';
+                            } else if (lIdx === 0 || completedLessonIds.includes(orderedLessons[lIdx - 1]?.id)) {
+                                status = 'active';
+                                badgeClass = 'premium-badge-active';
+                                statusText = '● Active';
+                            }
+
+                            return `
+                            <div class="flex-between py-10 px-5 list-item-hover" style="cursor:pointer; border-bottom: 1px solid #eee" onclick="showLesson('${escapeAttr(l.id)}', '${escapeAttr(courseId)}', ${fromMyCourses})">
+                                <span class="small bold" style="${status === 'locked' ? 'opacity: 0.6;' : ''}">${escapeHtml(l.title)}</span>
+                                <span class="premium-badge ${badgeClass}" style="font-size:10px">${statusText}</span>
                             </div>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </div>
                 </div>
             ` : ''}
+          `}
 
-            ${topics.length === 0 && uncategorizedLessons.length === 0 ? '<p class="small">No lessons yet.</p>' : ''}
+          ${topics.length === 0 && uncategorizedLessons.length === 0 ? '<p class="small">No lessons yet.</p>' : ''}
         </div>
       </section>
       <section class="card">

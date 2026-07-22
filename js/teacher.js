@@ -328,81 +328,122 @@ async function editCourse(id) {
               <button class="button secondary w-auto small" onclick="void showTopicForm('${id}')">+ Topic</button>
               <button class="button w-auto small" onclick="void showLessonForm('${id}')">+ Lesson</button>
             </div>
-            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('lessons', 'grid')">Grid</button>
-                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('lessons', 'list')">List</button>
+        <div class="view-mode-toggle">
+            <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('lessons', 'grid')">Grid</button>
+            <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('lessons', 'list')">List</button>
             </div>
           </div>
         </div>
         <div class="mt-15">
           ${viewMode === 'grid' ? `
-            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px">
-              ${topicsWithLessons.map(t => `
-                <div class="card flex-between flex-column m-0 p-10 animate-fade-in" style="border: 1px solid var(--border); background: var(--bg-card); min-height: 200px; height: 100%">
-                  <div class="w-full">
-                    <div class="flex-between gap-5 p-5" style="border-bottom: 1px solid var(--border)">
-                      <div class="bold text-ellipsis" style="font-size: 1rem" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}</div>
-                      <div class="flex gap-5">
-                        <button class="button tiny secondary p-5" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">✏️</button>
-                        <button class="button tiny danger p-5" onclick="deleteTopicById('${t.id}', '${id}')">❌</button>
-                      </div>
-                    </div>
-                    <div class="tiny text-muted mt-5 mb-10 text-ellipsis-3" style="max-height: 45px; overflow: hidden">${UI.renderRichText(t.description)}</div>
-
-                    <div class="flex-column gap-5 mt-10">
-                      ${t.lessons.map(l => `
-                        <div class="flex-between p-5 bg-light border-radius-sm" style="border: 1px solid var(--border); font-size: 13px">
-                          <span class="text-ellipsis bold" style="max-width: 140px" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</span>
-                          <div class="flex gap-2">
-                            <button class="button tiny w-auto p-5 py-2 m-0" onclick="void editLesson('${l.id}', '${id}')">✏️</button>
-                            <button class="button tiny danger w-auto p-5 py-2 m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌</button>
-                          </div>
+        <!-- Grid View -->
+        ${topicsWithLessons.map(t => {
+            const topicLessons = t.lessons;
+            return `
+            <div class="mb-25">
+                <div class="p-15 bg-light border-radius-md mb-15" style="border: 1px solid var(--border)">
+                    <div class="flex-between flex-wrap gap-10">
+                        <div>
+                            <strong style="font-size: 1.1rem">${escapeHtml(t.title)}</strong>
+                            ${t.description ? `<div class="tiny text-muted m-0 mt-5">${UI.renderRichText(t.description)}</div>` : ''}
                         </div>
-                      `).join('') || '<div class="tiny text-muted italic">No lessons.</div>'}
-                    </div>
-                  </div>
-                </div>
-              `).join('')}
-
-              ${uncategorizedLessons.length > 0 ? `
-                <div class="card flex-between flex-column m-0 p-10" style="border: 1px dashed var(--danger); background: #fff5f5; height: 100%">
-                  <div class="w-full">
-                    <strong class="small danger-text italic d-block mb-10">Uncategorized Lessons</strong>
-                    <div class="flex-column gap-5">
-                      ${uncategorizedLessons.map(l => `
-                        <div class="flex-between p-5 bg-white border-radius-sm" style="border: 1px solid var(--danger); font-size: 13px">
-                          <span class="text-ellipsis bold" style="max-width: 140px" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</span>
-                          <div class="flex gap-2">
-                            <button class="button tiny w-auto p-5 py-2 m-0" onclick="void editLesson('${l.id}', '${id}')">✏️</button>
-                            <button class="button tiny danger w-auto p-5 py-2 m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌</button>
-                          </div>
+                        <div class="flex gap-5">
+                            <button class="button tiny secondary w-auto px-10 py-5 m-0" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">✏️ Edit Topic</button>
+                            <button class="button tiny danger w-auto px-10 py-5 m-0" onclick="deleteTopicById('${t.id}', '${id}')">❌ Delete</button>
                         </div>
-                      `).join('')}
                     </div>
-                  </div>
+                    </div>
+
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px">
+                    ${topicLessons.map((l, lIdx) => {
+                        const duration = l.duration || `${15 + (l.title.length % 4) * 10} mins`;
+                        const level = l.level || (lIdx % 3 === 0 ? 'Beginner' : (lIdx % 3 === 1 ? 'Intermediate' : 'Advanced'));
+                        const xp = l.xp || '100 XP';
+                        const hasVideo = !!l.video_url;
+
+                        return `
+                        <div class="premium-grid-card">
+                            <div class="flex-between w-full">
+                                <span class="premium-badge premium-badge-published">Lesson ${l.order_index}</span>
+                                <span style="font-size: 1.25rem">${hasVideo ? '📹' : '📚'}</span>
+                            </div>
+                            <div class="w-full mt-10 mb-15">
+                                <h4 class="m-0 bold text-ellipsis" style="font-size: 1.05rem;" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</h4>
+                                <div class="premium-card-meta">
+                                    <div class="premium-card-meta-item">⏱️ ${duration}</div>
+                                    <div class="premium-card-meta-item">🏷️ ${level}</div>
+                                    <div class="premium-card-meta-item">✨ ${xp}</div>
+                                </div>
+                            </div>
+                            <div class="flex gap-10 w-full mt-auto">
+                                <button class="button tiny secondary w-full m-0" onclick="void editLesson('${l.id}', '${id}')">✏️ Edit</button>
+                                <button class="button tiny danger w-full m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌ Delete</button>
+                            </div>
+                        </div>
+                        `;
+                    }).join('') || '<div class="tiny text-muted italic p-10">No lessons in this topic.</div>'}
+                    </div>
                 </div>
-              ` : ''}
-            </div>
+            `;
+        }).join('')}
+
+        ${uncategorizedLessons.length > 0 ? `
+            <div class="mb-25">
+                <div class="p-15 bg-light border-radius-md mb-15" style="border: 1px dashed var(--danger)">
+                    <strong class="small italic danger-text">Other Uncategorized Lessons</strong>
+                    </div>
+                <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px">
+                    ${uncategorizedLessons.map(l => {
+                        const duration = l.duration || `${15 + (l.title.length % 4) * 10} mins`;
+                        const level = l.level || 'Intermediate';
+                        const xp = l.xp || '100 XP';
+                        const hasVideo = !!l.video_url;
+
+                        return `
+                        <div class="premium-grid-card">
+                            <div class="flex-between w-full">
+                                <span class="premium-badge premium-badge-draft">Uncategorized</span>
+                                <span style="font-size: 1.25rem">${hasVideo ? '📹' : '📚'}</span>
+                            </div>
+                            <div class="w-full mt-10 mb-15">
+                                <h4 class="m-0 bold text-ellipsis" style="font-size: 1.05rem;" title="${escapeAttr(l.title)}">${escapeHtml(l.title)}</h4>
+                                <div class="premium-card-meta">
+                                    <div class="premium-card-meta-item">⏱️ ${duration}</div>
+                                    <div class="premium-card-meta-item">🏷️ ${level}</div>
+                                    <div class="premium-card-meta-item">✨ ${xp}</div>
+                                </div>
+                            </div>
+                            <div class="flex gap-10 w-full mt-auto">
+                                <button class="button tiny secondary w-full m-0" onclick="void editLesson('${l.id}', '${id}')">✏️ Edit</button>
+                                <button class="button tiny danger w-full m-0" onclick="deleteLessonById('${l.id}', '${id}')">❌ Delete</button>
+                            </div>
+                        </div>
+                        `;
+                    }).join('')}
+                </div>
+                </div>
+        ` : ''}
           ` : `
+        <!-- List View -->
             ${topicsWithLessons.map(t => `
-              <div class="mb-20">
-                <div class="flex-between p-10 bg-light border-radius-sm mb-5">
+          <div class="mb-20" style="border: 1px solid var(--border); border-radius: 12px; overflow: hidden">
+            <div class="flex-between p-12 bg-light mb-5" style="border-bottom: 1px solid var(--border)">
                   <div style="flex:1">
                     <strong class="small d-block">${escapeHtml(t.title)}</strong>
                     <div class="tiny text-muted mt-2">${UI.renderRichText(t.description)}</div>
                   </div>
                   <div class="flex gap-5">
-                    <button class="button tiny w-auto secondary" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">Edit Topic</button>
-                    <button class="button tiny w-auto danger" onclick="deleteTopicById('${t.id}', '${id}')">Delete</button>
+                <button class="button tiny w-auto secondary m-0" onclick="void showTopicForm('${id}', ${escapeAttr(JSON.stringify(t))})">Edit Topic</button>
+                <button class="button tiny w-auto danger m-0" onclick="deleteTopicById('${t.id}', '${id}')">Delete</button>
                   </div>
                 </div>
-                <div class="pl-15">
+            <div class="p-10">
                   ${t.lessons.map(l => `
-                    <div class="flex-between list-item py-5">
-                      <span class="small">${escapeHtml(l.title)}</span>
+                <div class="flex-between py-8 px-5 list-item-hover" style="border-bottom: 1px solid #eee">
+                  <span class="small bold">${escapeHtml(l.title)}</span>
                       <div class="flex gap-5">
-                        <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
-                        <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+                    <button class="button tiny w-auto m-0" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
+                    <button class="button tiny w-auto danger m-0" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
                       </div>
                     </div>
                   `).join('') || '<div class="tiny text-muted p-5">No lessons in this topic.</div>'}
@@ -411,17 +452,17 @@ async function editCourse(id) {
             `).join('')}
 
             ${uncategorizedLessons.length > 0 ? `
-              <div class="mb-20">
-                <div class="p-10 bg-light border-radius-sm mb-5">
+          <div class="mb-20" style="border: 1px dashed var(--danger); border-radius: 12px; overflow: hidden">
+            <div class="p-12 bg-light mb-5" style="border-bottom: 1px solid var(--border)">
                   <strong class="small danger-text italic">Uncategorized Lessons (Please assign to a topic)</strong>
                 </div>
-                <div class="pl-15">
+            <div class="p-10">
                   ${uncategorizedLessons.map(l => `
-                    <div class="flex-between list-item py-5">
-                      <span class="small">${escapeHtml(l.title)}</span>
+                <div class="flex-between py-8 px-5 list-item-hover" style="border-bottom: 1px solid #eee">
+                  <span class="small bold">${escapeHtml(l.title)}</span>
                       <div class="flex gap-5">
-                        <button class="button tiny w-auto" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
-                        <button class="button tiny w-auto danger" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
+                    <button class="button tiny w-auto m-0" onclick="void editLesson('${l.id}', '${id}')">Edit</button>
+                    <button class="button tiny w-auto danger m-0" onclick="deleteLessonById('${l.id}', '${id}')">Delete</button>
                       </div>
                     </div>
                   `).join('')}
@@ -785,35 +826,43 @@ async function renderAssignments() {
       <h2 class="m-0">My Assignments</h2>
       <div class="flex gap-10 flex-center-y flex-wrap">
         <button class="button w-auto m-0" onclick="showAssignmentForm()">+ Create Assignment</button>
-        <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-            <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('assignments', 'grid')">Grid</button>
-            <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('assignments', 'list')">Table</button>
+        <div class="view-mode-toggle">
+            <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('assignments', 'grid')">Grid</button>
+            <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('assignments', 'list')">Table</button>
         </div>
       </div>
     </div>
 
     <div id="assignmentsContainer" class="mt-20">
       ${viewMode === 'grid' ? `
-        <div class="grid">
+        <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px;">
           ${assignments.map(a => {
             const course = courses.find(c => c.id === a.course_id);
+            const isLate = new Date(a.due_date).getTime() <= now;
             return `
-            <div class="card">
-              <h3 class="m-0">${escapeHtml(a.title)}</h3>
-              <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-              <div class="small">${UI.renderRichText(a.description)}</div>
-              <div class="mt-10">
-                <p class="small m-0 mb-5">Due: ${new Date(a.due_date).toLocaleString()}</p>
-                ${new Date(a.due_date).getTime() > now ? `
-                    <div class="assign-countdown"
-                         data-target="${new Date(a.due_date).getTime()}"
-                         data-start="${a.start_at || (a.created_at ? new Date(a.created_at).getTime() : now)}"
-                         data-status="${a.status || 'published'}"></div>
-                ` : '<div class="danger-text bold tiny">Past Due</div>'}
+            <div class="premium-grid-card">
+              <div>
+                <div class="flex-between w-full">
+                  <span class="premium-badge ${isLate ? 'premium-badge-locked' : 'premium-badge-published'}">${a.status || 'published'}</span>
+                  <span style="font-size: 1.25rem">📝</span>
+                </div>
+                <h3 class="m-0 mt-10 bold text-ellipsis" style="font-size: 1.15rem;" title="${escapeAttr(a.title)}">${escapeHtml(a.title)}</h3>
+                <p class="small text-muted mt-5 mb-10 text-ellipsis-2" style="height:36px; overflow:hidden;" title="Course: ${escapeAttr(course?.title || 'None')}"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
+                <div class="small mt-10" style="max-height: 80px; overflow: hidden; font-size: 13px;">${UI.renderRichText(a.description)}</div>
+                <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
+                <div class="mt-10">
+                  <p class="small m-0 mb-5"><strong>Due:</strong> ${new Date(a.due_date).toLocaleString()}</p>
+                  ${!isLate ? `
+                      <div class="assign-countdown"
+                           data-target="${new Date(a.due_date).getTime()}"
+                           data-start="${a.start_at || (a.created_at ? new Date(a.created_at).getTime() : now)}"
+                           data-status="${a.status || 'published'}"></div>
+                  ` : '<div class="danger-text bold tiny">Past Due</div>'}
+                </div>
               </div>
-              <div class="flex gap-10 mt-15">
-                <button class="button small w-auto" onclick="editAssignment('${escapeAttr(a.id)}')">Edit</button>
-                <button class="button small w-auto danger" onclick="deleteAssignmentById('${escapeAttr(a.id)}')">Delete</button>
+              <div class="flex gap-10 mt-20">
+                <button class="button small w-full m-0" onclick="editAssignment('${escapeAttr(a.id)}')">Edit</button>
+                <button class="button small w-full danger m-0" onclick="deleteAssignmentById('${escapeAttr(a.id)}')">Delete</button>
               </div>
             </div>
           `;}).join('') || '<div class="empty">No assignments found.</div>'}
@@ -946,9 +995,9 @@ async function renderGrading(page = 1) {
             <h2 class="m-0">Grading Queue</h2>
             <div class="flex gap-10 flex-center-y flex-wrap">
                 <div class="small text-muted">${escapeHtml(submittedSubs.length)} Submissions Pending</div>
-                <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-                    <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'grid')">Grid</button>
-                    <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('grading', 'list')">Table</button>
+                <div class="view-mode-toggle">
+                    <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('grading', 'grid')">Grid</button>
+                    <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('grading', 'list')">Table</button>
                 </div>
             </div>
         </div>
@@ -982,33 +1031,36 @@ async function renderGrading(page = 1) {
                         const assignment = assignments.find(a => a.id === s.assignment_id);
                         const studentName = s.users?.full_name || 'Unknown Student';
                         const isRegrade = !!s.regrade_request;
+                        const lateLabel = s.is_late ? `<span class="premium-badge premium-badge-locked">LATE</span>` : '';
+                        const statusBadge = isRegrade ? `<span class="premium-badge premium-badge-draft">REGRADE REQUEST</span>` : `<span class="premium-badge premium-badge-active">NEW SUBMISSION</span>`;
+
                         return `
-                            <div class="card flex-between flex-column m-0" style="height:100%">
+                            <div class="premium-grid-card">
                                 <div>
-                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(assignment?.title || 'Unknown')}">${escapeHtml(assignment?.title || 'Unknown')}</h3>
+                                    <div class="flex-between w-full">
+                                        ${statusBadge}
+                                        ${lateLabel}
+                                    </div>
+                                    <h3 class="m-0 mt-10 bold text-ellipsis" style="font-size: 1.15rem;" title="${escapeAttr(assignment?.title || 'Unknown')}">${escapeHtml(assignment?.title || 'Unknown')}</h3>
                                     <div class="tiny text-muted mb-10">Assignment ID: ${escapeHtml(s.assignment_id.substring(0,8))}...</div>
-                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
                                     ${s._isGroup ? `
                                         <div class="small">
                                             <strong>Group:</strong> ${escapeHtml(s._groupTitle)}
                                         </div>
-                                        <div class="tiny text-muted mb-10">Members: ${escapeHtml(s._groupMembers.join(', '))}</div>
+                                        <div class="tiny text-muted mb-10 text-ellipsis">Members: ${escapeHtml(s._groupMembers.join(', '))}</div>
                                     ` : `
                                         <div class="small">
                                             <strong>Student:</strong> ${escapeHtml(studentName)}
                                         </div>
-                                        <div class="tiny text-muted mb-10">${escapeHtml(s.student_email)}</div>
+                                        <div class="tiny text-muted mb-10 text-ellipsis">${escapeHtml(s.student_email)}</div>
                                     `}
                                     <div class="small mb-10">
                                         <strong>Submitted:</strong> ${new Date(s.submitted_at).toLocaleString()}
                                     </div>
-                                    <div>
-                                        ${isRegrade ? '<span class="badge badge-warn">REGRADE REQUEST</span>' : '<span class="badge badge-active">NEW SUBMISSION</span>'}
-                                        ${s.is_late ? '<span class="badge badge-inactive">LATE</span>' : ''}
-                                    </div>
                                 </div>
-                                <div class="mt-15 w-full">
-                                    <button class="button small w-full" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button>
+                                <div class="mt-20 w-full">
+                                    <button class="button small w-full m-0" onclick="gradeSubmission('${escapeAttr(s.assignment_id)}', '${escapeAttr(s.student_email)}')">Review</button>
                                 </div>
                             </div>
                         `;
@@ -1132,9 +1184,9 @@ async function renderStudents(page = 1) {
             <input type="text" id="studentSearch" placeholder="Search by name or email..." class="m-0" style="width:250px" value="${escapeAttr(searchTerm)}">
             <button class="button secondary small w-auto" onclick="exportStudents('csv')">CSV</button>
             <button class="button secondary small w-auto" onclick="exportStudents('pdf')">PDF</button>
-            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'grid')">Grid</button>
-                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('students', 'list')">Table</button>
+            <div class="view-mode-toggle">
+                <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('students', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('students', 'list')">Table</button>
             </div>
         </div>
       </div>
@@ -1144,13 +1196,13 @@ async function renderStudents(page = 1) {
               ${students.map(s => {
                 const initials = s.full_name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() || 'ST';
                 return `
-                <div class="card flex-between flex-column m-0" style="height:100%">
+                <div class="premium-grid-card">
                   <div>
                     <div class="flex-center-y gap-10">
                       <div class="avatar-circle flex-center" style="width:40px; height:40px; background:var(--primary-light, #e0e7ff); color:var(--primary, #4f46e5); border-radius:50%; font-weight:700; font-size:14px; flex-shrink:0">
                         ${escapeHtml(initials)}
                       </div>
-                      <div style="min-width:0">
+                      <div style="min-width:0; flex:1;">
                         <h3 class="m-0 text-ellipsis" style="font-size:16px" title="${escapeAttr(s.full_name)}">${escapeHtml(s.full_name)}</h3>
                         <div class="tiny text-muted text-ellipsis" title="${escapeAttr(s.email)}">${escapeHtml(s.email)}</div>
                       </div>
@@ -1162,8 +1214,8 @@ async function renderStudents(page = 1) {
                     </div>
                   </div>
                   <div class="flex gap-10 mt-15 w-full">
-                    <button class="button small w-full" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Cert</button>
-                    <button class="button danger small w-full" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
+                    <button class="button small w-full m-0" onclick="showCertForm('${escapeAttr(s.email)}')">Issue Cert</button>
+                    <button class="button danger small w-full m-0" onclick="unenrollStudent('${escapeAttr(s.course_id)}', '${escapeAttr(s.email)}')">Unenroll</button>
                   </div>
                 </div>
               `;}).join('') || '<div class="empty" style="grid-column: 1/-1">No students found.</div>'}
@@ -1269,9 +1321,9 @@ async function renderCertificates() {
         <h2 class="m-0">Course Certificates</h2>
         <div class="flex gap-10 flex-center-y flex-wrap">
             <div class="small text-muted">${certs.length} Total Certificates</div>
-            <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-                <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'grid')">Grid</button>
-                <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('certificates', 'list')">Table</button>
+            <div class="view-mode-toggle">
+                <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('certificates', 'grid')">Grid</button>
+                <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('certificates', 'list')">Table</button>
             </div>
         </div>
       </div>
@@ -1289,31 +1341,32 @@ async function renderCertificates() {
                 <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
                     ${certs.map(c => {
                         const isRequested = c.status === 'requested';
-                        let statusBadge = 'badge-warn';
-                        if (c.status === 'approved') statusBadge = 'badge-active';
-                        else if (c.status === 'rejected') statusBadge = 'badge-inactive';
+                        let badgeClass = 'premium-badge-draft';
+                        if (c.status === 'approved') badgeClass = 'premium-badge-completed';
+                        else if (c.status === 'rejected') badgeClass = 'premium-badge-locked';
 
                         return `
-                            <div class="card flex-between flex-column m-0" style="height:100%">
+                            <div class="premium-grid-card">
                                 <div>
-                                    <h3 class="m-0 text-ellipsis" title="${escapeAttr(c.courses?.title || 'Unknown')}">${escapeHtml(c.courses?.title || 'Unknown')}</h3>
-                                    <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                    <div class="flex-between w-full">
+                                        <span class="premium-badge ${badgeClass}">${c.status.toUpperCase()}</span>
+                                        <span style="font-size: 1.25rem">📜</span>
+                                    </div>
+                                    <h3 class="m-0 mt-10 bold text-ellipsis" title="${escapeAttr(c.courses?.title || 'Unknown')}" style="font-size: 1.15rem;">${escapeHtml(c.courses?.title || 'Unknown')}</h3>
+                                    <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
                                     <div class="small">
                                         <strong>Student:</strong>
                                     </div>
                                     <div class="tiny text-muted mb-10 text-ellipsis" title="${escapeAttr(c.student_email)}">${escapeHtml(c.student_email)}</div>
-                                    <div class="small mb-10">
-                                        <strong>Status:</strong> <span class="badge ${statusBadge}">${c.status.toUpperCase()}</span>
-                                    </div>
                                     <div class="tiny text-muted mb-10">
                                         Date: ${new Date(c.updated_at).toLocaleDateString()}
                                     </div>
                                 </div>
-                                <div class="mt-15 w-full">
+                                <div class="mt-20 w-full">
                                     ${isRequested ? `
-                                        <button class="button small w-full" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
+                                        <button class="button small w-full m-0" onclick="showCertForm('${escapeAttr(c.student_email)}', '${escapeAttr(c.course_id)}', '${escapeAttr(c.id)}')">Issue Certificate</button>
                                     ` : `
-                                        <button class="button secondary small w-full" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
+                                        <button class="button secondary small w-full m-0" onclick="UI.viewFile('${escapeAttr(c.certificate_url)}', 'Certificate')">View</button>
                                     `}
                                 </div>
                             </div>
@@ -2544,9 +2597,9 @@ async function renderTeacherLiveProctoring(renderId) {
                         <h3 class="m-0">Active Proctored Sessions</h3>
                         <span class="tiny text-muted">Real-time monitoring of ongoing exams for my courses</span>
                     </div>
-                    <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-                        <button class="button ${getTeacherViewMode('anticheat') === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'grid')">Grid</button>
-                        <button class="button ${getTeacherViewMode('anticheat') === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${getTeacherViewMode('anticheat') === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('anticheat', 'list')">Table</button>
+                    <div class="view-mode-toggle">
+                        <button class="button ${getTeacherViewMode('anticheat') === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('anticheat', 'grid')">Grid</button>
+                        <button class="button ${getTeacherViewMode('anticheat') === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('anticheat', 'list')">Table</button>
                     </div>
                 </div>
                 <div id="activeSessionsContainer"></div>
@@ -2596,27 +2649,27 @@ function renderTeacherSessionsTable(sessions) {
             <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px">
                 ${sessions.map(s => {
                     const elapsed = Math.round((new Date() - new Date(s.started_at)) / 60000);
-                    let statusClass = 'badge-active';
-                    if (s.status === 'Flagged') statusClass = 'badge-inactive';
-                    else if (s.status === 'Warning') statusClass = 'badge-warn';
-                    else if (s.status === 'Idle') statusClass = 'secondary';
+                    let badgeClass = 'premium-badge-active';
+                    if (s.status === 'Flagged') badgeClass = 'premium-badge-locked';
+                    else if (s.status === 'Warning') badgeClass = 'premium-badge-draft';
+                    else if (s.status === 'Idle') badgeClass = 'premium-badge-locked';
 
                     const onlineIndicator = s.is_online ?
                         '<span class="pulse-indicator" style="width:8px; height:8px; background:#48bb78; border-radius:50%; display:inline-block; margin-right:5px" title="Online"></span>' :
                         '<span style="width:8px; height:8px; background:#cbd5e0; border-radius:50%; display:inline-block; margin-right:5px" title="Offline"></span>';
 
                     return `
-                        <div class="card flex-between flex-column m-0" style="height:100%; border: 1px solid var(--border)" data-attempt-id="${s.attempt_id}">
+                        <div class="premium-grid-card" data-attempt-id="${s.attempt_id}">
                             <div>
-                                <div class="flex-between">
+                                <div class="flex-between w-full">
                                     <div class="flex-center-y">
                                         ${onlineIndicator}
                                         <div class="bold small">${escapeHtml(s.full_name)}</div>
                                     </div>
-                                    <span class="badge ${statusClass} tiny">${s.status.toUpperCase()}</span>
+                                    <span class="premium-badge ${badgeClass}">${s.status.toUpperCase()}</span>
                                 </div>
                                 <div class="tiny text-muted ml-15 mb-10 text-ellipsis" title="${escapeAttr(s.user_email)}">${escapeHtml(s.user_email)}</div>
-                                <hr style="border:none; border-top:1px solid var(--border); margin:10px 0" />
+                                <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
                                 <div class="small">
                                     <strong>Exam:</strong> ${escapeHtml(s.assessment_title)}
                                     <div class="mt-5"><span class="badge badge-purple tiny">${s.assessment_type.toUpperCase()}</span></div>
@@ -2629,10 +2682,10 @@ function renderTeacherSessionsTable(sessions) {
                                     <span class="badge ${s.violation_count > 0 ? 'badge-warn' : 'secondary'} tiny">${s.violation_count} Violations</span>
                                 </div>
                             </div>
-                            <div class="flex gap-5 mt-15 w-full">
-                                <button class="button small tiny w-full" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
-                                <button class="button secondary tiny w-full" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
-                                <button class="button danger tiny w-full" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
+                            <div class="flex gap-5 mt-20 w-full">
+                                <button class="button small tiny w-full m-0" style="background:#5b2ea6" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                                <button class="button secondary tiny w-full m-0" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                                <button class="button danger tiny w-full m-0" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
                             </div>
                         </div>
                     `;
@@ -3919,7 +3972,7 @@ async function renderQuizzes() {
         if (!quizzes || quizzes.length === 0) {
             quizzesHtml = '<div class="empty">No quizzes created yet.</div>';
         } else {
-            quizzesHtml = '<div class="grid">';
+            quizzesHtml = '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px;">';
             quizzes.forEach(q => {
                 const course = courses.find(c => c.id === q.course_id);
                 let countdownHtml = '';
@@ -3930,23 +3983,38 @@ async function renderQuizzes() {
                     } else if (q.end_at && new Date(q.end_at).getTime() > now) {
                         innerCountdown = `<div class="quiz-sch-countdown" data-target="${new Date(q.end_at).getTime()}" data-reference="${q.start_at || (q.created_at ? new Date(q.created_at).getTime() : now)}" data-label="Ends In:" data-status="${q.status || 'published'}"></div>`;
                     } else if (q.end_at) {
-                        innerCountdown = '<div class="tiny danger-text bold">Expired</div>';
+                        innerCountdown = '<span class="premium-badge premium-badge-locked">EXPIRED</span>';
                     }
-                    countdownHtml = `<div class="mt-10 mb-10 p-10 border-radius-sm" style="background:var(--bg)">${innerCountdown}</div>`;
+                    if (innerCountdown !== '<span class="premium-badge premium-badge-locked">EXPIRED</span>') {
+                        countdownHtml = `<div class="mt-10 mb-10 p-10 border-radius-sm" style="background:var(--bg)">${innerCountdown}</div>`;
+                    } else {
+                        countdownHtml = `<div class="mt-10 mb-10">${innerCountdown}</div>`;
+                    }
                 }
 
+                const statusBadgeClass = q.status === 'published' ? 'premium-badge-published' : 'premium-badge-draft';
+
                 quizzesHtml += `
-                    <div class="card">
-                      <h3 class="m-0">${escapeHtml(q.title)}</h3>
-                      <p class="small"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
-                      <div class="small mb-5">${UI.renderRichText(q.description)}</div>
-                      <p class="small">Status: ${q.status}</p>
-                      <p class="small">Questions: ${q.questions?.length || 0}</p>
-                      ${countdownHtml}
-                      <div class="flex gap-10 mt-15">
-                        <button class="button small w-auto" onclick="editQuiz('${q.id}')">Edit</button>
-                        <button class="button small w-auto success" style="background:var(--ok)" onclick="viewQuizResults('${q.id}')">Results</button>
-                        <button class="button small w-auto danger" onclick="deleteQuizById('${q.id}')">Delete</button>
+                    <div class="premium-grid-card">
+                      <div>
+                        <div class="flex-between w-full">
+                          <span class="premium-badge ${statusBadgeClass}">${q.status.toUpperCase()}</span>
+                          <span style="font-size: 1.25rem">❓</span>
+                        </div>
+                        <h3 class="m-0 mt-10 bold text-ellipsis" style="font-size: 1.15rem;" title="${escapeAttr(q.title)}">${escapeHtml(q.title)}</h3>
+                        <p class="small text-muted mt-5 mb-10 text-ellipsis-2" style="height:36px; overflow:hidden;" title="Course: ${escapeAttr(course?.title || 'None')}"><strong>Course:</strong> ${escapeHtml(course?.title || 'None')}</p>
+                        <div class="small mt-10" style="max-height: 80px; overflow: hidden; font-size: 13px;">${UI.renderRichText(q.description)}</div>
+                        <hr style="border:none; border-top:1px solid var(--border); margin:12px 0" />
+                        <div class="premium-card-meta">
+                            <div class="premium-card-meta-item">📝 ${q.questions?.length || 0} Questions</div>
+                            <div class="premium-card-meta-item">⏱️ ${q.time_limit ? q.time_limit + ' mins' : 'No limit'}</div>
+                        </div>
+                        ${countdownHtml}
+                      </div>
+                      <div class="flex gap-10 mt-20 w-full">
+                        <button class="button small w-full m-0" onclick="editQuiz('${q.id}')">Edit</button>
+                        <button class="button small success w-full m-0" style="background:var(--ok)" onclick="viewQuizResults('${q.id}')">Results</button>
+                        <button class="button small danger w-full m-0" onclick="deleteQuizById('${q.id}')">Delete</button>
                       </div>
                     </div>
                 `;
@@ -4024,9 +4092,9 @@ async function renderQuizzes() {
       <h2 class="m-0">Quizzes</h2>
       <div class="flex gap-10 flex-center-y flex-wrap">
         <button class="button w-auto m-0" onclick="showQuizForm()">+ Create Quiz</button>
-        <div class="button-group flex" style="border: 1px solid var(--border); border-radius: 6px; overflow: hidden">
-            <button class="button ${viewMode === 'grid' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'grid' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('quizzes', 'grid')">Grid</button>
-            <button class="button ${viewMode === 'list' ? '' : 'secondary'} small w-auto m-0" style="border-radius:0; border:none; padding: 6px 12px; font-size: 13px; ${viewMode === 'list' ? 'background:var(--primary, #4f46e5); color:white;' : ''}" onclick="setTeacherViewMode('quizzes', 'list')">Table</button>
+        <div class="view-mode-toggle">
+            <button class="button ${viewMode === 'grid' ? 'active' : ''}" onclick="setTeacherViewMode('quizzes', 'grid')">Grid</button>
+            <button class="button ${viewMode === 'list' ? 'active' : ''}" onclick="setTeacherViewMode('quizzes', 'list')">Table</button>
         </div>
       </div>
     </div>
