@@ -1734,6 +1734,9 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       } else if (Array.isArray(assignment.groups)) {
           currentGroups = JSON.parse(JSON.stringify(assignment.groups));
       }
+      currentGroups.forEach(g => {
+          if (!g.id) g.id = crypto.randomUUID();
+      });
   }
   let lastLoadedCourseId = isEdit ? assignment.course_id : courseId;
   window.courseEnrollments = [];
@@ -1986,6 +1989,23 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           btn.textContent = originalText;
           return;
       }
+
+      if (questions.length === 0) {
+          UI.showNotification('Please add at least one question to the assignment.', 'warn');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+      }
+
+      const startAtVal = document.getElementById('assignmentStartAt').value;
+      const dueDateVal = document.getElementById('assignmentDueDate').value;
+      if (startAtVal && dueDateVal && new Date(dueDateVal) < new Date(startAtVal)) {
+          UI.showNotification('Due date cannot be before the release date.', 'warn');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+      }
+
       const allowedExt = document.getElementById('allowedExtensions').value.split(',').map(e => e.trim().toLowerCase()).filter(e => e);
       const selCourseId = document.getElementById('assignmentCourseId').value;
       const acConfig = JSON.parse(document.getElementById('antiCheatConfigData').value || '{}');
@@ -2058,7 +2078,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
         start_at: document.getElementById('assignmentStartAt').value ? new Date(document.getElementById('assignmentStartAt').value).toISOString() : null,
         due_date: new Date(document.getElementById('assignmentDueDate').value).toISOString(),
         points_possible: pointsPossible,
-        late_penalty_per_day: parseInt(document.getElementById('assignmentLatePenalty').value) || 0,
+        late_penalty_per_day: Math.max(0, Math.min(100, parseInt(document.getElementById('assignmentLatePenalty').value) || 0)),
         allow_late_submissions: document.getElementById('assignmentAllowLate').value === 'true',
         status: document.getElementById('assignmentStatus').value,
         anti_cheat_config: acConfig,
@@ -2127,7 +2147,7 @@ async function gradeSubmission(assignmentId, studentEmail) {
     let latePenalty = 0;
     if (subDate > dueDate) {
         // Calculate days difference, ensuring we don't count partial days as 0 if they cross a 24h boundary
-        lateDays = Math.max(0, Math.floor((subDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
+        lateDays = Math.max(0, Math.ceil((subDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
         // Cap penalty at 100%
         latePenalty = Math.min(100, Math.max(0, lateDays * (assignment.late_penalty_per_day || 0)));
     }
