@@ -138,7 +138,14 @@ class SupabaseDB {
         user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
         violations: ['attempt_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
         study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
-        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at']
+        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at'],
+        assignments: [
+            'id', 'course_id', 'title', 'description', 'start_at', 'due_date',
+            'points_possible', 'late_penalty_per_day', 'allow_late_submissions',
+            'status', 'anti_cheat_config', 'teacher_email', 'questions',
+            'allowed_extensions', 'attachments', 'assignment_type', 'groups',
+            'created_at', 'updated_at'
+        ]
     };
 
     static _sanitizePayload(payload, table = null) {
