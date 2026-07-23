@@ -1805,6 +1805,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           `;
       }).join('') || '<div class="empty text-center w-full tiny text-muted">No groups added yet. Click "+ Add Group" to create one.</div>';
   };
+  renderGroups();
 
   window.updateGroupTitle = (gIdx, title) => {
       if (currentGroups[gIdx]) {
@@ -1897,30 +1898,30 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   window.toggleAssignmentTypeFields = toggleAssignmentTypeFields;
 
   // Bind change listeners to trigger toggle dynamic content
-  setTimeout(() => {
-      const typeSelect = document.getElementById('assignmentType');
-      const courseSelect = document.getElementById('assignmentCourseId');
-      if (typeSelect) {
-          typeSelect.addEventListener('change', toggleAssignmentTypeFields);
-      }
-      if (courseSelect) {
-          courseSelect.addEventListener('change', () => {
-              const newCourseId = courseSelect.value;
-              if (newCourseId === lastLoadedCourseId) {
-                  return;
-              }
-              if (typeSelect?.value === 'group') {
-                  currentGroups.forEach(g => {
-                      g.members = [];
-                      g.leader = null;
-                  });
-                  lastLoadedCourseId = newCourseId;
-                  loadCourseEnrollments(newCourseId);
-              }
+  const typeSelect = document.getElementById('assignmentType');
+  const courseSelect = document.getElementById('assignmentCourseId');
+  if (typeSelect) {
+      typeSelect.addEventListener('change', toggleAssignmentTypeFields);
+  }
+  if (courseSelect) {
+      courseSelect.addEventListener('change', () => {
+          const newCourseId = courseSelect.value;
+          if (newCourseId === lastLoadedCourseId) {
+              return;
+          }
+          currentGroups.forEach(g => {
+              g.members = [];
+              g.leader = null;
           });
-      }
-      toggleAssignmentTypeFields();
-  }, 0);
+          lastLoadedCourseId = newCourseId;
+          if (typeSelect?.value === 'group') {
+              loadCourseEnrollments(newCourseId);
+          } else {
+              renderGroups();
+          }
+      });
+  }
+  toggleAssignmentTypeFields();
 
   UI.createFileUploader('assignAttachmentUploader', {
       bucket: 'assignments',
@@ -2371,6 +2372,24 @@ async function gradeSubmission(assignmentId, studentEmail) {
 
       if (saveSuccess) {
         if (window.currentRenderId !== renderId) return;
+
+        // Propagate / update course progress for all group members (or individual)
+        try {
+            await SupabaseDB.updateCourseProgress(submission.course_id, studentEmail);
+            if (assignment && assignment.assignment_type === 'group') {
+                const group = (assignment.groups || []).find(g => (g.members || []).includes(studentEmail));
+                if (group) {
+                    for (const memberEmail of (group.members || [])) {
+                        if (memberEmail !== studentEmail) {
+                            await SupabaseDB.updateCourseProgress(submission.course_id, memberEmail);
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to update course progress for members:', err);
+        }
+
         UI.showNotification(isDraft ? 'Draft saved successfully' : 'Submission graded successfully', 'success');
         renderGrading();
       } else {
