@@ -3536,17 +3536,42 @@ async function requestRegrade(assignmentId) {
     try {
         const user = await SessionManager.getCurrentUser();
         if (renderId !== window.currentRenderId) return;
-        const submission = await SupabaseDB.getSubmission(assignmentId, user.email);
-        if (renderId !== window.currentRenderId) return;
 
-        submission.regrade_request = reason;
-        await SupabaseDB.saveSubmission(submission);
+        const [a, submission] = await Promise.all([
+            SupabaseDB.getAssignment(assignmentId),
+            SupabaseDB.getSubmission(assignmentId, user.email)
+        ]);
         if (renderId !== window.currentRenderId) return;
+        if (!submission) throw new Error('Submission not found.');
 
-        UI.showNotification('Regrade request submitted!');
-        viewFeedback(assignmentId);
+        const isGroup = a && a.assignment_type === 'group';
+        let members = [user.email];
+        if (isGroup) {
+            const studentGroup = (a.groups || []).find(g => (g.members || []).includes(user.email));
+            if (studentGroup) {
+                members = studentGroup.members || [user.email];
+            }
+        }
+
+        let success = true;
+        for (const memberEmail of members) {
+            const memberSub = await SupabaseDB.getSubmission(assignmentId, memberEmail);
+            if (memberSub) {
+                memberSub.regrade_request = reason;
+                const saved = await SupabaseDB.saveSubmission(memberSub);
+                if (!saved) success = false;
+            }
+        }
+
+        if (success) {
+            UI.showNotification('Regrade request submitted!');
+            viewFeedback(assignmentId);
+        } else {
+            throw new Error('Failed to update regrade request for some members.');
+        }
     } catch (e) {
-        UI.showNotification('Failed to submit regrade request.');
+        console.error('Failed to submit regrade request:', e);
+        UI.showNotification('Failed to submit regrade request: ' + e.message);
     }
 }
 window.requestRegrade = requestRegrade;
