@@ -341,7 +341,7 @@ class SupabaseDB {
         return this._request(async () => {
             let query = supabaseClient
                 .from('enrollments')
-                .select('*, users!inner(*), courses(*)', { count: 'exact' })
+                .select('*, users!student_email!inner(*), courses(*)', { count: 'exact' })
                 .in('course_id', courseIds);
 
             if (searchTerm) {

@@ -1158,8 +1158,9 @@ async function renderStudents(page = 1) {
     if (renderId !== window.currentRenderId) return;
 
     const students = enrollments.map(e => {
+        const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
         return {
-            full_name: e.users?.full_name || 'N/A',
+            full_name: userObj?.full_name || 'N/A',
             email: e.student_email,
             course_title: e.courses?.title || 'Unknown',
             course_id: e.course_id
@@ -1871,10 +1872,13 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       try {
           const res = await SupabaseDB.getEnrollmentsByCourses([courseId], { all: true });
           if (renderId !== window.currentRenderId) return;
-          window.courseEnrollments = (res.data || []).map(e => ({
-              student_email: e.student_email,
-              full_name: e.users?.full_name || e.student_email
-          }));
+          window.courseEnrollments = (res.data || []).map(e => {
+              const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+              return {
+                  student_email: e.student_email,
+                  full_name: userObj?.full_name || e.student_email
+              };
+          });
           renderGroups();
       } catch (e) {
           console.error('Failed to load course enrollments:', e);
@@ -4962,14 +4966,20 @@ function calculateGradeBookData(rawData, filters = {}) {
         const courseEnrollments = (enrollments || []).filter(e => {
             if (e.course_id !== course.id) return false;
             if (!search) return true;
-            const name = (e.users?.full_name || '').toLowerCase();
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            const name = (userObj?.full_name || '').toLowerCase();
             const email = (e.student_email || '').toLowerCase();
             return name.includes(search) || email.includes(search);
-        }).sort((a, b) => (a.users?.full_name || 'Z').localeCompare(b.users?.full_name || 'Z'));
+        }).sort((a, b) => {
+            const aUserObj = a.users || a['users!student_email'] || a['users!student_email!inner'];
+            const bUserObj = b.users || b['users!student_email'] || b['users!student_email!inner'];
+            return (aUserObj?.full_name || 'Z').localeCompare(bUserObj?.full_name || 'Z');
+        });
 
         const students = courseEnrollments.map(e => {
             const email = e.student_email;
-            const fullName = e.users?.full_name || 'N/A';
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            const fullName = userObj?.full_name || 'N/A';
             let earnedPoints = 0;
             let itemsCount = 0;
 
@@ -5375,11 +5385,14 @@ async function exportStudents(type) {
             all: true
         });
 
-        const students = (allEnrollments || []).map(e => ({
-            full_name: e.users?.full_name || 'N/A',
-            email: e.student_email,
-            course_title: e.courses?.title || 'Unknown'
-        })).filter(s => s.email);
+        const students = (allEnrollments || []).map(e => {
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            return {
+                full_name: userObj?.full_name || 'N/A',
+                email: e.student_email,
+                course_title: e.courses?.title || 'Unknown'
+            };
+        }).filter(s => s.email);
 
         const headers = ['Name', 'Email', 'Course'];
         const rows = students.map(s => [s.full_name, s.email, s.course_title]);
