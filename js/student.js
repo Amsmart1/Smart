@@ -850,7 +850,7 @@ async function renderAssignments(openId = null){
             `<button class="button small w-auto ${isOverdue ? 'danger' : ''}" onclick="showAssignmentForm('${a.id}')">${isOverdue ? 'Submit Late' : 'Submit'}</button>` :
             (submission.status === 'submitted' || submission.status === 'draft' ?
               `<button class="button secondary small w-auto" onclick="showAssignmentForm('${a.id}')">View/Edit</button>` :
-              `<span class="badge badge-active">GRADED</span>`)
+              `<button class="button secondary small w-auto" onclick="viewFeedback('${a.id}')">View Feedback</button>`)
           }
         </div>
       </td>
@@ -1004,27 +1004,46 @@ async function showAssignmentForm(assignmentId) {
 
   let groupBannerHtml = '';
   if (isGroupAssignment && studentGroup) {
+      const membersListHtml = (studentGroup.members || []).map(m => {
+          const isMemLeader = studentGroup.leader === m;
+          return `<span class="badge" style="background: var(--bg); color: var(--text); border: 1px solid var(--border); margin: 2px;">
+              ${isMemLeader ? '⭐ ' : ''}${escapeHtml(m)}
+          </span>`;
+      }).join(' ');
+
       if (hasLeader) {
           if (isLeader) {
               groupBannerHtml = `
-                <div class="card success-border p-10 mt-10 mb-10" style="background:#f0fff4">
-                    <div class="bold success-text">👑 GROUP LEADER: ${escapeHtml(studentGroup.title)}</div>
-                    <p class="small">You are the designated group leader. You are the only one who can edit, save drafts, or submit this assignment on behalf of your group.</p>
+                <div class="card success-border p-15 mt-10 mb-10" style="background:#f0fff4">
+                    <div class="bold success-text" style="font-size:1.1rem">👑 GROUP LEADER: ${escapeHtml(studentGroup.title)}</div>
+                    <p class="small mt-5">You are the designated group leader. You are the only one who can edit, save drafts, or submit this assignment on behalf of your group.</p>
+                    <div class="mt-10">
+                      <strong class="tiny bold uppercase text-muted" style="display:block; margin-bottom:5px">Group Members:</strong>
+                      <div class="flex flex-wrap gap-5">${membersListHtml}</div>
+                    </div>
                 </div>
               `;
           } else {
               groupBannerHtml = `
-                <div class="card warn-border p-10 mt-10 mb-10" style="background:#fffcf0">
-                    <div class="bold warning-text">🔒 READ ONLY: ${escapeHtml(studentGroup.title)}</div>
-                    <p class="small">Only the group leader (<strong>${escapeHtml(studentGroup.leader)}</strong>) can edit or submit this assignment. You have read-only access to view the questions, shared drafts, submissions, and feedback.</p>
+                <div class="card warn-border p-15 mt-10 mb-10" style="background:#fffcf0">
+                    <div class="bold warning-text" style="font-size:1.1rem">🔒 READ ONLY: ${escapeHtml(studentGroup.title)}</div>
+                    <p class="small mt-5">Only the group leader (<strong>${escapeHtml(studentGroup.leader)}</strong>) can edit or submit this assignment. You have read-only access to view the questions, shared drafts, submissions, and feedback.</p>
+                    <div class="mt-10">
+                      <strong class="tiny bold uppercase text-muted" style="display:block; margin-bottom:5px">Group Members:</strong>
+                      <div class="flex flex-wrap gap-5">${membersListHtml}</div>
+                    </div>
                 </div>
               `;
           }
       } else {
           groupBannerHtml = `
-            <div class="card info-border p-10 mt-10 mb-10" style="background:#f7fafc">
-                <div class="bold text-purple">👥 GROUP ASSIGNMENT: ${escapeHtml(studentGroup.title)}</div>
-                <p class="small">No group leader is assigned. Any member of the group can edit, save drafts, or submit this assignment. The submission will be shared instantly with all members.</p>
+            <div class="card info-border p-15 mt-10 mb-10" style="background:#f7fafc">
+                <div class="bold text-purple" style="font-size:1.1rem">👥 GROUP ASSIGNMENT: ${escapeHtml(studentGroup.title)}</div>
+                <p class="small mt-5">No group leader is assigned. Any member of the group can edit, save drafts, or submit this assignment. The submission will be shared instantly with all members.</p>
+                <div class="mt-10">
+                  <strong class="tiny bold uppercase text-muted" style="display:block; margin-bottom:5px">Group Members:</strong>
+                  <div class="flex flex-wrap gap-5">${membersListHtml}</div>
+                </div>
             </div>
           `;
       }
@@ -3517,17 +3536,42 @@ async function requestRegrade(assignmentId) {
     try {
         const user = await SessionManager.getCurrentUser();
         if (renderId !== window.currentRenderId) return;
-        const submission = await SupabaseDB.getSubmission(assignmentId, user.email);
-        if (renderId !== window.currentRenderId) return;
 
-        submission.regrade_request = reason;
-        await SupabaseDB.saveSubmission(submission);
+        const [a, submission] = await Promise.all([
+            SupabaseDB.getAssignment(assignmentId),
+            SupabaseDB.getSubmission(assignmentId, user.email)
+        ]);
         if (renderId !== window.currentRenderId) return;
+        if (!submission) throw new Error('Submission not found.');
 
-        UI.showNotification('Regrade request submitted!');
-        viewFeedback(assignmentId);
+        const isGroup = a && a.assignment_type === 'group';
+        let members = [user.email];
+        if (isGroup) {
+            const studentGroup = (a.groups || []).find(g => (g.members || []).includes(user.email));
+            if (studentGroup) {
+                members = studentGroup.members || [user.email];
+            }
+        }
+
+        let success = true;
+        for (const memberEmail of members) {
+            const memberSub = await SupabaseDB.getSubmission(assignmentId, memberEmail);
+            if (memberSub) {
+                memberSub.regrade_request = reason;
+                const saved = await SupabaseDB.saveSubmission(memberSub);
+                if (!saved) success = false;
+            }
+        }
+
+        if (success) {
+            UI.showNotification('Regrade request submitted!');
+            viewFeedback(assignmentId);
+        } else {
+            throw new Error('Failed to update regrade request for some members.');
+        }
     } catch (e) {
-        UI.showNotification('Failed to submit regrade request.');
+        console.error('Failed to submit regrade request:', e);
+        UI.showNotification('Failed to submit regrade request: ' + e.message);
     }
 }
 window.requestRegrade = requestRegrade;
