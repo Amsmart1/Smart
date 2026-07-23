@@ -1158,8 +1158,9 @@ async function renderStudents(page = 1) {
     if (renderId !== window.currentRenderId) return;
 
     const students = enrollments.map(e => {
+        const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
         return {
-            full_name: e.users?.full_name || 'N/A',
+            full_name: userObj?.full_name || 'N/A',
             email: e.student_email,
             course_title: e.courses?.title || 'Unknown',
             course_id: e.course_id
@@ -1805,6 +1806,7 @@ async function showAssignmentForm(assignment = null, courseId = null) {
           `;
       }).join('') || '<div class="empty text-center w-full tiny text-muted">No groups added yet. Click "+ Add Group" to create one.</div>';
   };
+  renderGroups();
 
   window.updateGroupTitle = (gIdx, title) => {
       if (currentGroups[gIdx]) {
@@ -1870,10 +1872,13 @@ async function showAssignmentForm(assignment = null, courseId = null) {
       try {
           const res = await SupabaseDB.getEnrollmentsByCourses([courseId], { all: true });
           if (renderId !== window.currentRenderId) return;
-          window.courseEnrollments = (res.data || []).map(e => ({
-              student_email: e.student_email,
-              full_name: e.users?.full_name || e.student_email
-          }));
+          window.courseEnrollments = (res.data || []).map(e => {
+              const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+              return {
+                  student_email: e.student_email,
+                  full_name: userObj?.full_name || e.student_email
+              };
+          });
           renderGroups();
       } catch (e) {
           console.error('Failed to load course enrollments:', e);
@@ -1897,30 +1902,30 @@ async function showAssignmentForm(assignment = null, courseId = null) {
   window.toggleAssignmentTypeFields = toggleAssignmentTypeFields;
 
   // Bind change listeners to trigger toggle dynamic content
-  setTimeout(() => {
-      const typeSelect = document.getElementById('assignmentType');
-      const courseSelect = document.getElementById('assignmentCourseId');
-      if (typeSelect) {
-          typeSelect.addEventListener('change', toggleAssignmentTypeFields);
-      }
-      if (courseSelect) {
-          courseSelect.addEventListener('change', () => {
-              const newCourseId = courseSelect.value;
-              if (newCourseId === lastLoadedCourseId) {
-                  return;
-              }
-              if (typeSelect?.value === 'group') {
-                  currentGroups.forEach(g => {
-                      g.members = [];
-                      g.leader = null;
-                  });
-                  lastLoadedCourseId = newCourseId;
-                  loadCourseEnrollments(newCourseId);
-              }
+  const typeSelect = document.getElementById('assignmentType');
+  const courseSelect = document.getElementById('assignmentCourseId');
+  if (typeSelect) {
+      typeSelect.addEventListener('change', toggleAssignmentTypeFields);
+  }
+  if (courseSelect) {
+      courseSelect.addEventListener('change', () => {
+          const newCourseId = courseSelect.value;
+          if (newCourseId === lastLoadedCourseId) {
+              return;
+          }
+          currentGroups.forEach(g => {
+              g.members = [];
+              g.leader = null;
           });
-      }
-      toggleAssignmentTypeFields();
-  }, 0);
+          lastLoadedCourseId = newCourseId;
+          if (typeSelect?.value === 'group') {
+              loadCourseEnrollments(newCourseId);
+          } else {
+              renderGroups();
+          }
+      });
+  }
+  toggleAssignmentTypeFields();
 
   UI.createFileUploader('assignAttachmentUploader', {
       bucket: 'assignments',
@@ -2371,6 +2376,24 @@ async function gradeSubmission(assignmentId, studentEmail) {
 
       if (saveSuccess) {
         if (window.currentRenderId !== renderId) return;
+
+        // Propagate / update course progress for all group members (or individual)
+        try {
+            await SupabaseDB.updateCourseProgress(submission.course_id, studentEmail);
+            if (assignment && assignment.assignment_type === 'group') {
+                const group = (assignment.groups || []).find(g => (g.members || []).includes(studentEmail));
+                if (group) {
+                    for (const memberEmail of (group.members || [])) {
+                        if (memberEmail !== studentEmail) {
+                            await SupabaseDB.updateCourseProgress(submission.course_id, memberEmail);
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to update course progress for members:', err);
+        }
+
         UI.showNotification(isDraft ? 'Draft saved successfully' : 'Submission graded successfully', 'success');
         renderGrading();
       } else {
@@ -4943,14 +4966,20 @@ function calculateGradeBookData(rawData, filters = {}) {
         const courseEnrollments = (enrollments || []).filter(e => {
             if (e.course_id !== course.id) return false;
             if (!search) return true;
-            const name = (e.users?.full_name || '').toLowerCase();
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            const name = (userObj?.full_name || '').toLowerCase();
             const email = (e.student_email || '').toLowerCase();
             return name.includes(search) || email.includes(search);
-        }).sort((a, b) => (a.users?.full_name || 'Z').localeCompare(b.users?.full_name || 'Z'));
+        }).sort((a, b) => {
+            const aUserObj = a.users || a['users!student_email'] || a['users!student_email!inner'];
+            const bUserObj = b.users || b['users!student_email'] || b['users!student_email!inner'];
+            return (aUserObj?.full_name || 'Z').localeCompare(bUserObj?.full_name || 'Z');
+        });
 
         const students = courseEnrollments.map(e => {
             const email = e.student_email;
-            const fullName = e.users?.full_name || 'N/A';
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            const fullName = userObj?.full_name || 'N/A';
             let earnedPoints = 0;
             let itemsCount = 0;
 
@@ -5356,11 +5385,14 @@ async function exportStudents(type) {
             all: true
         });
 
-        const students = (allEnrollments || []).map(e => ({
-            full_name: e.users?.full_name || 'N/A',
-            email: e.student_email,
-            course_title: e.courses?.title || 'Unknown'
-        })).filter(s => s.email);
+        const students = (allEnrollments || []).map(e => {
+            const userObj = e.users || e['users!student_email'] || e['users!student_email!inner'];
+            return {
+                full_name: userObj?.full_name || 'N/A',
+                email: e.student_email,
+                course_title: e.courses?.title || 'Unknown'
+            };
+        }).filter(s => s.email);
 
         const headers = ['Name', 'Email', 'Course'];
         const rows = students.map(s => [s.full_name, s.email, s.course_title]);
