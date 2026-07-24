@@ -921,6 +921,8 @@ async function showAssignmentForm(assignmentId) {
     SupabaseDB.getAssignment(assignmentId),
     SupabaseDB.getSubmission(assignmentId, user.email)
   ]);
+  const course = a ? await SupabaseDB.getCourse(a.course_id) : null;
+  const isCourseArchived = course && course.status === 'archived';
 
   let studentGroup = null;
   const isGroupAssignment = a && a.assignment_type === 'group';
@@ -946,7 +948,7 @@ async function showAssignmentForm(assignmentId) {
   const isGradedOrReturned = submission && (submission.status === 'graded' || submission.status === 'returned');
   const hasLeader = studentGroup && !!studentGroup.leader;
   const isLeader = studentGroup && studentGroup.leader === user.email;
-  const canSubmit = (!isGroupAssignment || !hasLeader || isLeader) && !isGradedOrReturned;
+  const canSubmit = (!isGroupAssignment || !hasLeader || isLeader) && !isGradedOrReturned && !isCourseArchived;
 
   let gradedBannerHtml = '';
   if (isGradedOrReturned) {
@@ -958,7 +960,17 @@ async function showAssignmentForm(assignmentId) {
       `;
   }
 
-  if (a) StudyTracker.start(a.course_id);
+  let archivedBannerHtml = '';
+  if (isCourseArchived) {
+      archivedBannerHtml = `
+        <div class="card warn-border p-10 mt-10 mb-10" style="background:#fffaf0; border-left: 4px solid var(--warn);">
+            <div class="bold" style="color:#c05621">📦 Archived Course (Read-Only)</div>
+            <p class="small m-0">This course has been archived. You can view assignment questions and your submissions, but cannot submit new work, save drafts, or delete submissions.</p>
+        </div>
+      `;
+  }
+
+  if (a && !isCourseArchived) StudyTracker.start(a.course_id);
   if (renderId !== window.currentRenderId) return;
 
   const now = new Date();
@@ -1059,6 +1071,7 @@ async function showAssignmentForm(assignmentId) {
         <button class="button secondary w-auto small" onclick="closeAssignmentForm()">Close</button>
       </div>
 
+      ${archivedBannerHtml}
       ${groupBannerHtml}
       ${gradedBannerHtml}
 
@@ -1101,7 +1114,7 @@ async function showAssignmentForm(assignmentId) {
         ` : `
             <div class="card border-light p-10 w-full" style="background:#f7fafc; border: 1px solid var(--border)">
                 <span class="small bold text-muted italic">
-                  ${isGradedOrReturned ? '📝 Read-Only Mode: Graded/Returned submissions cannot be edited or deleted.' : `📝 Read-Only Mode: Only group leader (${escapeHtml(studentGroup?.leader)}) is permitted to edit or submit this assignment.`}
+                  ${isCourseArchived ? '📝 Read-Only Mode: This course has been archived.' : isGradedOrReturned ? '📝 Read-Only Mode: Graded/Returned submissions cannot be edited or deleted.' : `📝 Read-Only Mode: Only group leader (${escapeHtml(studentGroup?.leader)}) is permitted to edit or submit this assignment.`}
                 </span>
             </div>
         `}
@@ -2788,9 +2801,9 @@ async function renderQuizzes(openId = null) {
           const isExpired = endAt < now;
           const isAvailable = now >= startAt && now <= endAt;
 
-          const canAttempt = (attemptsUsed < q.attempts_allowed || !!inProgress) && isAvailable;
-
           const course = courses.find(c => c.id === q.course_id);
+          const isCourseArchived = course && course.status === 'archived';
+          const canAttempt = (attemptsUsed < q.attempts_allowed || !!inProgress) && isAvailable && !isCourseArchived;
           return `
             <div class="card">
               <h3 class="m-0">${escapeHtml(q.title)}</h3>
@@ -2822,7 +2835,9 @@ async function renderQuizzes(openId = null) {
               ` : ''}
 
               <div class="mt-20" id="quiz-actions-${q.id}">
-                  ${isUpcoming ? `
+                  ${isCourseArchived ? `
+                      <div class="badge badge-inactive w-100 text-center">Course Archived (Read-Only)</div>
+                  ` : isUpcoming ? `
                       <div class="p-10 border-radius-sm" style="background:var(--bg); border:1px solid var(--border)">
                           <div class="quiz-countdown" data-target="${startAt}" data-start="${q.created_at ? new Date(q.created_at).getTime() : now}" data-label="Available In:" data-status="${q.status || 'published'}"></div>
                       </div>
@@ -2896,6 +2911,16 @@ async function startQuiz(quizId) {
     if (renderId !== window.currentRenderId) return;
     const quiz = await SupabaseDB.getQuiz(quizId);
     if (renderId !== window.currentRenderId) return;
+    if (!quiz) throw new Error('Quiz not found');
+
+    const course = await SupabaseDB.getCourse(quiz.course_id);
+    if (course && course.status === 'archived') {
+        UI.showNotification('This course is archived and quizzes cannot be started.');
+        if (listBtn) { listBtn.disabled = true; listBtn.textContent = 'Course Archived'; }
+        if (quizArea) quizArea.style.display = 'none';
+        StudentState.isStartingQuiz = false;
+        return;
+    }
 
     if (quiz) StudyTracker.start(quiz.course_id);
 
@@ -3347,6 +3372,23 @@ async function submitQuiz(isAuto = false) {
       listBtn.textContent = 'Processing...';
   }
 
+  if (quizId) {
+      try {
+          const quiz = await SupabaseDB.getQuiz(quizId);
+          const course = quiz ? await SupabaseDB.getCourse(quiz.course_id) : null;
+          if (course && course.status === 'archived') {
+              UI.showNotification('This course has been archived. Submitting is not allowed.', 'danger');
+              if (StudentState.currentSubmission) StudentState.currentSubmission.status = previousStatus || 'in-progress';
+              StudentState.isSubmittingQuiz = false;
+              if (btn) { btn.disabled = false; btn.textContent = 'Submit Quiz'; }
+              if (listBtn) { listBtn.disabled = false; listBtn.textContent = 'Start New Attempt'; }
+              return;
+          }
+      } catch (e) {
+          console.warn('Archived course check failed:', e);
+      }
+  }
+
   UI.showLoading('quizArea', 'Saving your answers and calculating score...');
   if (window.AntiCheat) await AntiCheat.pauseProctoring();
 
@@ -3594,6 +3636,11 @@ async function deleteSubmissionById(assignmentId, studentEmail) {
       if (renderId !== window.currentRenderId) return;
       if (!a) throw new Error('Assignment not found');
 
+      const course = await SupabaseDB.getCourse(a.course_id);
+      if (course && course.status === 'archived') {
+          throw new Error('This course has been archived. Submissions cannot be deleted.');
+      }
+
       // Graded/Returned check
       const isGradedOrReturned = existing && (existing.status === 'graded' || existing.status === 'returned');
       if (isGradedOrReturned) {
@@ -3671,6 +3718,11 @@ async function submitAssignment(assignmentId, studentEmail, isDraft = false) {
     ]);
     if (renderId !== window.currentRenderId) return;
     if (!a) throw new Error('Assignment not found');
+
+    const course = await SupabaseDB.getCourse(a.course_id);
+    if (course && course.status === 'archived') {
+        throw new Error('This course has been archived. Submissions or draft saves are not allowed.');
+    }
 
     // Graded/Returned check
     const isGradedOrReturned = existing && (existing.status === 'graded' || existing.status === 'returned');
