@@ -75,6 +75,57 @@
             }
         }
 
+        resetConfig() {
+            this.config = {
+                DEBUG: false,
+                FULLSCREEN_REQUIRED: false,
+                MULTI_TAB_LOCK: false,
+                BLOCK_COPY: false,
+                BLOCK_PASTE: false,
+                BLOCK_CUT: false,
+                BLOCK_CONTEXT_MENU: false,
+                BLOCK_KEYBOARD_SHORTCUTS: false,
+                BLOCK_LONG_PRESS: false,
+                BLOCK_TEXT_SELECTION: false,
+                BLOCK_DRAG: false,
+                BLOCK_DEVTOOLS: false,
+                BLOCK_TAB_SWITCH: false,
+                DEVTOOLS_HEARTBEAT: true,
+
+                PROCTORING_WEBCAM: false,
+                PROCTORING_SCREEN: false,
+                PROCTORING_AUDIO: false,
+                PROCTORING_FACE_DETECTION: false,
+                PROCTORING_NOISE_DETECTION: false,
+
+                LONG_PRESS_THRESHOLD: 500,
+                DEVTOOLS_THRESHOLD: 160,
+                BLUR_THRESHOLD: 2000,
+                MIN_VIOLATION_INTERVAL: 2000,
+
+                callbacks: {
+                    onViolation: null,
+                    onBlocked: null
+                }
+            };
+
+            this.state = {
+                isActive: false,
+                attemptId: null,
+                assessmentId: null,
+                assessmentType: null,
+                userEmail: null,
+                startTime: null,
+                lastViolationTime: {},
+                sessionInfo: window.DeviceUtils ? window.DeviceUtils.getFullContext() : {
+                    browser: this.getBrowserInfo(),
+                    device: this.getDeviceInfo(),
+                    os: this.getOSInfo()
+                }
+            };
+            this.proctor = null;
+        }
+
         /**
          * Mark the assessment session as truly started.
          * This logs the START event and begins proctoring media streams.
@@ -112,7 +163,11 @@
         }
 
         async init(assessmentId, assessmentType, userEmail, config = {}) {
-            if (this.state.isActive) await this.destroy();
+            if (this.state.isActive) {
+                await this.destroy();
+            } else {
+                this.resetConfig();
+            }
 
             // Check Global Proctoring Status before starting
             try {
@@ -286,7 +341,7 @@
                     userId: this.state.userEmail,
                     debug: this.config.DEBUG,
                     orchestrator: this,
-                    webcam: { enabled: webcam },
+                    webcam: { enabled: webcam, audio: audio || noise },
                     screen: { enabled: screen },
                     audio: { enabled: audio },
                     faceDetection: { enabled: face },
@@ -866,7 +921,10 @@
 
         async destroy() {
             // Can destroy initialized but not yet started session
-            if (!this.state.attemptId) return;
+            if (!this.state.attemptId) {
+                this.resetConfig();
+                return;
+            }
 
             const duration = Date.now() - (this.state.startTime || Date.now());
             this.logViolation('ASSESSMENT_SESSION_ENDED', { duration }, { severity: 'INFO', score: 0 });
@@ -938,6 +996,8 @@
                     else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
                 } catch (e) {}
             }
+
+            this.resetConfig();
         }
     }
 

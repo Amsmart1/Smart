@@ -3727,7 +3727,9 @@ async function showLiveFeedModal() {
                     <div class="live-snap-box bg-dark flex-center" style="height:180px; position:relative">
                         ${s.snapUrl ? `<img src="${s.snapUrl}" style="width:100%; height:100%; object-fit:cover">` : '<div class="text-muted tiny">Waiting for camera...</div>'}
                         <div class="absolute bottom-5 right-5 flex gap-5">
-                            <button class="button primary tiny w-auto p-5" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                            <button class="button primary tiny w-auto p-5" style="padding: 4px 8px; font-size: 11px;" onclick="monitorLiveSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Monitor</button>
+                            <button class="button secondary tiny w-auto p-5" style="padding: 4px 8px; font-size: 11px;" onclick="sendMessageToStudent('${escapeAttr(s.user_email)}', '${s.attempt_id}')">Message</button>
+                            <button class="button danger tiny w-auto p-5" style="padding: 4px 8px; font-size: 11px;" onclick="terminateSession('${s.attempt_id}', '${escapeAttr(s.user_email)}')">Terminate</button>
                         </div>
                     </div>
                 </div>
