@@ -905,6 +905,9 @@ window.closeAssignmentForm = closeAssignmentForm;
 
 async function showAssignmentForm(assignmentId) {
   const renderId = window.currentRenderId;
+  if (window.AntiCheat) {
+      await AntiCheat.destroy();
+  }
   const formWrap = document.getElementById('assignmentForm');
   if (formWrap) {
       formWrap.classList.remove('hidden');
@@ -2870,6 +2873,10 @@ async function startQuiz(quizId) {
   const renderId = ++window.currentRenderId;
   if (StudentState.isStartingQuiz) return;
   StudentState.isStartingQuiz = true;
+
+  if (window.AntiCheat) {
+      await AntiCheat.destroy();
+  }
 
   const listBtn = document.getElementById(`quiz-btn-${quizId}`);
   if (listBtn) {

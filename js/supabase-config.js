@@ -2069,7 +2069,7 @@ class SupabaseDB {
                     // Fetch latest snapshots for all attempts in a single query
                     const { data: snaps, error: snapErr } = await supabaseClient
                         .from('violations')
-                        .select('attempt_id, metadata->path')
+                        .select('attempt_id, metadata')
                         .in('attempt_id', attemptIds)
                         .eq('type', 'SNAPSHOT_CAPTURED')
                         .order('timestamp', { ascending: false });
@@ -2078,7 +2078,7 @@ class SupabaseDB {
                         // Group by attempt_id and pick the first one (latest)
                         const latestMap = {};
                         snaps.forEach(snap => {
-                            if (!latestMap[snap.attempt_id]) latestMap[snap.attempt_id] = snap.path;
+                            if (!latestMap[snap.attempt_id]) latestMap[snap.attempt_id] = snap.metadata?.path;
                         });
 
                         result = result.map(s => ({ ...s, latestSnapshotPath: latestMap[s.attempt_id] }));
