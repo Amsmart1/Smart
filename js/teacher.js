@@ -229,6 +229,7 @@ function showCourseForm(course = null) {
             <select id="courseStatus">
               <option value="draft" ${isEdit && course.status === 'draft' ? 'selected' : ''}>Draft</option>
               <option value="published" ${isEdit && course.status === 'published' ? 'selected' : ''}>Published</option>
+              <option value="archived" ${isEdit && course.status === 'archived' ? 'selected' : ''}>Archived</option>
             </select>
           </div>
         </div>
