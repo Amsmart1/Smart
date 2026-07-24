@@ -134,7 +134,7 @@ class SupabaseDB {
     ];
 
     static TABLE_WHITELISTS = {
-        users: ['email', 'full_name', 'phone', 'active', 'notification_preferences', 'metadata', 'updated_at'],
+        users: ['email', 'full_name', 'phone', 'active', 'notification_preferences', 'metadata', 'updated_at', 'role', 'created_at', 'last_login', 'failed_attempts', 'locked_until', 'lockouts', 'flagged', 'reset_request'],
         user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
         violations: ['attempt_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
         study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
@@ -161,6 +161,8 @@ class SupabaseDB {
             if (isMigration) return;
             if (table === 'violations' && field === 'attempt_id') return;
             if (table === 'user_secrets' && (field === 'session_id' || field === 'reset_data')) return;
+            if (table === 'users' && field === 'full_name') return;
+            if ((table === 'users' || table === 'invites') && field === 'role') return;
             delete sanitized[field];
         });
 
