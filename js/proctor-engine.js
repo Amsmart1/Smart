@@ -223,6 +223,16 @@
     'video/mp4',
   ];
 
+  const AUDIO_MIME_PREFERENCES = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+    'audio/aac',
+    'audio/mp4',
+    'audio/wav'
+  ];
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Utilities
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1525,20 +1535,34 @@
         }
       }
 
-      // Determine supported MIME type
-      const mimeType = getSupportedMimeType(MIME_PREFERENCES) || cfg.mimeType;
-      this.debug('Using MIME type: ' + mimeType);
+      // Handle user stopping share via browser UI
+      const videoTrack = this.state.screenStream.getVideoTracks ? this.state.screenStream.getVideoTracks()[0] : null;
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          this.emit('screen:ended', { reason: 'user_stopped' });
+          this.debug('Screen share ended by user');
+          this._reportEvent('SCREEN_SHARE_STOPPED', {
+              reason: 'user_stopped',
+              severity: 'HIGH',
+              score: 5
+          });
+          this._finalizeScreenRecording();
+        };
+      }
 
-      // Create MediaRecorder
-      const options = { mimeType };
+      this.state.recordingChunks = [];
+
+      const mimePreferences = cfg.mimeType ? [cfg.mimeType, ...MIME_PREFERENCES] : MIME_PREFERENCES;
+
       try {
-        this.state.mediaRecorder = new MediaRecorder(this.state.screenStream, options);
-      } catch (e) {
-        // Fallback MIME type
-        try {
-          this.state.mediaRecorder = new MediaRecorder(this.state.screenStream);
-        } catch (e2) {
-          this.debug('Failed to create MediaRecorder:', e2);
+        this.state.mediaRecorder = this._startResilientMediaRecorder(
+          this.state.screenStream,
+          mimePreferences,
+          cfg.chunkDuration,
+          (data) => this._handleRecordingChunk(data)
+        );
+
+        if (!this.state.mediaRecorder) {
           if (typeof navigator !== 'undefined' && navigator.webdriver) {
             this.state.mediaRecorder = {
               start: () => {},
@@ -1548,57 +1572,38 @@
               state: 'inactive'
             };
           } else {
-            throw e2;
+            throw new Error('All screen MediaRecorder MIME types failed to start.');
           }
         }
-      }
 
-      this.state.recordingChunks = [];
+        // Enforce max duration if set
+        if (cfg.maxDuration > 0) {
+          setTimeout(() => {
+            if (this.state.isActive) {
+              this._finalizeScreenRecording();
+              this.emit('screen:max_duration_reached', {});
+            }
+          }, cfg.maxDuration);
+        }
 
-      this.state.mediaRecorder.ondataavailable = (e) => {
-        if (!e.data || e.data.size === 0) return;
-        this._handleRecordingChunk(e.data);
-      };
-
-      this.state.mediaRecorder.onstop = () => {
-        this.debug('MediaRecorder stopped');
-      };
-
-      // Handle user stopping share via browser UI
-      const videoTrack = this.state.screenStream.getVideoTracks()[0];
-      videoTrack.onended = () => {
-        this.emit('screen:ended', { reason: 'user_stopped' });
-        this.debug('Screen share ended by user');
-        this._reportEvent('SCREEN_SHARE_STOPPED', {
-            reason: 'user_stopped',
-            severity: 'HIGH',
-            score: 5
+        this.emit('screen:started', {
+          maxDuration: cfg.maxDuration,
+          chunkDuration: cfg.chunkDuration,
         });
-        this._finalizeScreenRecording();
-      };
 
-      // Start recording with time-slice chunks
-      this.state.mediaRecorder.start(this.config.screen.chunkDuration);
-
-      // Enforce max duration if set
-      if (cfg.maxDuration > 0) {
-        setTimeout(() => {
-          if (this.state.isActive) {
-            this._finalizeScreenRecording();
-            this.emit('screen:max_duration_reached', {});
-          }
-        }, cfg.maxDuration);
+        await this._reportEvent('SCREEN_RECORDING_STARTED', {
+          mimeType: this.state.mediaRecorder ? (this.state.mediaRecorder.mimeType || 'default') : 'mock',
+          chunkDuration: cfg.chunkDuration,
+        });
+      } catch (err) {
+        this.debug('Screen recording failed to start:', err);
+        this.emit('screen:failed', { error: err.message });
+        await this._reportEvent('SCREEN_RECORDING_FAILED', {
+          error: err.message,
+          severity: 'HIGH',
+          score: 3
+        });
       }
-
-      this.emit('screen:started', {
-        maxDuration: cfg.maxDuration,
-        chunkDuration: cfg.chunkDuration,
-      });
-
-      await this._reportEvent('SCREEN_RECORDING_STARTED', {
-        mimeType: this.state.mediaRecorder.mimeType,
-        chunkDuration: cfg.chunkDuration,
-      });
     }
 
     /**
@@ -1691,6 +1696,58 @@
     }
 
     /**
+     * Resiliently instantiates and starts a MediaRecorder on the provided stream
+     * using preferred mime types, falling back progressively.
+     * @private
+     * @param {MediaStream} stream
+     * @param {string[]} mimePreferences
+     * @param {number} timeslice
+     * @param {Function} dataHandler
+     * @returns {MediaRecorder|null} The started MediaRecorder, or null if it failed.
+     */
+    _startResilientMediaRecorder(stream, mimePreferences, timeslice, dataHandler) {
+      let recorder = null;
+      let started = false;
+
+      // Filter preferences based on isTypeSupported if available, and add null as the ultimate default
+      const candidates = mimePreferences.filter(mime => {
+        try {
+          return !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(mime);
+        } catch (e) {
+          return false;
+        }
+      });
+      candidates.push(null);
+
+      for (const mime of candidates) {
+        try {
+          const options = mime ? { mimeType: mime } : {};
+          recorder = new MediaRecorder(stream, options);
+
+          recorder.ondataavailable = (e) => {
+            if (!e.data || e.data.size === 0) return;
+            dataHandler(e.data);
+          };
+
+          recorder.start(timeslice);
+          started = true;
+          this.debug(`Resilient MediaRecorder started successfully with mimeType: ${mime || 'default'}`);
+          break;
+        } catch (err) {
+          this.debug(`Failed to start MediaRecorder with mimeType ${mime || 'default'}:`, err);
+          if (recorder) {
+            try {
+              if (recorder.state !== 'inactive') recorder.stop();
+            } catch (e) {}
+            recorder = null;
+          }
+        }
+      }
+
+      return recorder;
+    }
+
+    /**
      * Starts audio recording in chunks.
      * @private
      */
@@ -1700,30 +1757,47 @@
         return;
       }
 
-      const cfg = this.config.audio;
-      const options = { mimeType: cfg.mimeType };
-
+      const audioTracks = this.state.webcamStream.getAudioTracks();
+      let audioStream;
       try {
-        this.state.audioRecorder = new MediaRecorder(this.state.webcamStream, options);
-      } catch (e) {
-        this.state.audioRecorder = new MediaRecorder(this.state.webcamStream);
+        audioStream = new MediaStream(audioTracks);
+      } catch (err) {
+        this.debug('Failed to construct new MediaStream with audio tracks, falling back to original webcamStream:', err);
+        audioStream = this.state.webcamStream;
       }
 
-      this.state.audioRecorder.ondataavailable = (e) => {
-        if (!e.data || e.data.size === 0) return;
-        this._handleAudioChunk(e.data);
-      };
+      const cfg = this.config.audio;
+      const mimePreferences = cfg.mimeType ? [cfg.mimeType, ...AUDIO_MIME_PREFERENCES] : AUDIO_MIME_PREFERENCES;
 
-      this.state.audioRecorder.start(cfg.chunkDuration);
+      try {
+        this.state.audioRecorder = this._startResilientMediaRecorder(
+          audioStream,
+          mimePreferences,
+          cfg.chunkDuration,
+          (data) => this._handleAudioChunk(data)
+        );
 
-      this.emit('audio:started', {
-        chunkDuration: cfg.chunkDuration,
-      });
+        if (!this.state.audioRecorder) {
+          throw new Error('All audio MediaRecorder MIME types failed to start.');
+        }
 
-      await this._reportEvent('AUDIO_RECORDING_STARTED', {
-        mimeType: this.state.audioRecorder.mimeType,
-        chunkDuration: cfg.chunkDuration,
-      });
+        this.emit('audio:started', {
+          chunkDuration: cfg.chunkDuration,
+        });
+
+        await this._reportEvent('AUDIO_RECORDING_STARTED', {
+          mimeType: this.state.audioRecorder.mimeType || 'default',
+          chunkDuration: cfg.chunkDuration,
+        });
+      } catch (err) {
+        this.debug('Audio recording failed to start:', err);
+        this.emit('audio:failed', { error: err.message });
+        await this._reportEvent('AUDIO_RECORDING_FAILED', {
+          error: err.message,
+          severity: 'MEDIUM',
+          score: 1
+        });
+      }
     }
 
     /**
