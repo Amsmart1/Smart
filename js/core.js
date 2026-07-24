@@ -2241,11 +2241,13 @@ UI.renderDiscussion = function(containerId, discussions, options = {}) {
                             </div>
                         </div>
                         <div class="flex gap-5">
-                            <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'reply', '${d.id}')">Reply</button>
-                            ${isMine ? `
+                            ${!options.isArchived ? `
+                                <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'reply', '${d.id}')">Reply</button>
+                            ` : ''}
+                            ${isMine && !options.isArchived ? `
                                 <button class="button secondary tiny" onclick="UI._dispatchDiscussionAction('${containerId}', 'edit', '${d.id}')">Edit</button>
                             ` : ''}
-                            ${canDelete ? `
+                            ${canDelete && !options.isArchived ? `
                                 <button class="button danger tiny" id="del-disc-${d.id}" onclick="UI._dispatchDiscussionAction('${containerId}', 'delete', '${d.id}')">Delete</button>
                             ` : ''}
                         </div>
@@ -2272,12 +2274,7 @@ UI.renderDiscussion = function(containerId, discussions, options = {}) {
         }).join('');
     };
 
-    container.innerHTML = `
-        <div class="card">
-            <h3 class="m-0">Course Discussion</h3>
-            <div id="disc-list" class="mt-20 mb-20" style="max-height:600px; overflow-y:auto">
-                ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
-            </div>
+    let startThreadHtml = `
             <div class="flex-column gap-10 p-15 border-radius-md" style="background:#f8fafc; border:1px solid #e2e8f0">
                 <h4 class="m-0">Start a New Thread</h4>
                 <input type="text" id="discTitleMain" placeholder="Thread Title (Optional)" class="m-0">
@@ -2289,25 +2286,52 @@ UI.renderDiscussion = function(containerId, discussions, options = {}) {
                 </div>
                 <div id="attachment-list-main" class="flex gap-5 mt-10"></div>
             </div>
+    `;
+
+    let discussionHeaderBanner = '';
+    if (options.isArchived) {
+        discussionHeaderBanner = `
+            <div class="card warn-border p-15 mb-20" style="background:#fffaf0; border-left:4px solid var(--warn);">
+                <div class="bold" style="color:#c05621">📦 Archived Course (Read-Only)</div>
+                <p class="small m-0">This course has been archived. You can view discussions, but cannot post or reply.</p>
+            </div>
+        `;
+        startThreadHtml = `
+            <div class="card border-light p-10 w-full text-center" style="background:#f7fafc; border: 1px solid var(--border)">
+                <span class="small bold text-muted italic">📝 Read-Only Mode: Course has been archived.</span>
+            </div>
+        `;
+    }
+
+    container.innerHTML = `
+        <div class="card">
+            ${discussionHeaderBanner}
+            <h3 class="m-0">Course Discussion</h3>
+            <div id="disc-list" class="mt-20 mb-20" style="max-height:600px; overflow-y:auto">
+                ${renderThread() || '<div class="empty">No messages yet. Start the conversation!</div>'}
+            </div>
+            ${startThreadHtml}
         </div>
     `;
 
-    // Manually init uploader for main thread to ensure proper container selection
-    UI.createFileUploader('attachments-main', {
-        pathPrefix: 'discussions',
-        onUploadSuccess: (url, name) => {
-            const list = UI._getDiscussionAttachments('main');
-            list.push({url, name});
-            UI._renderDiscussionAttachments('main', list);
-        }
-    });
+    if (!options.isArchived) {
+        // Manually init uploader for main thread to ensure proper container selection
+        UI.createFileUploader('attachments-main', {
+            pathPrefix: 'discussions',
+            onUploadSuccess: (url, name) => {
+                const list = UI._getDiscussionAttachments('main');
+                list.push({url, name});
+                UI._renderDiscussionAttachments('main', list);
+            }
+        });
 
-    const uploaderBtn = document.getElementById('main-uploader-btn');
-    if (uploaderBtn) {
-        uploaderBtn.onclick = () => {
-            const input = document.querySelector('#attachments-main input[type="file"]');
-            if (input) input.click();
-        };
+        const uploaderBtn = document.getElementById('main-uploader-btn');
+        if (uploaderBtn) {
+            uploaderBtn.onclick = () => {
+                const input = document.querySelector('#attachments-main input[type="file"]');
+                if (input) input.click();
+            };
+        }
     }
 
     // Record views for posts currently in viewport
@@ -3050,10 +3074,15 @@ const DiscussionManager = {
                 }
             });
 
-            const { data: discussions } = await SupabaseDB.getDiscussions(courseId);
+            const [course, discussionsRes] = await Promise.all([
+                SupabaseDB.getCourse(courseId),
+                SupabaseDB.getDiscussions(courseId)
+            ]);
             if (renderId !== window.currentRenderId) return;
+            const discussions = discussionsRes.data || [];
 
             const isTeacher = user.role === 'teacher' || user.role === 'admin';
+            const isArchived = course && course.status === 'archived' && !isTeacher;
 
             container.innerHTML = `
                 <div class="flex-between mb-20">
@@ -3065,6 +3094,7 @@ const DiscussionManager = {
 
             UI.renderDiscussion('discussionContent', discussions, {
                 isTeacher,
+                isArchived,
                 onPost: (content, parentId, extra) => DiscussionManager.post(containerId, courseId, content, parentId, extra),
                 onEdit: (id) => DiscussionManager.edit(containerId, courseId, id),
                 onDelete: (id) => DiscussionManager.delete(containerId, courseId, id),
