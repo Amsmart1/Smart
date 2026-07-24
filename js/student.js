@@ -294,6 +294,9 @@ async function renderMyCourses() {
         ${myCourses.map(c => {
           const enrollment = enrollments.find(e => e.course_id === c.id);
           const progress = enrollment?.progress || 0;
+          const isArchived = c.status === 'archived';
+          const buttonText = isArchived ? 'Open (Archived)' : 'Open Course';
+          const badgeHtml = isArchived ? '<span class="badge badge-inactive tiny">Archived</span>' : '';
           return `
             <div class="card flex-column gap-10">
               <div style="width:100%; height:120px; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius:6px; display:flex; align-items:center; justify-content:center; color:white; font-size:40px">📖</div>
@@ -304,10 +307,13 @@ async function renderMyCourses() {
               </div>
               <div class="flex-between">
                 <span class="tiny text-muted">${progress}% Complete</span>
-                ${enrollment?.completed ? '<span class="badge badge-active tiny">Completed</span>' : ''}
+                <div class="flex gap-5">
+                    ${enrollment?.completed ? '<span class="badge badge-active tiny">Completed</span>' : ''}
+                    ${badgeHtml}
+                </div>
               </div>
               <div class="small" style="flex:1">${UI.renderRichText((c.description || '').substring(0, 150))}...</div>
-              <button class="button w-auto small" onclick="viewCourse('${escapeAttr(c.id)}', true)">Open Course</button>
+              <button class="button ${isArchived ? 'secondary' : ''} w-auto small" onclick="viewCourse('${escapeAttr(c.id)}', true)">${buttonText}</button>
             </div>
           `;
         }).join('') || '<div class="empty" style="grid-column:1/-1">You haven\'t enrolled in any courses yet. Visit the Catalog to find some!</div>'}
@@ -383,7 +389,7 @@ async function viewCourse(courseId, fromMyCourses = false) {
   try {
   const course = await SupabaseDB.getCourse(courseId);
   if (renderId !== window.currentRenderId) return;
-  if (!course || course.status !== 'published') {
+  if (!course || (course.status !== 'published' && course.status !== 'archived')) {
       UI.showNotification('This course is not available.', 'warn');
       if (fromMyCourses) renderMyCourses(); else renderCourses();
       return;
@@ -427,8 +433,20 @@ async function viewCourse(courseId, fromMyCourses = false) {
 
   const studentViewMode = localStorage.getItem('student_view_mode_lessons') || 'grid';
 
+  const isCourseArchived = course && course.status === 'archived';
+  let archivedBannerHtml = '';
+  if (isCourseArchived) {
+      archivedBannerHtml = `
+        <div class="card warn-border p-15 mb-20" style="background:#fffaf0; border-left:4px solid var(--warn);">
+            <div class="bold" style="color:#c05621">📦 Archived Course (Read-Only)</div>
+            <p class="small m-0">This course has been archived. You can view lessons and course details, but your progress will not be updated and study focus sessions are disabled.</p>
+        </div>
+      `;
+  }
+
   container.innerHTML = `
     <button class="button secondary w-auto mb-15" onclick="${backAction}">${backLabel}</button>
+    ${archivedBannerHtml}
     <div class="grid-2 mt-20">
       <section class="card">
         <div class="flex-between flex-wrap gap-10 mb-15" style="border-bottom: 1px solid var(--border); padding-bottom: 10px;">
@@ -689,20 +707,37 @@ async function viewCourse(courseId, fromMyCourses = false) {
 async function showLesson(lessonId, courseId, fromMyCourses = false) {
   const renderId = ++window.currentRenderId;
   try {
-  const lessonRes = await SupabaseDB.getLessons(courseId);
+  const [lessonRes, course] = await Promise.all([
+      SupabaseDB.getLessons(courseId),
+      SupabaseDB.getCourse(courseId)
+  ]);
   if (renderId !== window.currentRenderId) return;
   const lessons = lessonRes.data || [];
   const lesson = lessons.find(l => l.id === lessonId);
   const container = document.getElementById('pageContent');
   if (!container) return;
 
-  // Automate Focus Timer: Start session when lesson is viewed
-  StudyTracker.start(courseId);
+  const isCourseArchived = course && course.status === 'archived';
 
-  // Track lesson completion
+  // Automate Focus Timer: Start session when lesson is viewed (skip if archived)
+  if (!isCourseArchived) {
+      StudyTracker.start(courseId);
+  }
+
+  // Track lesson completion (skip if archived)
   const user = await SessionManager.getCurrentUser();
-  if (user && user.role === 'student') {
+  if (user && user.role === 'student' && !isCourseArchived) {
       SupabaseDB.markLessonComplete(courseId, user.email, lessonId).catch(e => console.warn('Completion tracking failed:', e));
+  }
+
+  let archivedBannerHtml = '';
+  if (isCourseArchived) {
+      archivedBannerHtml = `
+        <div class="card warn-border p-15 mb-20" style="background:#fffaf0; border-left:4px solid var(--warn);">
+            <div class="bold" style="color:#c05621">📦 Archived Course (Read-Only)</div>
+            <p class="small m-0">This course has been archived. You can view the lesson content and videos, but lesson completion and focus timer tracking are disabled.</p>
+        </div>
+      `;
   }
 
   let videoHtml = '';
@@ -721,6 +756,7 @@ async function showLesson(lessonId, courseId, fromMyCourses = false) {
 
   container.innerHTML = `
     <button class="button secondary w-auto mb-15" onclick="viewCourse('${escapeAttr(courseId)}', ${fromMyCourses})">← Back to Lessons</button>
+    ${archivedBannerHtml}
     <div class="card">
       <h2 class="m-0 mb-20">${escapeHtml(lesson.title)}</h2>
       ${videoHtml}
@@ -810,6 +846,7 @@ async function renderAssignments(openId = null){
     if (isPastDue && !a.allow_late_submissions && !submission) return;
 
     const course = courses.find(c => c.id === a.course_id);
+    const isCourseArchived = course && course.status === 'archived';
     const isOverdue = dueDate.getTime() < now && !submission;
 
     let statusHtml = '';
@@ -847,9 +884,11 @@ async function renderAssignments(openId = null){
           ${isUpcoming ? `
               <span class="badge badge-warn">UPCOMING</span>
             ` : !submission ?
-            `<button class="button small w-auto ${isOverdue ? 'danger' : ''}" onclick="showAssignmentForm('${a.id}')">${isOverdue ? 'Submit Late' : 'Submit'}</button>` :
+            (isCourseArchived ?
+              `<button class="button secondary small w-auto" onclick="showAssignmentForm('${a.id}')">View (Archived)</button>` :
+              `<button class="button small w-auto ${isOverdue ? 'danger' : ''}" onclick="showAssignmentForm('${a.id}')">${isOverdue ? 'Submit Late' : 'Submit'}</button>`) :
             (submission.status === 'submitted' || submission.status === 'draft' ?
-              `<button class="button secondary small w-auto" onclick="showAssignmentForm('${a.id}')">View/Edit</button>` :
+              `<button class="button secondary small w-auto" onclick="showAssignmentForm('${a.id}')">${isCourseArchived ? 'View (Archived)' : 'View/Edit'}</button>` :
               `<button class="button secondary small w-auto" onclick="viewFeedback('${a.id}')">View Feedback</button>`)
           }
         </div>
@@ -2426,10 +2465,15 @@ async function renderLiveClasses() {
     // Reconcile any abandoned attempts on load
     try { await SupabaseDB.reconcileQuizAttempts(null, user.email); } catch(e) { console.warn('Reconciliation failed:', e); }
 
-    const enrollRes = await SupabaseDB.getEnrollments(user.email);
+    const [enrollRes, coursesRes] = await Promise.all([
+        SupabaseDB.getEnrollments(user.email),
+        SupabaseDB.getCourses()
+    ]);
     if (renderId !== window.currentRenderId) return;
     const enrollments = enrollRes.data || [];
     const enrolledCourseIds = enrollments.map(e => e.course_id);
+    const courses = coursesRes.data || [];
+    const coursesMap = new Map(courses.map(c => [c.id, c]));
 
     const liveRes = await SupabaseDB.getLiveClasses(null, null, enrolledCourseIds);
     if (renderId !== window.currentRenderId) return;
@@ -2446,6 +2490,9 @@ async function renderLiveClasses() {
           const startAt = new Date(liveClass.start_at).getTime();
           const isUpcoming = startAt > now;
 
+          const course = coursesMap.get(liveClass.course_id);
+          const isCourseArchived = course && course.status === 'archived';
+
           const createdAtTs = liveClass.created_at ? new Date(liveClass.created_at).getTime() : now;
           const isFinished = !isLive && !isUpcoming;
           return `
@@ -2453,12 +2500,16 @@ async function renderLiveClasses() {
               <div class="flex-between" style="align-items:start">
                 <div>
                   <h3 class="m-0">${escapeHtml(liveClass.title)}</h3>
+                  <p class="small mt-5"><strong>Course:</strong> ${escapeHtml(course?.title || 'Unknown')}</p>
                   <p class="small mt-5"><strong>Time:</strong> ${new Date(liveClass.start_at).toLocaleString()}</p>
                 </div>
                 <span class="badge ${isLive ? 'badge-active' : ''}">${liveClass.status.toUpperCase()}</span>
               </div>
               <div class="mt-15">
-                ${isLive ?
+                ${isCourseArchived ? `
+                    <div class="badge badge-inactive w-100 text-center mb-10">Course Archived (Read-Only)</div>
+                    <button class="button secondary w-auto" disabled>Join Disabled</button>
+                ` : isLive ?
                   `<button class="button w-auto" onclick="handleJoinLiveClass('${liveClass.id}', '${liveClass.room_name}', '${escapeAttr(liveClass.meeting_url || '')}')">Join Now</button>` :
                   isUpcoming ? `
                     <div class="mb-10 p-10 border-radius-sm" style="background:var(--bg); border:1px solid var(--border)">
@@ -2498,6 +2549,13 @@ let attendanceRecordId = null;
 let attendanceStartTime = null;
 
 async function handleJoinLiveClass(id, roomName, meetingUrl) {
+    const liveClass = await SupabaseDB.getLiveClass(id);
+    const course = liveClass ? await SupabaseDB.getCourse(liveClass.course_id) : null;
+    if (course && course.status === 'archived') {
+        UI.showNotification('This course has been archived. You cannot join its live classes.', 'danger');
+        return;
+    }
+
     if (meetingUrl && meetingUrl.trim() !== '') {
         const choice = await UI.showMeetingChoice(meetingUrl);
         if (!choice) return;
@@ -3494,7 +3552,11 @@ async function viewQuizResults(quizId, submissionId = null) {
   const renderId = ++window.currentRenderId;
   const user = await SessionManager.getCurrentUser();
   const quiz = await SupabaseDB.getQuiz(quizId);
-  const { data: subs } = await SupabaseDB.getQuizSubmissions(quizId, user.email);
+  const [subsRes, course] = await Promise.all([
+      SupabaseDB.getQuizSubmissions(quizId, user.email),
+      quiz ? SupabaseDB.getCourse(quiz.course_id) : Promise.resolve(null)
+  ]);
+  const subs = subsRes.data || [];
   if (renderId !== window.currentRenderId) return;
 
   let targetSub;
@@ -3513,8 +3575,20 @@ async function viewQuizResults(quizId, submissionId = null) {
   const durationSec = targetSub.time_spent % 60;
   const avgTimePerQ = (targetSub.time_spent / (quiz.questions?.length || 1)).toFixed(1);
 
+  const isCourseArchived = course && course.status === 'archived';
+  let archivedBannerHtml = '';
+  if (isCourseArchived) {
+      archivedBannerHtml = `
+        <div class="card warn-border p-10 mt-10 mb-10" style="background:#fffaf0; border-left: 4px solid var(--warn);">
+            <div class="bold" style="color:#c05621">📦 Archived Course (Read-Only)</div>
+            <p class="small m-0">This course has been archived. You can view your quiz attempt details, but new attempts are disabled.</p>
+        </div>
+      `;
+  }
+
   container.innerHTML = `
     <button class="button secondary w-auto mb-10" onclick="renderQuizzes()">← Back</button>
+    ${archivedBannerHtml}
     <div class="card">
       <div class="flex-between">
           <h2 class="m-0">Results: ${escapeHtml(quiz.title)}</h2>

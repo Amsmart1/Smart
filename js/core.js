@@ -688,12 +688,18 @@ const UI = {
                 ${subtitle ? `<p class="small mt-5">${escapeHtml(subtitle)}</p>` : ''}
             </div>
             <div class="grid mt-20">
-                ${courses.map(c => `
-                    <div class="card">
-                        <h3 class="m-0">${escapeHtml(c.title)}</h3>
-                        <button class="button w-auto mt-10" onclick="UI._dispatchCourseAction('${containerId}', '${escapeAttr(c.id)}')">${escapeHtml(buttonText)}</button>
-                    </div>
-                `).join('') || `<div class="empty">${emptyMessage}</div>`}
+                ${courses.map(c => {
+                    const isArchived = c.status === 'archived';
+                    return `
+                        <div class="card">
+                            <div class="flex-between">
+                                <h3 class="m-0">${escapeHtml(c.title)}</h3>
+                                ${isArchived ? '<span class="badge badge-inactive tiny" style="margin:0">Archived</span>' : ''}
+                            </div>
+                            <button class="button ${isArchived ? 'secondary' : ''} w-auto mt-10" onclick="UI._dispatchCourseAction('${containerId}', '${escapeAttr(c.id)}')">${isArchived ? 'View (Archived)' : escapeHtml(buttonText)}</button>
+                        </div>
+                    `;
+                }).join('') || `<div class="empty">${emptyMessage}</div>`}
             </div>
         `;
 
