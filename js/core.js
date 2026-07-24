@@ -2595,64 +2595,111 @@ UI.renderIntegrityReport = function(containerId, violations, userEmail) {
         </div>
       </div>
 
-      <div class="card mb-20" id="proctoringMediaEvidence">
-        <h3>Proctoring Media Evidence</h3>
-        <div class="tabs mb-20">
-            <button class="button secondary tiny w-auto active" onclick="UI._switchProctorTab(this, 'snaps')">Webcam Snapshots (${snapshots.length})</button>
-            <button class="button secondary tiny w-auto" onclick="UI._switchProctorTab(this, 'screen')">Screen Recordings (${screenChunks.length})</button>
-            <button class="button secondary tiny w-auto" onclick="UI._switchProctorTab(this, 'audio')">Audio Recordings (${audioChunks.length})</button>
-        </div>
+      ${(() => {
+          const startEvent = violations.find(v => v.type === 'ASSESSMENT_SESSION_STARTED');
+          const acConfig = startEvent?.metadata?.config;
 
-        <div id="proctor-media-content">
-            <div id="proctor-snaps" class="proctor-tab-content">
-                ${snapshots.length === 0 ? '<div class="empty tiny">No snapshots captured.</div>' : `
-                    <div class="mb-10 flex-end"><button class="button secondary tiny w-auto" onclick="UI._loadProctorThumbnails(this)">📷 Load Preview Images</button></div>
-                    <div class="grid-4 gap-10" id="proctor-snap-grid">
-                        ${snapshots.map((s, idx) => `
-                            <div class="card p-5 text-center">
-                                <div class="snap-preview bg-light flex-center" style="height:100px; cursor:pointer; overflow:hidden; border-radius:4px"
-                                     data-path="${escapeAttr(s.metadata.path)}"
-                                     onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'snapshot', '${s.timestamp}')">
-                                    <span class="tiny">Snapshot ${idx + 1}</span>
-                                </div>
-                                <div class="tiny text-muted mt-5">${new Date(s.timestamp).toLocaleTimeString()}</div>
-                            </div>
-                        `).join('')}
-                    </div>
-                `}
+          let showSnaps = true;
+          let showScreen = true;
+          let showAudio = true;
+
+          if (acConfig) {
+              showSnaps = !!(acConfig.PROCTORING_WEBCAM || snapshots.length > 0);
+              showScreen = !!(acConfig.PROCTORING_SCREEN || screenChunks.length > 0);
+              showAudio = !!(acConfig.PROCTORING_AUDIO || audioChunks.length > 0);
+          } else {
+              // If there's no start config, only display tabs that actually have recorded data
+              // to avoid showing redundant or empty recording panels.
+              showSnaps = snapshots.length > 0;
+              showScreen = screenChunks.length > 0;
+              showAudio = audioChunks.length > 0;
+
+              // Fallback for live sessions: if violations is empty (just starting), show enabled ones or snaps by default
+              if (violations.length === 0) {
+                  showSnaps = false;
+                  showScreen = false;
+                  showAudio = false;
+              }
+          }
+
+          const visibleTabs = [];
+          if (showSnaps) visibleTabs.push({ id: 'snaps', label: `Webcam Snapshots (${snapshots.length})` });
+          if (showScreen) visibleTabs.push({ id: 'screen', label: `Screen Recordings (${screenChunks.length})` });
+          if (showAudio) visibleTabs.push({ id: 'audio', label: `Audio Recordings (${audioChunks.length})` });
+
+          if (visibleTabs.length === 0) return '';
+
+          const activeTabId = visibleTabs[0].id;
+
+          return `
+          <div class="card mb-20" id="proctoringMediaEvidence">
+            <h3>Proctoring Media Evidence</h3>
+            <div class="tabs mb-20">
+                ${visibleTabs.map(t => `
+                    <button class="button secondary tiny w-auto ${t.id === activeTabId ? 'active' : ''}" onclick="UI._switchProctorTab(this, '${t.id}')">${t.label}</button>
+                `).join('')}
             </div>
-            <div id="proctor-screen" class="proctor-tab-content hidden">
-                ${screenChunks.length === 0 ? '<div class="empty tiny">No screen recording chunks.</div>' : `
-                    <div class="list">
-                        ${screenChunks.map((s, idx) => `
-                            <div class="list-item flex-between py-5">
-                                <span class="small">Screen Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
-                                <div class="flex gap-5">
-                                    <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'video', '${s.timestamp}')">Play</button>
-                                    <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'screen-chunk-${idx+1}.webm')">Download</a>
+
+            <div id="proctor-media-content">
+                ${showSnaps ? `
+                <div id="proctor-snaps" class="proctor-tab-content ${activeTabId === 'snaps' ? '' : 'hidden'}">
+                    ${snapshots.length === 0 ? '<div class="empty tiny">No snapshots captured.</div>' : `
+                        <div class="mb-10 flex-end"><button class="button secondary tiny w-auto" onclick="UI._loadProctorThumbnails(this)">📷 Load Preview Images</button></div>
+                        <div class="grid-4 gap-10" id="proctor-snap-grid">
+                            ${snapshots.map((s, idx) => `
+                                <div class="card p-5 text-center">
+                                    <div class="snap-preview bg-light flex-center" style="height:100px; cursor:pointer; overflow:hidden; border-radius:4px"
+                                         data-path="${escapeAttr(s.metadata.path)}"
+                                         onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'snapshot', '${s.timestamp}')">
+                                        <span class="tiny">Snapshot ${idx + 1}</span>
+                                    </div>
+                                    <div class="tiny text-muted mt-5">${new Date(s.timestamp).toLocaleTimeString()}</div>
                                 </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                `}
-            </div>
-            <div id="proctor-audio" class="proctor-tab-content hidden">
-                ${audioChunks.length === 0 ? '<div class="empty tiny">No audio recording chunks.</div>' : `
-                    <div class="list">
-                        ${audioChunks.map((s, idx) => `
-                            <div class="list-item flex-between py-5">
-                                <span class="small">Audio Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
-                                <div class="flex gap-5">
-                                    <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'audio', '${s.timestamp}')">Listen</button>
-                                    <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'audio-chunk-${idx+1}.webm')">Download</a>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+                ` : ''}
+
+                ${showScreen ? `
+                <div id="proctor-screen" class="proctor-tab-content ${activeTabId === 'screen' ? '' : 'hidden'}">
+                    ${screenChunks.length === 0 ? '<div class="empty tiny">No screen recording chunks.</div>' : `
+                        <div class="list">
+                            ${screenChunks.map((s, idx) => `
+                                <div class="list-item flex-between py-5">
+                                    <span class="small">Screen Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
+                                    <div class="flex gap-5">
+                                        <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'video', '${s.timestamp}')">Play</button>
+                                        <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'screen-chunk-${idx+1}.webm')">Download</a>
+                                    </div>
                                 </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                `}
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+                ` : ''}
+
+                ${showAudio ? `
+                <div id="proctor-audio" class="proctor-tab-content ${activeTabId === 'audio' ? '' : 'hidden'}">
+                    ${audioChunks.length === 0 ? '<div class="empty tiny">No audio recording chunks.</div>' : `
+                        <div class="list">
+                            ${audioChunks.map((s, idx) => `
+                                <div class="list-item flex-between py-5">
+                                    <span class="small">Audio Chunk ${idx + 1} (${Math.round((s.metadata.size || 0) / 1024)} KB)</span>
+                                    <div class="flex gap-5">
+                                        <button class="button secondary tiny w-auto" onclick="UI._viewProctorMedia('${escapeAttr(s.metadata.path)}', 'audio', '${s.timestamp}')">Listen</button>
+                                        <a href="javascript:void(0)" class="button secondary tiny w-auto" onclick="UI._downloadProctorMedia('${escapeAttr(s.metadata.path)}', 'audio-chunk-${idx+1}.webm')">Download</a>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+                ` : ''}
             </div>
-        </div>
-      </div>
+          </div>
+          `;
+      })()}
 
       <div class="card">
         <h3>Detailed Violation History</h3>
