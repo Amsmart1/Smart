@@ -134,11 +134,34 @@ class SupabaseDB {
     ];
 
     static TABLE_WHITELISTS = {
-        users: ['email', 'full_name', 'phone', 'active', 'notification_preferences', 'metadata', 'updated_at', 'role', 'created_at', 'last_login', 'failed_attempts', 'locked_until', 'lockouts', 'flagged', 'reset_request'],
+        users: ['id', 'email', 'full_name', 'phone', 'role', 'created_at', 'updated_at', 'last_login', 'failed_attempts', 'locked_until', 'lockouts', 'flagged', 'reset_request', 'active', 'notification_preferences', 'metadata'],
         user_secrets: ['email', 'password_hash', 'session_id', 'reset_data', 'updated_at'],
-        violations: ['attempt_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'expires_at'],
+        courses: ['id', 'title', 'description', 'teacher_email', 'created_by', 'enrollment_id', 'enrollment_limit', 'semester', 'status', 'created_at', 'updated_at', 'metadata'],
+        topics: ['id', 'course_id', 'teacher_email', 'title', 'description', 'order_index', 'created_at', 'updated_at'],
+        lessons: ['id', 'course_id', 'topic_id', 'teacher_email', 'title', 'content', 'video_url', 'order_index', 'created_at', 'updated_at'],
+        enrollments: ['course_id', 'student_email', 'enrolled_at', 'updated_at', 'progress', 'completed', 'completed_lessons'],
+        assignments: ['id', 'course_id', 'title', 'description', 'teacher_email', 'start_at', 'due_date', 'points_possible', 'allow_late_submissions', 'late_penalty_per_day', 'allowed_extensions', 'created_at', 'updated_at', 'questions', 'attachments', 'status', 'anti_cheat_config', 'assignment_type', 'groups'],
+        submissions: ['id', 'course_id', 'assignment_id', 'student_email', 'teacher_email', 'submitted_at', 'updated_at', 'answers', 'question_scores', 'question_feedback', 'late_penalty_applied', 'attachments', 'grade', 'final_grade', 'feedback', 'regrade_request', 'graded_at', 'status'],
+        live_classes: ['id', 'course_id', 'teacher_email', 'title', 'description', 'start_at', 'end_at', 'room_name', 'meeting_url', 'recording_url', 'recurring_config', 'metadata', 'status', 'actual_end_at', 'created_at', 'updated_at'],
+        attendance: ['id', 'course_id', 'live_class_id', 'student_email', 'teacher_email', 'join_time', 'leave_time', 'duration', 'is_present', 'created_at', 'updated_at'],
+        quizzes: ['id', 'course_id', 'teacher_email', 'title', 'description', 'time_limit', 'start_at', 'end_at', 'attempts_allowed', 'passing_score', 'questions', 'shuffle_questions', 'status', 'anti_cheat_config', 'created_at', 'updated_at'],
+        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at'],
+        materials: ['id', 'course_id', 'teacher_email', 'title', 'description', 'file_url', 'file_type', 'created_at', 'updated_at'],
+        discussions: ['id', 'course_id', 'user_email', 'teacher_email', 'parent_id', 'title', 'content', 'attachments', 'metadata', 'created_at', 'updated_at'],
+        discussion_views: ['id', 'discussion_id', 'user_email', 'viewed_at'],
+        notifications: ['id', 'user_email', 'course_id', 'title', 'message', 'link', 'type', 'is_read', 'metadata', 'expires_at', 'created_at', 'updated_at'],
+        broadcasts: ['id', 'course_id', 'teacher_email', 'target_role', 'title', 'message', 'link', 'type', 'metadata', 'expires_at', 'created_at', 'updated_at'],
+        maintenance: ['id', 'enabled', 'manual_until', 'message', 'schedules', 'metadata', 'created_at', 'updated_at'],
+        planner: ['id', 'user_email', 'title', 'description', 'due_date', 'priority', 'completed', 'created_at', 'updated_at'],
+        certificates: ['id', 'course_id', 'student_email', 'teacher_email', 'issued_at', 'updated_at', 'certificate_url', 'status', 'type', 'request_reason', 'metadata'],
         study_sessions: ['id', 'user_email', 'course_id', 'teacher_email', 'duration', 'started_at', 'ended_at', 'updated_at'],
-        quiz_submissions: ['id', 'course_id', 'quiz_id', 'student_email', 'teacher_email', 'attempt_number', 'score', 'total_points', 'answers', 'analytics', 'status', 'time_spent', 'started_at', 'submitted_at', 'updated_at']
+        invites: ['id', 'token', 'email', 'role', 'created_at', 'updated_at', 'expires_at', 'used_at', 'created_by'],
+        violations: ['id', 'attempt_id', 'course_id', 'user_email', 'teacher_email', 'assessment_id', 'assessment_type', 'type', 'browser', 'device', 'os', 'device_info', 'elapsed_time', 'score', 'severity', 'metadata', 'timestamp', 'created_at', 'updated_at', 'expires_at'],
+        knowledge_embeddings: ['id', 'source_type', 'source_id', 'material_id', 'lesson_id', 'course_id', 'content', 'embedding', 'metadata', 'created_at', 'embedding_version'],
+        indexing_locks: ['lock_key', 'locked_by', 'acquired_at', 'expires_at'],
+        material_indexing_states: ['material_id', 'course_id', 'file_url', 'extracted_text', 'chunks', 'status', 'current_step', 'error_message', 'timing_logs', 'retry_count', 'last_chunk_index', 'created_at', 'updated_at'],
+        support_tickets: ['id', 'user_email', 'role', 'subject', 'message', 'status', 'resolution_notes', 'created_at', 'updated_at'],
+        system_settings: ['key', 'value', 'updated_at']
     };
 
     static _sanitizePayload(payload, table = null) {
