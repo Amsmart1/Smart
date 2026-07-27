@@ -4685,8 +4685,8 @@ async function gradeQuizSubmission(submissionId, quizId) {
             const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] !== undefined ? submission.answers[idx] : 'No Answer');
             const isAutoGraded = q.type !== 'short';
             const isCorrect = q.type === 'short' ?
-                (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-                (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+                (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+                (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
             const statusColor = isAutoGraded ? (isCorrect ? 'var(--ok)' : 'var(--danger)') : 'var(--warn)';
 
             let studentDisplay = studentAnswer;
@@ -4766,8 +4766,8 @@ async function gradeQuizSubmission(submissionId, quizId) {
       } else {
         const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
         const isCorrect = q.type === 'short' ?
-            (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-            (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+            (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+            (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
         if (isCorrect) {
           earnedPoints += q.points;
         }
@@ -4815,8 +4815,8 @@ async function gradeQuizSubmission(submissionId, quizId) {
         } else {
           const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
           const isCorrect = q.type === 'short' ?
-              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+              (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
           if (isCorrect) {
             earnedPoints += q.points;
           }
