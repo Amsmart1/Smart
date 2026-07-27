@@ -2931,8 +2931,14 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 -- 7c. Quiz Authoritative Logic RPCs
 
 -- Helper for centralized scoring
-CREATE OR REPLACE FUNCTION calculate_quiz_score(p_quiz_id UUID, p_answers JSONB)
-RETURNS RECORD AS $$
+DROP FUNCTION IF EXISTS calculate_quiz_score(UUID, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION calculate_quiz_score(
+    p_quiz_id UUID,
+    p_answers JSONB,
+    OUT score INTEGER,
+    OUT total_points INTEGER
+)
+AS $$
 DECLARE
     v_quiz RECORD;
     v_score INTEGER := 0;
@@ -2941,10 +2947,13 @@ DECLARE
     v_idx INTEGER := 0;
     v_student_answer TEXT;
     v_correct_answer TEXT;
-    v_result RECORD;
 BEGIN
     SELECT * INTO v_quiz FROM quizzes WHERE id = p_quiz_id;
-    IF NOT FOUND THEN RETURN NULL; END IF;
+    IF NOT FOUND THEN
+        score := NULL;
+        total_points := NULL;
+        RETURN;
+    END IF;
 
     FOR v_q IN SELECT * FROM jsonb_array_elements(v_quiz.questions)
     LOOP
@@ -2952,20 +2961,19 @@ BEGIN
         v_student_answer := p_answers->>(v_idx::TEXT);
         v_correct_answer := v_q->>'correct';
 
-        IF v_student_answer IS NOT NULL AND
-           trim(lower(v_student_answer)) = trim(lower(v_correct_answer)) THEN
+        IF v_student_answer IS NOT NULL AND (
+            (v_q->>'type' = 'short' AND regexp_replace(trim(lower(v_student_answer)), '\s+', ' ', 'g') = regexp_replace(trim(lower(v_correct_answer)), '\s+', ' ', 'g'))
+            OR
+            (v_q->>'type' != 'short' AND trim(lower(v_student_answer)) = trim(lower(v_correct_answer)))
+        ) THEN
             v_score := v_score + (v_q->>'points')::INTEGER;
         END IF;
 
         v_idx := v_idx + 1;
     END LOOP;
 
-    SELECT
-        CASE WHEN v_total_points > 0 THEN ROUND((v_score::FLOAT / v_total_points::FLOAT) * 100) ELSE 0 END as score,
-        v_total_points as total_points
-    INTO v_result;
-
-    RETURN v_result;
+    score := CASE WHEN v_total_points > 0 THEN ROUND((v_score::FLOAT / v_total_points::FLOAT) * 100) ELSE 0 END;
+    total_points := v_total_points;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
