@@ -4191,8 +4191,10 @@ function addQuizQuestionField(q = null) {
   div.style.background = '#fff';
   div.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.03)';
 
+  const stableQId = q?.id || (window.crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15));
   const qId = 'quiz-q-text-' + TimerManager.getTime() + Math.random().toString(36).substring(2, 9);
   div.innerHTML = `
+    <input type="hidden" class="q-id" value="${stableQId}">
     <div class="flex-between mb-20" style="align-items: center;">
       <h4 class="q-number-header m-0" style="font-size: 13px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">QUESTION</h4>
       <button type="button" style="background: none; border: none; color: #dc2626; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; padding: 0; transition: color 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#dc2626'" onclick="this.closest('.question').remove(); updateQuizTotalPoints(); reindexQuizQuestions();">Remove</button>
@@ -4388,13 +4390,20 @@ async function handleQuizSave(e) {
     document.querySelectorAll('#quizQuestionsContainer .question').forEach((item, idx) => {
       const type = item.querySelector('.q-type').value;
       const text = item.querySelector('.q-text').value.trim();
-      const points = parseInt(item.querySelector('.q-points').value) || 0;
+      const pointsVal = parseFloat(item.querySelector('.q-points').value);
+
+      if (isNaN(pointsVal) || !Number.isInteger(pointsVal) || pointsVal <= 0) {
+        throw new Error(`Question ${idx + 1} points must be a valid positive integer.`);
+      }
+      const points = parseInt(pointsVal);
 
       const vQText = Validator.required(text, `Question ${idx + 1} text`);
       if (!vQText.valid) throw new Error(vQText.message);
-      if (points < 0) throw new Error(`Question ${idx + 1} points cannot be negative.`);
+
+      const qId = item.querySelector('.q-id')?.value || (window.crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15));
 
       const qData = {
+          id: qId,
           text,
           type,
           points,
@@ -4404,12 +4413,20 @@ async function handleQuizSave(e) {
 
       if (type === 'mcq') {
         qData.options = Array.from(item.querySelectorAll('.opt-val')).map(i => i.value.trim());
+        if (qData.options.length < 2) throw new Error(`Question ${idx + 1} (MCQ) must have at least 2 options.`);
         if (qData.options.some(o => !o)) throw new Error(`Question ${idx + 1} has empty options.`);
         const checked = item.querySelector('input[type="radio"]:checked');
         if (!checked) throw new Error(`Question ${idx + 1} (MCQ) must have a correct answer selected.`);
+        const correctIdx = parseInt(checked.value);
+        if (isNaN(correctIdx) || correctIdx < 0 || correctIdx >= qData.options.length) {
+          throw new Error(`Question ${idx + 1} (MCQ) has an invalid correct answer selected.`);
+        }
         qData.correct = checked.value;
       } else if (type === 'tf') {
         qData.correct = item.querySelector('.q-correct').value;
+        if (qData.correct !== 'True' && qData.correct !== 'False') {
+          throw new Error(`Question ${idx + 1} (True/False) must have either 'True' or 'False' selected.`);
+        }
       } else {
         qData.correct = item.querySelector('.q-correct').value.trim();
         if (!qData.correct) throw new Error(`Question ${idx + 1} (Short Answer) requires a correct answer.`);
@@ -4652,11 +4669,11 @@ async function gradeQuizSubmission(submissionId, quizId) {
       <form id="quizGradingForm" class="mt-20">
         <div>
           ${quiz.questions.map((q, idx) => {
-            const studentAnswer = submission.answers[idx] || 'No Answer';
+            const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] !== undefined ? submission.answers[idx] : 'No Answer');
             const isAutoGraded = q.type !== 'short';
             const isCorrect = q.type === 'short' ?
-                (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-                (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+                (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+                (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
             const statusColor = isAutoGraded ? (isCorrect ? 'var(--ok)' : 'var(--danger)') : 'var(--warn)';
 
             let studentDisplay = studentAnswer;
@@ -4666,7 +4683,9 @@ async function gradeQuizSubmission(submissionId, quizId) {
               correctDisplay = q.options[q.correct] !== undefined ? q.options[q.correct] : q.correct;
             }
 
-            const manualScore = submission.analytics?.manual_scores?.[idx];
+            const manualScore = (q.id && submission.analytics?.manual_scores?.[q.id] !== undefined)
+                ? submission.analytics?.manual_scores?.[q.id]
+                : submission.analytics?.manual_scores?.[idx];
             const currentPoints = manualScore !== undefined ? manualScore : (isCorrect ? q.points : 0);
 
             return `
@@ -4686,7 +4705,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
                 ${!isAutoGraded ? `
                   <div class="mt-10 flex-center-y gap-10">
                     <label class="small m-0">Points Awarded (0-${q.points}):</label>
-                    <input type="number" class="q-manual-points w-auto m-0 p-5" data-q-idx="${idx}" min="0" max="${q.points}" value="${currentPoints}" style="width:80px">
+                    <input type="number" class="q-manual-points w-auto m-0 p-5" data-q-idx="${idx}" data-q-id="${q.id || ''}" min="0" max="${q.points}" value="${currentPoints}" style="width:80px">
                   </div>
                 ` : ''}
               </div>
@@ -4720,6 +4739,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
   const updateQuizFinalScore = () => {
     const manualScores = Array.from(document.querySelectorAll('.q-manual-points')).map(input => ({
       idx: parseInt(input.dataset.qIdx),
+      qId: input.dataset.qId,
       points: parseInt(input.value) || 0
     }));
 
@@ -4727,14 +4747,14 @@ async function gradeQuizSubmission(submissionId, quizId) {
     let totalPossible = 0;
     quiz.questions.forEach((q, idx) => {
       totalPossible += q.points;
-      const manual = manualScores.find(m => m.idx === idx);
+      const manual = manualScores.find(m => (q.id && m.qId === q.id) || m.idx === idx);
       if (manual) {
         earnedPoints += manual.points;
       } else {
-        const studentAnswer = submission.answers[idx] || '';
+        const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
         const isCorrect = q.type === 'short' ?
-            (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-            (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+            (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+            (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
         if (isCorrect) {
           earnedPoints += q.points;
         }
@@ -4763,7 +4783,11 @@ async function gradeQuizSubmission(submissionId, quizId) {
       const manualScoresMap = {};
       Array.from(document.querySelectorAll('.q-manual-points')).forEach(input => {
         const idx = parseInt(input.dataset.qIdx);
+        const qId = input.dataset.qId;
         const pts = parseInt(input.value) || 0;
+        if (qId) {
+          manualScoresMap[qId] = pts;
+        }
         manualScoresMap[idx] = pts;
       });
 
@@ -4772,14 +4796,14 @@ async function gradeQuizSubmission(submissionId, quizId) {
       let totalPossible = 0;
       quiz.questions.forEach((q, idx) => {
         totalPossible += q.points;
-        const manual = manualScoresMap[idx];
+        const manual = q.id ? manualScoresMap[q.id] : manualScoresMap[idx];
         if (manual !== undefined) {
           earnedPoints += manual;
         } else {
-          const studentAnswer = submission.answers[idx] || '';
+          const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
           const isCorrect = q.type === 'short' ?
-              (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-              (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
           if (isCorrect) {
             earnedPoints += q.points;
           }
