@@ -6,8 +6,14 @@ SET client_min_messages TO WARNING;
 SET client_min_messages TO NOTICE;
 
 -- Drop legacy/hidden lockout triggers to prevent runtime authentication errors
-DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE;
-DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'users') THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE';
+    EXECUTE 'DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE';
+  END IF;
+END $$;
+
 DROP FUNCTION IF EXISTS tr_protect_user_lockout() CASCADE;
 DROP FUNCTION IF EXISTS protect_user_lockout() CASCADE;
 DROP FUNCTION IF EXISTS user_lockout_protection() CASCADE;
@@ -201,6 +207,8 @@ BEGIN
     RETURN NEW;
 END;
 $$ language 'plpgsql' SECURITY DEFINER;
+
+
 
 -- Audit Logging Helper
 -- 1. Tables Creation (With all columns integrated)
@@ -742,6 +750,13 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 
 -- 2. Migrations for existing tables (Idempotent)
 
@@ -3919,11 +3934,6 @@ CREATE POLICY "Proctoring: Management" ON storage.objects FOR DELETE USING (
 );
 
 -- 23. System Settings Table
-CREATE TABLE IF NOT EXISTS system_settings (
-  key TEXT PRIMARY KEY,
-  value JSONB DEFAULT '{}'::jsonb,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
 
 -- Global proctoring control seed
 INSERT INTO system_settings (key, value)
