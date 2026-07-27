@@ -3631,7 +3631,9 @@ async function viewQuizResults(quizId, submissionId = null) {
               correctDisplay = q.correct;
           }
 
-          const isCorrect = studentAnswer?.toString().trim().toLowerCase() === q.correct.toString().trim().toLowerCase();
+          const isCorrect = q.type === 'short' ?
+              (studentAnswer?.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer?.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
           const statusColor = isCorrect ? 'var(--ok)' : 'var(--danger)';
 
           return `
