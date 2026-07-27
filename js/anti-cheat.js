@@ -132,9 +132,13 @@
          */
         async start() {
             if (this.state.isActive) return;
-            this.state.isActive = true;
-            this.state.startTime = Date.now();
-            this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
+
+            const webcam = this.config.PROCTORING_WEBCAM;
+            const screen = this.config.PROCTORING_SCREEN;
+            const audio = this.config.PROCTORING_AUDIO;
+            const face = this.config.PROCTORING_FACE_DETECTION;
+            const noise = this.config.PROCTORING_NOISE_DETECTION;
+            const hasProctoring = !!(webcam || screen || audio || face || noise);
 
             if (this.proctor) {
                 try {
@@ -153,6 +157,15 @@
                     }
                     throw new Error(friendlyMsg);
                 }
+            }
+
+            this.state.isActive = true;
+            this.state.startTime = Date.now();
+
+            if (hasProctoring) {
+                this.initTerminationListener();
+                this.initGlobalControlListener();
+                this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
             }
 
             this.emit('ASSESSMENT_STARTED', {
@@ -209,10 +222,6 @@
             this.initVisibilityDetection();
             this.initDevToolsDetection();
             await this.initProctoring();
-            this.initTerminationListener();
-            this.initGlobalControlListener();
-
-            this.logViolation('ASSESSMENT_SESSION_STARTED', { config: this.config }, { severity: 'INFO', score: 0 });
 
             if (this.config.DEBUG) console.log('Anti-Cheat: Initialized', { assessmentId, assessmentType, config: this.config });
         }
@@ -945,9 +954,21 @@
                 return;
             }
 
+            const webcam = this.config.PROCTORING_WEBCAM;
+            const screen = this.config.PROCTORING_SCREEN;
+            const audio = this.config.PROCTORING_AUDIO;
+            const face = this.config.PROCTORING_FACE_DETECTION;
+            const noise = this.config.PROCTORING_NOISE_DETECTION;
+            const hasProctoring = !!(webcam || screen || audio || face || noise);
+
             const duration = Date.now() - (this.state.startTime || Date.now());
-            this.logViolation('ASSESSMENT_SESSION_ENDED', { duration }, { severity: 'INFO', score: 0 });
-            this.emit('ASSESSMENT_STOPPED', { attemptId: this.state.attemptId, duration });
+
+            if (this.state.isActive) {
+                if (hasProctoring) {
+                    this.logViolation('ASSESSMENT_SESSION_ENDED', { duration }, { severity: 'INFO', score: 0 });
+                }
+                this.emit('ASSESSMENT_STOPPED', { attemptId: this.state.attemptId, duration });
+            }
 
             this.state.isActive = false;
 
