@@ -3789,7 +3789,25 @@ GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, postgres, se
 GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, postgres, service_role;
 
 -- 10. Realtime Cleanup
+-- 10. Realtime Setup
 DROP PUBLICATION IF EXISTS supabase_realtime;
+
+CREATE PUBLICATION supabase_realtime FOR TABLE
+    notifications,
+    broadcasts,
+    quiz_submissions,
+    violations,
+    system_settings,
+    discussions,
+    discussion_views;
+
+ALTER TABLE notifications REPLICA IDENTITY FULL;
+ALTER TABLE broadcasts REPLICA IDENTITY FULL;
+ALTER TABLE quiz_submissions REPLICA IDENTITY FULL;
+ALTER TABLE violations REPLICA IDENTITY FULL;
+ALTER TABLE system_settings REPLICA IDENTITY FULL;
+ALTER TABLE discussions REPLICA IDENTITY FULL;
+ALTER TABLE discussion_views REPLICA IDENTITY FULL;
 
 -- 11. Storage Initialization
 -- 11. Storage Initialization & Policies

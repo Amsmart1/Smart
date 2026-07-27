@@ -1606,7 +1606,19 @@ class SupabaseDB {
     static subscribeToDiscussions(courseId, callback) {
         if (!supabaseClient) return null;
 
-        const channelId = `discussions-${courseId}`;
+        // Cleanup any existing channels for this course discussion to prevent conflicts
+        try {
+            const channels = supabaseClient.getChannels();
+            channels.forEach(c => {
+                if (c.name === `discussions-${courseId}` || c.name.startsWith(`discussions-${courseId}-`)) {
+                    supabaseClient.removeChannel(c);
+                }
+            });
+        } catch (e) {
+            console.warn('Failed to cleanup prior discussion channels:', e);
+        }
+
+        const channelId = `discussions-${courseId}-${Math.random().toString(36).slice(2, 9)}`;
         const channel = supabaseClient.channel(channelId);
 
         channel
@@ -2579,6 +2591,15 @@ class SessionManager {
         // Purge memory cache to ensure no data leaks to the next session
         if (typeof SupabaseDB !== 'undefined' && SupabaseDB.invalidateCache) {
             SupabaseDB.invalidateCache();
+        }
+
+        // Detach and clean up all active Real-time channels to prevent socket leaks and memory build-up across sessions
+        if (supabaseClient) {
+            try {
+                supabaseClient.removeAllChannels();
+            } catch (e) {
+                console.warn('Failed to remove all realtime channels during session clearing:', e);
+            }
         }
     }
 
