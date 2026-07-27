@@ -4654,7 +4654,9 @@ async function gradeQuizSubmission(submissionId, quizId) {
           ${quiz.questions.map((q, idx) => {
             const studentAnswer = submission.answers[idx] || 'No Answer';
             const isAutoGraded = q.type !== 'short';
-            const isCorrect = isAutoGraded && studentAnswer.toString().toLowerCase() === q.correct.toString().toLowerCase();
+            const isCorrect = q.type === 'short' ?
+                (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+                (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
             const statusColor = isAutoGraded ? (isCorrect ? 'var(--ok)' : 'var(--danger)') : 'var(--warn)';
 
             let studentDisplay = studentAnswer;
@@ -4730,7 +4732,10 @@ async function gradeQuizSubmission(submissionId, quizId) {
         earnedPoints += manual.points;
       } else {
         const studentAnswer = submission.answers[idx] || '';
-        if (studentAnswer.toString().toLowerCase() === q.correct.toString().toLowerCase()) {
+        const isCorrect = q.type === 'short' ?
+            (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+            (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+        if (isCorrect) {
           earnedPoints += q.points;
         }
       }
@@ -4772,7 +4777,10 @@ async function gradeQuizSubmission(submissionId, quizId) {
           earnedPoints += manual;
         } else {
           const studentAnswer = submission.answers[idx] || '';
-          if (studentAnswer.toString().toLowerCase() === q.correct.toString().toLowerCase()) {
+          const isCorrect = q.type === 'short' ?
+              (studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+          if (isCorrect) {
             earnedPoints += q.points;
           }
         }
