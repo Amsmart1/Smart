@@ -67,6 +67,12 @@ self.addEventListener('activate', (event) => {
         ...keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
         self.clients.claim()
       ]);
+    }).then(async () => {
+      // Enable Navigation Preload if supported
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable();
+        console.log('[SW] Navigation preload enabled successfully.');
+      }
     })
   );
 });
@@ -104,29 +110,44 @@ self.addEventListener('fetch', (event) => {
 
   if (isHTML) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const copy = response.clone();
+      (async () => {
+        try {
+          // Utilize preloaded response if available
+          const preloadResponse = await event.preloadResponse;
+          if (preloadResponse) {
+            const copy = preloadResponse.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            return preloadResponse;
           }
-          return response;
-        })
-        .catch(async () => {
-          const cachedResponse = await caches.match(request);
-          if (cachedResponse) {
-            return cachedResponse;
-          }
-          const indexResponse = await caches.match('./index.html');
-          if (indexResponse) {
-            return indexResponse;
-          }
-          // Return a robust synthetic offline HTML to prevent respondWith(undefined) crash
-          return new Response(
-            "<!DOCTYPE html><html><head><title>Offline - SmartLMS</title></head><body><h1>Offline</h1><p>You are currently offline, and this page has not been cached.</p></body></html>",
-            { headers: { 'Content-Type': 'text/html' } }
-          );
-        })
+        } catch (err) {
+          console.warn('[SW] Preload response resolution failed:', err);
+        }
+
+        // Fallback to network fetch if preload isn't available/failed
+        return fetch(request)
+          .then((response) => {
+            if (response && response.status === 200) {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            }
+            return response;
+          })
+          .catch(async () => {
+            const cachedResponse = await caches.match(request);
+            if (cachedResponse) {
+              return cachedResponse;
+            }
+            const indexResponse = await caches.match('./index.html');
+            if (indexResponse) {
+              return indexResponse;
+            }
+            // Return a robust synthetic offline HTML to prevent respondWith(undefined) crash
+            return new Response(
+              "<!DOCTYPE html><html><head><title>Offline - SmartLMS</title></head><body><h1>Offline</h1><p>You are currently offline, and this page has not been cached.</p></body></html>",
+              { headers: { 'Content-Type': 'text/html' } }
+            );
+          });
+      })()
     );
     return;
   }
