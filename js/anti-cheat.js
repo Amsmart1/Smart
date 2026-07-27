@@ -220,8 +220,17 @@
         initTerminationListener() {
             if (!window.supabaseClient || !this.state.attemptId) return;
 
-            const channelId = `live-session-${this.state.attemptId}`;
-            this.terminationChannel = window.supabaseClient.channel(channelId)
+            if (this.terminationChannel) {
+                try {
+                    window.supabaseClient.removeChannel(this.terminationChannel);
+                } catch (e) {
+                    console.warn('Failed to clean up termination channel:', e);
+                }
+                this.terminationChannel = null;
+            }
+
+            const uniqueChannelId = `live-session-${this.state.attemptId}-${Math.random().toString(36).slice(2, 9)}`;
+            this.terminationChannel = window.supabaseClient.channel(uniqueChannelId)
                 .on('postgres_changes', {
                     event: 'INSERT',
                     schema: 'public',
@@ -260,7 +269,17 @@
         initGlobalControlListener() {
             if (!window.supabaseClient) return;
 
-            this.globalControlChannel = window.supabaseClient.channel('global-proctoring-control')
+            if (this.globalControlChannel) {
+                try {
+                    window.supabaseClient.removeChannel(this.globalControlChannel);
+                } catch (e) {
+                    console.warn('Failed to clean up global control channel:', e);
+                }
+                this.globalControlChannel = null;
+            }
+
+            const uniqueChannelId = `global-proctoring-control-${Math.random().toString(36).slice(2, 9)}`;
+            this.globalControlChannel = window.supabaseClient.channel(uniqueChannelId)
                 .on('postgres_changes', {
                     event: 'UPDATE',
                     schema: 'public',

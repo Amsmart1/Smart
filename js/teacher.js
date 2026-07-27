@@ -2906,8 +2906,21 @@ async function monitorLiveSession(attemptId, email) {
         // Initial fetch
         await fetchAndUpdate(false);
 
-        // Subscribe to live updates for THIS assessment attempt
-        const channel = window.supabaseClient.channel('monitor-' + attemptId)
+        // Cleanup any existing channels monitoring this attempt to prevent conflicts
+        try {
+            const channels = window.supabaseClient.getChannels();
+            channels.forEach(c => {
+                if (c.name === 'monitor-' + attemptId || c.name.startsWith('monitor-' + attemptId + '-')) {
+                    window.supabaseClient.removeChannel(c);
+                }
+            });
+        } catch (e) {
+            console.warn('Failed to cleanup prior monitor channels:', e);
+        }
+
+        // Subscribe to live updates for THIS assessment attempt using a randomized suffix
+        const monitorChannelId = 'monitor-' + attemptId + '-' + Math.random().toString(36).slice(2, 9);
+        const channel = window.supabaseClient.channel(monitorChannelId)
             .on('postgres_changes', {
                 event: 'INSERT',
                 schema: 'public',

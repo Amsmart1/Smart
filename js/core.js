@@ -1565,18 +1565,36 @@ const NotificationManager = {
         }
     },
 
+    _activeDbChannel: null,
+
     initRealtimeSubscriptions(email, role, onTableChange = null) {
         if (!window.supabaseClient) return;
 
-        const channelId = `${role}-db-changes`;
-
-        // Cleanup existing channel if re-initializing to prevent duplicate subscriptions
-        const existing = window.supabaseClient.getChannels().find(c => c.topic === `realtime:public:${channelId}` || c.name === channelId);
-        if (existing) {
-            window.supabaseClient.removeChannel(existing);
+        // Cleanup tracked active channel to prevent leaks
+        if (this._activeDbChannel) {
+            try {
+                window.supabaseClient.removeChannel(this._activeDbChannel);
+            } catch (e) {
+                console.warn('Failed to remove active channel:', e);
+            }
+            this._activeDbChannel = null;
         }
 
-        const channel = window.supabaseClient.channel(channelId);
+        // Cleanup any pre-existing or orphaned channels of same role to prevent duplicates
+        try {
+            const channels = window.supabaseClient.getChannels();
+            channels.forEach(c => {
+                if (c.name === `${role}-db-changes` || c.name.startsWith(`${role}-db-changes-`) || c.topic?.includes(role + '-db-changes')) {
+                    window.supabaseClient.removeChannel(c);
+                }
+            });
+        } catch (e) {
+            console.warn('Failed to clean up matching channels:', e);
+        }
+
+        const uniqueChannelId = `${role}-db-changes-${Math.random().toString(36).slice(2, 9)}`;
+        const channel = window.supabaseClient.channel(uniqueChannelId);
+        this._activeDbChannel = channel;
 
         // Always subscribe to personal notifications
         channel.on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_email=eq.${email}` }, () => {
