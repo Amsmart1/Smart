@@ -8,7 +8,7 @@ SET client_min_messages TO NOTICE;
 -- Drop legacy/hidden lockout triggers to prevent runtime authentication errors
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'users') THEN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users') THEN
     EXECUTE 'DROP TRIGGER IF EXISTS tr_user_lockout_protection ON users CASCADE';
     EXECUTE 'DROP TRIGGER IF EXISTS tr_protect_user_lockout ON users CASCADE';
   END IF;
