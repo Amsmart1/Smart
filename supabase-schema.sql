@@ -2957,8 +2957,18 @@ BEGIN
 
     FOR v_q IN SELECT * FROM jsonb_array_elements(v_quiz.questions)
     LOOP
-        v_total_points := v_total_points + (v_q->>'points')::INTEGER;
-        v_student_answer := p_answers->>(v_idx::TEXT);
+        v_total_points := v_total_points + COALESCE((v_q->>'points')::INTEGER, 0);
+
+        -- Safe JSONB checks for key lookups. Match by question id first, then fallback to index.
+        v_student_answer := NULL;
+        IF p_answers IS NOT NULL AND jsonb_typeof(p_answers) = 'object' THEN
+            IF v_q->>'id' IS NOT NULL AND p_answers ? (v_q->>'id') THEN
+                v_student_answer := p_answers->>(v_q->>'id');
+            ELSE
+                v_student_answer := p_answers->>(v_idx::TEXT);
+            END IF;
+        END IF;
+
         v_correct_answer := v_q->>'correct';
 
         IF v_student_answer IS NOT NULL AND (
@@ -2966,7 +2976,7 @@ BEGIN
             OR
             (v_q->>'type' != 'short' AND trim(lower(v_student_answer)) = trim(lower(v_correct_answer)))
         ) THEN
-            v_score := v_score + (v_q->>'points')::INTEGER;
+            v_score := v_score + COALESCE((v_q->>'points')::INTEGER, 0);
         END IF;
 
         v_idx := v_idx + 1;

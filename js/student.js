@@ -3256,14 +3256,16 @@ function renderQuizQuestion(index) {
         submitBtn.classList.add('hidden');
     }
 
-    const savedAnswer = StudentState.currentSubmission.answers[qIdx];
+    const savedAnswer = (q.id && StudentState.currentSubmission.answers[q.id] !== undefined)
+        ? StudentState.currentSubmission.answers[q.id]
+        : StudentState.currentSubmission.answers[qIdx];
     let inputHtml = '';
 
     if (q.type === 'mcq') {
         inputHtml = q.options.map((opt, i) => {
             const isChecked = savedAnswer !== undefined && savedAnswer.toString() === i.toString();
             return `
-                <div class="quiz-option-card ${isChecked ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, '${i}')"
+                <div class="quiz-option-card ${isChecked ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, '${i}', '${q.id || ''}')"
                      style="padding:16px 20px; border:1px solid ${isChecked ? '#4f46e5' : '#e2e8f0'}; border-radius:12px; cursor:pointer; display:flex; align-items:center; gap:15px; background:${isChecked ? '#f5f3ff' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
                     <div class="option-marker" style="width:32px; height:32px; border-radius:50%; background:${isChecked ? 'var(--purple)' : '#f1f5f9'}; color:${isChecked ? '#fff' : '#64748b'}; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.95rem; transition: all 0.2s;">${String.fromCharCode(65 + i)}</div>
                     <div class="option-text" style="flex:1; font-size:1rem; color: #1e293b; font-weight: 500;">${UI.renderRichText(opt)}</div>
@@ -3275,11 +3277,11 @@ function renderQuizQuestion(index) {
         const isFalse = savedAnswer === 'False';
         inputHtml = `
             <div class="grid-2 gap-15">
-                <div class="quiz-option-card ${isTrue ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'True')"
+                <div class="quiz-option-card ${isTrue ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'True', '${q.id || ''}')"
                      style="padding:24px; border:1px solid ${isTrue ? '#22c55e' : '#e2e8f0'}; border-radius:12px; cursor:pointer; text-align:center; background:${isTrue ? '#f0fdf4' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
                     <div class="option-text bold" style="font-size:1.1rem; color: ${isTrue ? '#166534' : '#1e293b'};">True</div>
                 </div>
-                <div class="quiz-option-card ${isFalse ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'False')"
+                <div class="quiz-option-card ${isFalse ? 'selected' : ''}" onclick="selectQuizOption(this, ${qIdx}, 'False', '${q.id || ''}')"
                      style="padding:24px; border:1px solid ${isFalse ? '#ef4444' : '#e2e8f0'}; border-radius:12px; cursor:pointer; text-align:center; background:${isFalse ? '#fef2f2' : '#fff'}; transition: all 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.01);">
                     <div class="option-text bold" style="font-size:1.1rem; color: ${isFalse ? '#991b1b' : '#1e293b'};">False</div>
                 </div>
@@ -3290,7 +3292,7 @@ function renderQuizQuestion(index) {
             <div class="mt-10">
                 <input type="text" class="input stylish-input" placeholder="Type your answer here..."
                     value="${savedAnswer || ''}"
-                    oninput="handleShortAnswer(this, ${qIdx})"
+                    oninput="handleShortAnswer(this, ${qIdx}, '${q.id || ''}')"
                     style="font-size: 1.1rem; padding: 16px 20px; border: 1.5px solid #cbd5e1; border-radius: 12px; width: 100%; outline: none; transition: all 0.2s; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);"
                     onfocus="this.style.borderColor='var(--purple)'; this.style.boxShadow='0 0 0 3px rgba(124, 58, 237, 0.1)'"
                     onblur="this.style.borderColor='#cbd5e1'; this.style.boxShadow='none'">
@@ -3312,7 +3314,7 @@ function renderQuizQuestion(index) {
     `;
 }
 
-function selectQuizOption(el, qIdx, value) {
+function selectQuizOption(el, qIdx, value, qId = null) {
     const indexAtClick = StudentState.currentQuestionIndex;
     const cards = el.parentElement.querySelectorAll('.quiz-option-card');
     cards.forEach(c => {
@@ -3351,6 +3353,9 @@ function selectQuizOption(el, qIdx, value) {
         if (marker) { marker.style.background = 'var(--purple)'; marker.style.color = '#fff'; }
     }
 
+    if (qId) {
+        StudentState.currentSubmission.answers[qId] = value;
+    }
     StudentState.currentSubmission.answers[qIdx] = value;
     autoSubmitQuiz();
 
@@ -3363,7 +3368,10 @@ function selectQuizOption(el, qIdx, value) {
     }
 }
 
-function handleShortAnswer(input, qIdx) {
+function handleShortAnswer(input, qIdx, qId = null) {
+    if (qId) {
+        StudentState.currentSubmission.answers[qId] = input.value;
+    }
     StudentState.currentSubmission.answers[qIdx] = input.value;
     autoSubmitQuiz();
 }
@@ -3619,21 +3627,21 @@ async function viewQuizResults(quizId, submissionId = null) {
 
       <div class="mt-20">
         ${quiz.questions.map((q, idx) => {
-          const studentAnswer = targetSub.answers[idx];
-          let studentDisplay = studentAnswer || 'No Answer';
+          const studentAnswer = (q.id && targetSub.answers[q.id] !== undefined) ? targetSub.answers[q.id] : targetSub.answers[idx];
+          let studentDisplay = studentAnswer !== undefined ? studentAnswer : 'No Answer';
           let correctDisplay = q.correct;
 
           if (q.type === 'mcq') {
-              studentDisplay = q.options[studentAnswer] !== undefined ? q.options[studentAnswer] : studentAnswer;
+              studentDisplay = (studentAnswer !== undefined && q.options[studentAnswer] !== undefined) ? q.options[studentAnswer] : (studentAnswer !== undefined ? studentAnswer : 'No Answer');
               correctDisplay = q.options[q.correct] !== undefined ? q.options[q.correct] : q.correct;
           } else if (q.type === 'tf') {
-              studentDisplay = studentAnswer;
+              studentDisplay = studentAnswer !== undefined ? studentAnswer : 'No Answer';
               correctDisplay = q.correct;
           }
 
           const isCorrect = q.type === 'short' ?
-              (studentAnswer?.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-              (studentAnswer?.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
           const statusColor = isCorrect ? 'var(--ok)' : 'var(--danger)';
 
           return `
