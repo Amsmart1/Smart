@@ -949,6 +949,9 @@ window.addEventListener('appinstalled', () => {
 });
 
 // Global notification system
+if (!window.__tabId) {
+    window.__tabId = 'tab_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 const NotificationManager = {
     _isUpdating: false,
     _updatePromise: Promise.resolve(),
@@ -1209,33 +1212,68 @@ const NotificationManager = {
                 let unalerted = notifications.filter(n => !n.is_read && !alertedIds.includes(n.id) && !this._alertedSessionIds.has(n.id));
 
                 if (unalerted.length > 0 && prefs.inApp) {
-                    // 2. Random stagger (50-150ms) to coordinate singleton delivery across tabs
-                    await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                    let newlyAlerted = [];
+                    for (const n of unalerted) {
+                        const claimKey = `notif_claim_${user.email}_${n.id}`;
 
-                    // 3. Re-filter after stagger to see if another tab claimed them
-                    unalerted = unalerted.filter(n => !this._alertedSessionIds.has(n.id));
-                    if (unalerted.length === 0) return;
+                        // Synchronous pre-check of localStorage
+                        const existing = localStorage.getItem(claimKey);
+                        if (existing) {
+                            try {
+                                const claim = JSON.parse(existing);
+                                if (claim.status === 'delivered') {
+                                    this._alertedSessionIds.add(n.id);
+                                    continue;
+                                }
+                                if (claim.status === 'claimed' && (Date.now() - claim.timestamp < 5000)) {
+                                    continue;
+                                }
+                            } catch (_) {}
+                        }
 
-                    // 4. Broadcast CLAIM immediately to other tabs
-                    if (this._channel) {
-                        this._channel.postMessage({ type: 'ALERT_CLAIMED', ids: unalerted.map(n => n.id) });
+                        // Try to claim
+                        const claimObj = { tabId: window.__tabId, timestamp: Date.now(), status: 'claimed' };
+                        localStorage.setItem(claimKey, JSON.stringify(claimObj));
+
+                        // Stagger delay to let other tabs settle and handle overlapping concurrent writes
+                        await new Promise(r => setTimeout(r, 50 + Math.random() * 50));
+
+                        // Read back claim to verify ownership
+                        const settledRaw = localStorage.getItem(claimKey);
+                        let settled = null;
+                        try {
+                            settled = settledRaw ? JSON.parse(settledRaw) : null;
+                        } catch (_) {}
+
+                        if (!settled || settled.tabId !== window.__tabId) {
+                            console.info(`[NotificationManager] [Singleton Tracker] [CLAIM_LOST] ID ${n.id} claimed by another tab. Skipping delivery in Tab ${window.__tabId}.`);
+                            this._alertedSessionIds.add(n.id);
+                            continue;
+                        }
+
+                        // Win! Update to delivered immediately
+                        localStorage.setItem(claimKey, JSON.stringify({ tabId: window.__tabId, timestamp: Date.now(), status: 'delivered' }));
+                        console.info(`[NotificationManager] [Singleton Tracker] [CLAIM_WON] ID ${n.id} won and delivered by Tab ${window.__tabId}.`);
+                        this._alertedSessionIds.add(n.id);
+                        newlyAlerted.push(n);
                     }
 
-                    // 5. Update local session-level Set immediately
-                    unalerted.forEach(n => this._alertedSessionIds.add(n.id));
+                    if (newlyAlerted.length > 0) {
+                        // Mark as alerted globally using atomic RPC
+                        const ids = newlyAlerted.map(n => n.id);
+                        await SupabaseDB.updateMetadataAtomic(user.email, 'alerted_ids', ids, 'append');
 
-                    // 6. Mark as alerted globally using atomic RPC
-                    const ids = unalerted.map(n => n.id);
-                    await SupabaseDB.updateMetadataAtomic(user.email, 'alerted_ids', ids, 'append');
+                        // Deliver actual browser and toast notifications
+                        newlyAlerted.forEach(n => {
+                            this.sendBrowserNotification(n.title, n.message);
+                            UI.showNotification(n.title, 'info');
+                        });
 
-                    unalerted.forEach(n => {
-                        this.sendBrowserNotification(n.title, n.message);
-                        UI.showNotification(n.title, 'info');
-                    });
-
-                    // 7. Final sync for UI consistency
-                    if (this._channel) {
-                        this._channel.postMessage({ type: 'ALERT_SHOWN', ids: unalerted.map(n => n.id) });
+                        // Broadcast CLAIMED & SHOWN to sync other tabs for UI consistency
+                        if (this._channel) {
+                            this._channel.postMessage({ type: 'ALERT_CLAIMED', ids });
+                            this._channel.postMessage({ type: 'ALERT_SHOWN', ids });
+                        }
                     }
                 }
             }
@@ -1458,6 +1496,27 @@ const NotificationManager = {
             }
         } catch (e) {
             console.warn('[NotificationManager] Metadata purge failed during init:', e);
+        }
+
+        // Clean up old notification/broadcast claims from localStorage (older than 7 days) to prevent bloat
+        try {
+            const keys = Object.keys(localStorage);
+            const now = Date.now();
+            keys.forEach(k => {
+                if (k.startsWith('notif_claim_')) {
+                    try {
+                        const raw = localStorage.getItem(k);
+                        if (raw) {
+                            const claim = JSON.parse(raw);
+                            if (claim && claim.timestamp && (now - claim.timestamp > 7 * 24 * 60 * 60 * 1000)) {
+                                localStorage.removeItem(k);
+                            }
+                        }
+                    } catch (_) {}
+                }
+            });
+        } catch (e) {
+            console.warn('[NotificationManager] Failed to clean up localStorage claims:', e);
         }
 
         if (this._channel) {
