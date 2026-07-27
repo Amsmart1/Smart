@@ -2972,7 +2972,7 @@ BEGIN
         v_correct_answer := v_q->>'correct';
 
         IF v_student_answer IS NOT NULL AND (
-            (v_q->>'type' = 'short' AND regexp_replace(trim(lower(v_student_answer)), '\s+', ' ', 'g') = regexp_replace(trim(lower(v_correct_answer)), '\s+', ' ', 'g'))
+            (v_q->>'type' = 'short' AND regexp_replace(trim(lower(v_student_answer)), '[[:space:]]+', ' ', 'g') = regexp_replace(trim(lower(v_correct_answer)), '[[:space:]]+', ' ', 'g'))
             OR
             (v_q->>'type' != 'short' AND trim(lower(v_student_answer)) = trim(lower(v_correct_answer)))
         ) THEN
@@ -3012,7 +3012,7 @@ BEGIN
             COALESCE(q.end_at, 'infinity'::timestamp with time zone)
         ) + INTERVAL '1 minute')
     LOOP
-        v_score_data := calculate_quiz_score(v_sub.quiz_id, v_sub.answers);
+        SELECT * INTO v_score_data FROM calculate_quiz_score(v_sub.quiz_id, v_sub.answers);
 
         UPDATE quiz_submissions SET
             status = 'submitted',
@@ -3135,7 +3135,7 @@ BEGIN
         v_final_time_spent := EXTRACT(EPOCH FROM (v_deadline - v_attempt.started_at))::INTEGER;
     END IF;
 
-    v_score_data := calculate_quiz_score(v_attempt.quiz_id, p_answers);
+    SELECT * INTO v_score_data FROM calculate_quiz_score(v_attempt.quiz_id, p_answers);
 
     -- Final update
     UPDATE quiz_submissions SET

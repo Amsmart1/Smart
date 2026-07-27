@@ -3640,8 +3640,8 @@ async function viewQuizResults(quizId, submissionId = null) {
           }
 
           const isCorrect = q.type === 'short' ?
-              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === q.correct?.toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
-              (studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === q.correct?.toString().trim().toLowerCase());
+              (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
+              (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
           const statusColor = isCorrect ? 'var(--ok)' : 'var(--danger)';
 
           return `
