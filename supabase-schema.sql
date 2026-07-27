@@ -2931,6 +2931,7 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 -- 7c. Quiz Authoritative Logic RPCs
 
 -- Helper for centralized scoring
+DROP FUNCTION IF EXISTS calculate_quiz_score(UUID, JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION calculate_quiz_score(
     p_quiz_id UUID,
     p_answers JSONB,
