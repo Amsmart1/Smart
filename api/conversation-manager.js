@@ -463,6 +463,25 @@ function runResponseQualityGuard(response, context = 'kofi') {
 
   let cleaned = response;
 
+  // Extract and preserve math formulas before any standard markdown/quality-guard formatting
+  const mathPlaceholders = [];
+  const blockMathRegex = /\$\$\s*([\s\S]+?)\s*\$\$/g;
+  const inlineMathRegex = /\$((?!\$)[^\$ \n][^\$]*?[^\$ \n])\$|\$([^\$ \n])\$/g;
+
+  // Extract display block math
+  cleaned = cleaned.replace(blockMathRegex, (match, formula) => {
+    const idx = mathPlaceholders.length;
+    mathPlaceholders.push({ isBlock: true, raw: match });
+    return `___MATH_PLACEHOLDER_${idx}___`;
+  });
+
+  // Extract inline math
+  cleaned = cleaned.replace(inlineMathRegex, (match, formula1, formula2) => {
+    const idx = mathPlaceholders.length;
+    mathPlaceholders.push({ isBlock: false, raw: match });
+    return `___MATH_PLACEHOLDER_${idx}___`;
+  });
+
   const leakWords = [
     "You are a professional academic tutor",
     "Key Tutoring Principles:",
@@ -568,6 +587,11 @@ function runResponseQualityGuard(response, context = 'kofi') {
   }
 
   cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+
+  // Restore preserved math formulas verbatim
+  for (let i = 0; i < mathPlaceholders.length; i++) {
+    cleaned = cleaned.replace(`___MATH_PLACEHOLDER_${i}___`, mathPlaceholders[i].raw);
+  }
 
   return cleaned.trim();
 }
