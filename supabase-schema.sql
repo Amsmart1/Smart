@@ -3000,7 +3000,7 @@ BEGIN
     score := CASE WHEN v_total_points > 0 THEN ROUND((v_score::FLOAT / v_total_points::FLOAT) * 100) ELSE 0 END;
     total_points := v_total_points;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 -- RPC for reconciling expired attempts
 -- Optimized to identification and finalize only strictly expired attempts using set-based logic
@@ -3133,6 +3133,10 @@ BEGIN
     FROM quizzes q
     JOIN courses c ON q.course_id = c.id
     WHERE q.id = v_attempt.quiz_id;
+
+    IF NOT FOUND OR v_quiz.id IS NULL THEN
+        RAISE EXCEPTION 'Quiz not found';
+    END IF;
 
     IF v_quiz.status != 'published' OR v_quiz.course_status != 'published' THEN
         RAISE EXCEPTION 'This quiz is no longer available.';
