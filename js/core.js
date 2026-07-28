@@ -406,7 +406,7 @@ const UI = {
                         : `<span class="math-fallback" style="${fallbackStyles}">\\( ${unescapedFormula} \\)</span>`;
                 }
 
-                html = html.replace(`%%%MATHPLACEHOLDER${i}%%%`, renderedHtml);
+                html = html.replace(`%%%MATHPLACEHOLDER${i}%%%`, () => renderedHtml);
             }
         }
 

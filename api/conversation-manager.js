@@ -557,11 +557,11 @@ function runResponseQualityGuard(response, context = 'kofi') {
   cleaned = cleaned.replace(/___ELLIPSIS_PLACEHOLDER___/g, "...");
 
   for (let i = 0; i < decimalPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, decimalPlaceholders[i]);
+    cleaned = cleaned.replace(`___DECIMAL_PLACEHOLDER_${i}___`, () => decimalPlaceholders[i]);
   }
 
   for (let i = 0; i < urlPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, urlPlaceholders[i]);
+    cleaned = cleaned.replace(`___URL_PLACEHOLDER_${i}___`, () => urlPlaceholders[i]);
   }
 
   cleaned = cleaned.replace(/(?<=[.!?]\s+|^)[a-z]/g, (match) => match.toUpperCase());
@@ -590,7 +590,7 @@ function runResponseQualityGuard(response, context = 'kofi') {
 
   // Restore preserved math formulas verbatim
   for (let i = 0; i < mathPlaceholders.length; i++) {
-    cleaned = cleaned.replace(`___MATH_PLACEHOLDER_${i}___`, mathPlaceholders[i].raw);
+    cleaned = cleaned.replace(`___MATH_PLACEHOLDER_${i}___`, () => mathPlaceholders[i].raw);
   }
 
   return cleaned.trim();
