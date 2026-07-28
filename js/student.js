@@ -3639,19 +3639,26 @@ async function viewQuizResults(quizId, submissionId = null) {
               correctDisplay = q.correct;
           }
 
+          const manualScore = (q.id && targetSub.analytics?.manual_scores?.[q.id] !== undefined)
+              ? targetSub.analytics?.manual_scores?.[q.id]
+              : targetSub.analytics?.manual_scores?.[idx];
+
           const isCorrect = q.type === 'short' ?
               (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
               (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
-          const statusColor = isCorrect ? 'var(--ok)' : 'var(--danger)';
+
+          const earnedPoints = manualScore !== undefined ? manualScore : (isCorrect ? q.points : 0);
+          const displayCorrect = manualScore !== undefined ? (manualScore > 0) : isCorrect;
+          const statusColor = displayCorrect ? 'var(--ok)' : 'var(--danger)';
 
           return `
             <div class="question" style="border-left: 5px solid ${statusColor}">
               <div class="flex-between">
                 <div class="bold">Q${idx + 1}: ${UI.renderRichText(q.text)}</div>
-                <div class="badge ${isCorrect ? 'badge-active' : 'badge-warn'}">${isCorrect ? q.points : 0} / ${q.points} pts</div>
+                <div class="badge ${displayCorrect ? 'badge-active' : 'badge-warn'}">${earnedPoints} / ${q.points} pts</div>
               </div>
               <div class="small mt-10">Your Answer: <span class="bold">${UI.renderRichText(studentDisplay)}</span></div>
-              ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
+              ${!displayCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
               ${q.explanation ? `<div class="small mt-10 p-10" style="background:var(--light); border-radius:4px; font-style:italic">📖 Explanation: ${UI.renderRichText(q.explanation)}</div>` : ''}
             </div>
           `;

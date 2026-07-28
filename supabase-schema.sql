@@ -2947,9 +2947,11 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 -- Helper for centralized scoring
 DROP FUNCTION IF EXISTS calculate_quiz_score(UUID, JSONB) CASCADE;
+DROP FUNCTION IF EXISTS calculate_quiz_score(UUID, JSONB, JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION calculate_quiz_score(
     p_quiz_id UUID,
     p_answers JSONB,
+    p_analytics JSONB DEFAULT NULL,
     OUT score INTEGER,
     OUT total_points INTEGER
 )
@@ -2962,6 +2964,7 @@ DECLARE
     v_idx INTEGER := 0;
     v_student_answer TEXT;
     v_correct_answer TEXT;
+    v_manual_pts INTEGER;
 BEGIN
     SELECT * INTO v_quiz FROM quizzes WHERE id = p_quiz_id;
     IF NOT FOUND THEN
@@ -2974,24 +2977,40 @@ BEGIN
     LOOP
         v_total_points := v_total_points + COALESCE((v_q->>'points')::INTEGER, 0);
 
-        -- Safe JSONB checks for key lookups. Match by question id first, then fallback to index.
-        v_student_answer := NULL;
-        IF p_answers IS NOT NULL AND jsonb_typeof(p_answers) = 'object' THEN
-            IF v_q->>'id' IS NOT NULL AND p_answers ? (v_q->>'id') THEN
-                v_student_answer := p_answers->>(v_q->>'id');
-            ELSE
-                v_student_answer := p_answers->>(v_idx::TEXT);
+        -- Check manual_scores in p_analytics first
+        v_manual_pts := NULL;
+        IF p_analytics IS NOT NULL AND jsonb_typeof(p_analytics) = 'object' AND p_analytics->'manual_scores' IS NOT NULL AND jsonb_typeof(p_analytics->'manual_scores') = 'object' THEN
+            -- Try question id first
+            IF v_q->>'id' IS NOT NULL AND p_analytics->'manual_scores' ? (v_q->>'id') THEN
+                v_manual_pts := (p_analytics->'manual_scores'->>(v_q->>'id'))::INTEGER;
+            -- Try index fallback
+            ELSIF p_analytics->'manual_scores' ? (v_idx::TEXT) THEN
+                v_manual_pts := (p_analytics->'manual_scores'->>(v_idx::TEXT))::INTEGER;
             END IF;
         END IF;
 
-        v_correct_answer := v_q->>'correct';
+        IF v_manual_pts IS NOT NULL THEN
+            v_score := v_score + v_manual_pts;
+        ELSE
+            -- Safe JSONB checks for key lookups. Match by question id first, then fallback to index.
+            v_student_answer := NULL;
+            IF p_answers IS NOT NULL AND jsonb_typeof(p_answers) = 'object' THEN
+                IF v_q->>'id' IS NOT NULL AND p_answers ? (v_q->>'id') THEN
+                    v_student_answer := p_answers->>(v_q->>'id');
+                ELSE
+                    v_student_answer := p_answers->>(v_idx::TEXT);
+                END IF;
+            END IF;
 
-        IF v_student_answer IS NOT NULL AND (
-            (v_q->>'type' = 'short' AND regexp_replace(trim(lower(v_student_answer)), '[[:space:]]+', ' ', 'g') = regexp_replace(trim(lower(v_correct_answer)), '[[:space:]]+', ' ', 'g'))
-            OR
-            (v_q->>'type' != 'short' AND trim(lower(v_student_answer)) = trim(lower(v_correct_answer)))
-        ) THEN
-            v_score := v_score + COALESCE((v_q->>'points')::INTEGER, 0);
+            v_correct_answer := v_q->>'correct';
+
+            IF v_student_answer IS NOT NULL AND (
+                (v_q->>'type' = 'short' AND regexp_replace(trim(lower(v_student_answer)), '[[:space:]]+', ' ', 'g') = regexp_replace(trim(lower(v_correct_answer)), '[[:space:]]+', ' ', 'g'))
+                OR
+                (v_q->>'type' != 'short' AND trim(lower(v_student_answer)) = trim(lower(v_correct_answer)))
+            ) THEN
+                v_score := v_score + COALESCE((v_q->>'points')::INTEGER, 0);
+            END IF;
         END IF;
 
         v_idx := v_idx + 1;
@@ -3011,7 +3030,7 @@ DECLARE
     v_score_data RECORD;
 BEGIN
     FOR v_sub IN
-        SELECT qs.id, qs.quiz_id, qs.answers, qs.started_at,
+        SELECT qs.id, qs.quiz_id, qs.answers, qs.analytics, qs.started_at,
                LEAST(
                    COALESCE(qs.started_at + (q.time_limit * INTERVAL '1 minute'), 'infinity'::timestamp with time zone),
                    COALESCE(q.end_at, 'infinity'::timestamp with time zone)
@@ -3027,7 +3046,7 @@ BEGIN
             COALESCE(q.end_at, 'infinity'::timestamp with time zone)
         ) + INTERVAL '1 minute')
     LOOP
-        SELECT * INTO v_score_data FROM calculate_quiz_score(v_sub.quiz_id, v_sub.answers);
+        SELECT * INTO v_score_data FROM calculate_quiz_score(v_sub.quiz_id, v_sub.answers, v_sub.analytics);
 
         UPDATE quiz_submissions SET
             status = 'submitted',
@@ -3150,7 +3169,7 @@ BEGIN
         v_final_time_spent := EXTRACT(EPOCH FROM (v_deadline - v_attempt.started_at))::INTEGER;
     END IF;
 
-    SELECT * INTO v_score_data FROM calculate_quiz_score(v_attempt.quiz_id, p_answers);
+    SELECT * INTO v_score_data FROM calculate_quiz_score(v_attempt.quiz_id, p_answers, v_attempt.analytics);
 
     -- Final update
     UPDATE quiz_submissions SET
