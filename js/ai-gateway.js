@@ -586,7 +586,7 @@ class AIManager {
 
         // 7. Restore placeholders
         for (let i = 0; i < placeholders.length; i++) {
-            temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, placeholders[i]);
+            temp = temp.replace(`%%%PLACEHOLDER${i}%%%`, () => placeholders[i]);
         }
 
         // 8. Render and restore math placeholders
@@ -625,7 +625,7 @@ class AIManager {
                     : `<span class="math-fallback" style="${fallbackStyles}">\\( ${unescapedFormula} \\)</span>`;
             }
 
-            temp = temp.replace(`%%%MATHPLACEHOLDER${i}%%%`, renderedHtml);
+            temp = temp.replace(`%%%MATHPLACEHOLDER${i}%%%`, () => renderedHtml);
         }
 
         return temp;
