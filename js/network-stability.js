@@ -9,6 +9,11 @@
 
 class NetworkStabilityEngine {
     constructor() {
+        if (NetworkStabilityEngine.instance) {
+            return NetworkStabilityEngine.instance;
+        }
+        NetworkStabilityEngine.instance = this;
+
         this.status = '🟢 Online'; // Default legacy status for backward compatibility
         this.connectionStatus = navigator.onLine ? "Online" : "Offline"; // Simple internet connection status
         this.stabilityStatus = this.connectionStatus === "Offline" ? "Unknown" : "Stable"; // Separated network stability status
@@ -25,18 +30,29 @@ class NetworkStabilityEngine {
         this.activeController = null;
         this.activeTimeoutId = null;
 
+        this.initialized = false;
+
         // Bind handlers as non-anonymous class members to enable complete and clean memory cleanup
         this.boundOnlineHandler = () => this.handleConnectionChange(true);
         this.boundOfflineHandler = () => this.handleConnectionChange(false);
         this.boundDOMContentLoadedHandler = () => this.renderUI();
+        this.boundVisibilityChangeHandler = () => {
+            if (document.visibilityState === 'visible') {
+                this.runProbe();
+            }
+        };
 
         this.init();
     }
 
     init() {
+        if (this.initialized) return;
+        this.initialized = true;
+
         // Track disconnects via window events
         window.addEventListener('online', this.boundOnlineHandler);
         window.addEventListener('offline', this.boundOfflineHandler);
+        document.addEventListener('visibilitychange', this.boundVisibilityChangeHandler);
 
         // Start periodic active probing
         this.runProbe();
@@ -61,6 +77,8 @@ class NetworkStabilityEngine {
         } else {
             // Clears probes when transitioning back online to avoid misleading packet loss metrics from offline period
             this.probes = [];
+            // Trigger an immediate probe to refresh status without waiting up to 10 seconds
+            this.runProbe();
         }
         this.evaluateStatus();
     }
@@ -92,12 +110,14 @@ class NetworkStabilityEngine {
             this.activeTimeoutId = null;
         }
 
-        const controller = new AbortController();
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
         this.activeController = controller;
         const timeoutId = setTimeout(() => {
-            try {
-                controller.abort();
-            } catch (e) {}
+            if (controller) {
+                try {
+                    controller.abort();
+                } catch (e) {}
+            }
         }, this.probeTimeoutMs);
         this.activeTimeoutId = timeoutId;
 
@@ -108,7 +128,7 @@ class NetworkStabilityEngine {
             // Using HEAD request is lighter than GET, fallback to GET if HEAD is not allowed
             const response = await fetch(`${window.location.origin}/favicon.ico?_cb=${cacheBuster}`, {
                 method: 'HEAD',
-                signal: controller.signal,
+                signal: controller ? controller.signal : undefined,
                 cache: 'no-store',
                 mode: 'same-origin'
             });
@@ -133,24 +153,29 @@ class NetworkStabilityEngine {
                 this.activeController = null;
             }
 
-            // If we were destroyed, stop executing
+            // If we were destroyed or a newer probe started, stop executing
             if (!this.boundOnlineHandler) return;
+            if (this.activeController !== controller) {
+                return;
+            }
 
             let altTimeoutId;
             try {
-                const altController = new AbortController();
+                const altController = typeof AbortController !== 'undefined' ? new AbortController() : null;
                 this.activeController = altController;
                 altTimeoutId = setTimeout(() => {
-                    try {
-                        altController.abort();
-                    } catch (e) {}
+                    if (altController) {
+                        try {
+                            altController.abort();
+                        } catch (e) {}
+                    }
                 }, this.probeTimeoutMs);
                 this.activeTimeoutId = altTimeoutId;
                 const altStartTime = performance.now();
 
                 const response = await fetch(`${window.location.origin}/favicon.ico?_cb=${cacheBuster}`, {
                     method: 'GET',
-                    signal: altController.signal,
+                    signal: altController ? altController.signal : undefined,
                     cache: 'no-store',
                     mode: 'same-origin'
                 });
@@ -160,6 +185,10 @@ class NetworkStabilityEngine {
                     this.activeTimeoutId = null;
                     this.activeController = null;
                 }
+
+                // If we were destroyed or a newer probe took over during fetch, abort recording
+                if (!this.boundOnlineHandler) return;
+                if (this.activeController !== altController) return;
 
                 const wasOnline = navigator.onLine;
                 const altEndTime = performance.now();
@@ -173,8 +202,11 @@ class NetworkStabilityEngine {
                     this.activeController = null;
                 }
 
-                // If we were destroyed, stop executing
+                // If we were destroyed or a newer probe took over, stop executing
                 if (!this.boundOnlineHandler) return;
+                if (this.activeController !== altController) {
+                    return;
+                }
 
                 const wasOnline = navigator.onLine;
                 // Genuinely failed to reach server
@@ -231,7 +263,8 @@ class NetworkStabilityEngine {
 
         // Transition check: clear probes on reconnection
         if (previousConnectionStatus === "Offline" && this.connectionStatus === "Online") {
-            this.probes = [];
+            // Preserve the successful probe that triggered the recovery by filtering out failed probes
+            this.probes = this.probes.filter(p => p.success);
             // Re-evaluate stability status with clean probes
             this.stabilityStatus = this.evaluateNetworkStability();
         }
@@ -389,8 +422,28 @@ class NetworkStabilityEngine {
         };
     }
 
+    cacheUIElements() {
+        if (!this.containerElement) return;
+        this.uiElements = {
+            dot: this.containerElement.querySelector(".network-indicator-dot"),
+            text: this.containerElement.querySelector(".network-indicator-text"),
+            tooltipBadge: this.containerElement.querySelector(".network-indicator-badge"),
+            latency: this.containerElement.querySelector("#net-val-latency"),
+            jitter: this.containerElement.querySelector("#net-val-jitter"),
+            loss: this.containerElement.querySelector("#net-val-loss"),
+            bandwidth: this.containerElement.querySelector("#net-val-bandwidth"),
+            disconnects: this.containerElement.querySelector("#net-val-disconnects"),
+            desc: this.containerElement.querySelector("#net-val-desc")
+        };
+    }
+
     renderUI() {
         if (this.containerElement) return;
+
+        if (!document.body) {
+            setTimeout(() => this.renderUI(), 100);
+            return;
+        }
 
         // Injected Styles
         const styles = `
@@ -472,10 +525,27 @@ class NetworkStabilityEngine {
                 z-index: 10002;
                 border: 1px solid #1e293b;
             }
-            .network-indicator-container:hover .network-tooltip {
+            .network-indicator-container:hover .network-tooltip,
+            .network-indicator-container:focus-within .network-tooltip,
+            .network-indicator-container.tooltip-visible .network-tooltip {
                 opacity: 1;
                 visibility: visible;
                 transform: translateY(0);
+            }
+
+            @media (max-width: 640px) {
+                .network-indicator-container {
+                    bottom: 10px;
+                    left: 10px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                }
+                .network-tooltip {
+                    width: 200px;
+                    padding: 10px;
+                    bottom: calc(100% + 8px);
+                    left: 0;
+                }
             }
             .network-tooltip-title {
                 font-weight: 700;
@@ -508,42 +578,88 @@ class NetworkStabilityEngine {
             }
         `;
 
-        const styleSheet = document.createElement("style");
-        styleSheet.id = "network-stability-styles";
-        styleSheet.innerText = styles;
-        document.head.appendChild(styleSheet);
+        if (!document.getElementById("network-stability-styles")) {
+            const styleSheet = document.createElement("style");
+            styleSheet.id = "network-stability-styles";
+            styleSheet.innerText = styles;
+            document.head.appendChild(styleSheet);
+        }
 
         // Container element
-        this.containerElement = document.createElement("div");
-        this.containerElement.className = "network-indicator-container";
-        this.containerElement.innerHTML = `
-            <span class="network-indicator-dot dot-green"></span>
-            <span class="network-indicator-text">Online</span>
-            <div class="network-tooltip">
-                <div class="network-tooltip-title">
-                    <span>Network Health</span>
-                    <span class="network-indicator-badge">🟢</span>
+        let existingContainer = document.querySelector(".network-indicator-container");
+        if (existingContainer) {
+            this.containerElement = existingContainer;
+        } else {
+            this.containerElement = document.createElement("div");
+            this.containerElement.className = "network-indicator-container";
+            this.containerElement.setAttribute("role", "button");
+            this.containerElement.setAttribute("tabindex", "0");
+            this.containerElement.setAttribute("aria-haspopup", "true");
+            this.containerElement.setAttribute("aria-expanded", "false");
+            this.containerElement.innerHTML = `
+                <span class="network-indicator-dot dot-green"></span>
+                <span class="network-indicator-text">Online</span>
+                <div class="network-tooltip">
+                    <div class="network-tooltip-title">
+                        <span>Network Health</span>
+                        <span class="network-indicator-badge">🟢</span>
+                    </div>
+                    <div class="network-tooltip-row"><span>Latency:</span><span id="net-val-latency">--</span></div>
+                    <div class="network-tooltip-row"><span>Jitter:</span><span id="net-val-jitter">--</span></div>
+                    <div class="network-tooltip-row"><span>Packet Loss:</span><span id="net-val-loss">--</span></div>
+                    <div class="network-tooltip-row"><span>Bandwidth:</span><span id="net-val-bandwidth">--</span></div>
+                    <div class="network-tooltip-row"><span>Disconnects (2m):</span><span id="net-val-disconnects">--</span></div>
+                    <div class="network-tooltip-desc" id="net-val-desc">Initializing network engine diagnostics...</div>
                 </div>
-                <div class="network-tooltip-row"><span>Latency:</span><span id="net-val-latency">--</span></div>
-                <div class="network-tooltip-row"><span>Jitter:</span><span id="net-val-jitter">--</span></div>
-                <div class="network-tooltip-row"><span>Packet Loss:</span><span id="net-val-loss">--</span></div>
-                <div class="network-tooltip-row"><span>Bandwidth:</span><span id="net-val-bandwidth">--</span></div>
-                <div class="network-tooltip-row"><span>Disconnects (2m):</span><span id="net-val-disconnects">--</span></div>
-                <div class="network-tooltip-desc" id="net-val-desc">Initializing network engine diagnostics...</div>
-            </div>
-        `;
+            `;
+            document.body.appendChild(this.containerElement);
+        }
 
-        document.body.appendChild(this.containerElement);
+        // Setup Keyboard and Focus Accessibility
+        this.boundFocusHandler = () => {
+            if (this.containerElement) {
+                this.containerElement.setAttribute("aria-expanded", "true");
+            }
+        };
+        this.boundBlurHandler = () => {
+            if (this.containerElement) {
+                this.containerElement.setAttribute("aria-expanded", "false");
+                this.containerElement.classList.remove("tooltip-visible");
+            }
+        };
+        this.boundKeydownHandler = (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                if (this.containerElement) {
+                    const isVisible = this.containerElement.classList.toggle("tooltip-visible");
+                    this.containerElement.setAttribute("aria-expanded", isVisible ? "true" : "false");
+                }
+            } else if (e.key === "Escape") {
+                if (this.containerElement) {
+                    this.containerElement.classList.remove("tooltip-visible");
+                    this.containerElement.setAttribute("aria-expanded", "false");
+                    this.containerElement.blur();
+                }
+            }
+        };
+
+        this.containerElement.addEventListener('focus', this.boundFocusHandler);
+        this.containerElement.addEventListener('blur', this.boundBlurHandler);
+        this.containerElement.addEventListener('keydown', this.boundKeydownHandler);
+
+        this.cacheUIElements();
         this.updateUI();
     }
 
     updateUI() {
         if (!this.containerElement) return;
+        if (!this.uiElements) {
+            this.cacheUIElements();
+        }
+        const els = this.uiElements;
+        if (!els || !els.dot) return;
 
         const details = this.getDetails();
-        const dot = this.containerElement.querySelector(".network-indicator-dot");
-        const text = this.containerElement.querySelector(".network-indicator-text");
-        const tooltipBadge = this.containerElement.querySelector(".network-indicator-badge");
 
         // UI status text overrides
         let dotClass = "dot-green";
@@ -565,17 +681,21 @@ class NetworkStabilityEngine {
         }
 
         // Apply dot class
-        dot.className = `network-indicator-dot ${dotClass}`;
-        text.textContent = statusLabel;
-        tooltipBadge.textContent = this.status.split(" ")[0]; // emoji only
+        els.dot.className = `network-indicator-dot ${dotClass}`;
+        els.text.textContent = statusLabel;
+        els.tooltipBadge.textContent = this.status.split(" ")[0]; // emoji only
+
+        // Update accessibility label
+        const ariaText = `Network Status: ${statusLabel}. Latency: ${details.navigatorOnLine ? details.latency + " ms" : "N/A"}. Packet Loss: ${details.packetLoss}%. Description: ${desc}`;
+        this.containerElement.setAttribute("aria-label", ariaText);
 
         // Update tooltip rows
-        this.containerElement.querySelector("#net-val-latency").textContent = details.navigatorOnLine ? `${details.latency} ms` : "N/A";
-        this.containerElement.querySelector("#net-val-jitter").textContent = details.navigatorOnLine ? `${details.jitter} ms` : "N/A";
-        this.containerElement.querySelector("#net-val-loss").textContent = `${details.packetLoss}%`;
-        this.containerElement.querySelector("#net-val-bandwidth").textContent = typeof details.bandwidth === "number" ? `${details.bandwidth} Mbps` : details.bandwidth;
-        this.containerElement.querySelector("#net-val-disconnects").textContent = details.disconnects;
-        this.containerElement.querySelector("#net-val-desc").textContent = desc;
+        els.latency.textContent = details.navigatorOnLine ? `${details.latency} ms` : "N/A";
+        els.jitter.textContent = details.navigatorOnLine ? `${details.jitter} ms` : "N/A";
+        els.loss.textContent = `${details.packetLoss}%`;
+        els.bandwidth.textContent = typeof details.bandwidth === "number" ? `${details.bandwidth} Mbps` : details.bandwidth;
+        els.disconnects.textContent = details.disconnects;
+        els.desc.textContent = desc;
     }
 
     /**
@@ -602,11 +722,22 @@ class NetworkStabilityEngine {
         window.removeEventListener('online', this.boundOnlineHandler);
         window.removeEventListener('offline', this.boundOfflineHandler);
         document.removeEventListener('DOMContentLoaded', this.boundDOMContentLoadedHandler);
+        document.removeEventListener('visibilitychange', this.boundVisibilityChangeHandler);
 
         // Mark handlers as null to indicate destroyed state
         this.boundOnlineHandler = null;
         this.boundOfflineHandler = null;
         this.boundDOMContentLoadedHandler = null;
+        this.boundVisibilityChangeHandler = null;
+
+        if (this.containerElement) {
+            this.containerElement.removeEventListener('focus', this.boundFocusHandler);
+            this.containerElement.removeEventListener('blur', this.boundBlurHandler);
+            this.containerElement.removeEventListener('keydown', this.boundKeydownHandler);
+        }
+        this.boundFocusHandler = null;
+        this.boundBlurHandler = null;
+        this.boundKeydownHandler = null;
 
         // 3. Remove injected CSS stylesheet and HTML element from DOM
         const styleSheet = document.getElementById("network-stability-styles");
@@ -622,6 +753,22 @@ class NetworkStabilityEngine {
         this.listeners.clear();
         this.probes = [];
         this.disconnects = [];
+        this.uiElements = null;
+
+        // Reset singleton references and initialization flag
+        if (NetworkStabilityEngine.instance === this) {
+            NetworkStabilityEngine.instance = null;
+        }
+        this.initialized = false;
+    }
+}
+
+// Clean up any existing global instance before creating a new one
+if (window.NetworkStabilityEngine) {
+    try {
+        window.NetworkStabilityEngine.destroy();
+    } catch (e) {
+        console.error('[NetworkStabilityEngine] Cleanup error during re-instantiation:', e);
     }
 }
 
