@@ -2564,8 +2564,18 @@ class SessionManager {
         const user = await this.getCurrentUser();
         if (reason && user) {
             try {
-                // Optimization: Use locally available user data and avoid redundant getUser/saveUser overhead
-                const newMetadata = { ...(user.metadata || {}), last_invalidation_reason: reason };
+                let freshMetadata = user.metadata || {};
+                try {
+                    // Fetch the absolute freshest user metadata from the database to avoid overwriting updates from the session
+                    const freshUser = await SupabaseDB.getUser(user.email, true);
+                    if (freshUser && freshUser.metadata) {
+                        freshMetadata = freshUser.metadata;
+                    }
+                } catch (err) {
+                    console.warn('[SessionManager] Failed to fetch fresh user metadata, falling back to local metadata:', err);
+                }
+
+                const newMetadata = { ...freshMetadata, last_invalidation_reason: reason };
                 const newSid = 'invalidated_' + Date.now() + '_' + reason;
 
                 // Update server-side session state in parallel to minimize network delay
