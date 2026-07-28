@@ -590,6 +590,8 @@ Key Grounding Rules:
 - Quote or reference the specific lesson, topic, or material used.
 - Require direct citations (e.g. "[Lesson: Lesson Title]" or "[Material: PDF Title]") to the lesson/material used in your answer.
 - If the retrieved evidence is insufficient to answer the question, or if the question lies outside the course boundary, strictly refuse to answer. Do not use general knowledge to fill in gaps.
+- Always format mathematical equations, scientific formulas, or notations strictly in standard LaTeX/KaTeX delimiters: use $$ for display block math and $ for inline math.
+- Never add spaces immediately inside the delimiters (e.g., use $H^+$, not $ H^+ $).
 
 Classroom Teacher Feedback Integration:
 - If the student shares classroom teacher feedback, grade comments, or scores from an assignment or quiz, act as their supportive tutor explaining the feedback constructively using the retrieved course evidence.
@@ -1488,6 +1490,7 @@ Output MUST be a valid JSON object matching the following schema:
 Strict requirements:
 - Do not summarize or alter the text content; extract the verbatim document text.
 - Ensure every chunk content is complete, coherent, and around 1000-2500 characters max. If a section is very long, split it into multiple chunks with the same hierarchy metadata.
+- Ensure that any mathematical formulas, chemical equations, or scientific notations are strictly and consistently represented in standard LaTeX/KaTeX delimiters, using $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $).
 - Output ONLY the raw JSON block. No conversational preamble, no markdown formatting.`
                         }
                       ]
@@ -1573,7 +1576,7 @@ Strict requirements:
                               }
                             },
                             {
-                              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+                              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Ensure that any mathematical formulas, chemical equations, or scientific notations are strictly and consistently represented in standard LaTeX/KaTeX delimiters, using $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $). Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
                             }
                           ]
                         }
@@ -1795,6 +1798,7 @@ Assessment Design Requirements:
 - Use appropriate WASSCE command verbs.
 - Ensure questions assess knowledge, recall, understanding, skills, application, and reasoning where appropriate.
 - Ensure questions have clear marking expectations.
+- Ensure any mathematical equations, scientific formulas, or scientific notations generated inside question text, hints, explanations, or MCQ options are formatted strictly in standard LaTeX/KaTeX delimiters: use $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $).
 
   Ensure all questions are grammatically perfect, concise, professional, and completely free of conversational filler words. Return ONLY the JSON block.`;
 
@@ -1903,6 +1907,7 @@ async function handleGradingAssistant(payload, res) {
    - Provide specific corrections for errors.
    - Include spelling, grammar, terminology, and conceptual accuracy checks.
    - Write comments in a natural teacher feedback style.
+   - Ensure that any mathematical equations, scientific formulas, or scientific notations generated inside reports or feedback comments are formatted strictly in standard LaTeX/KaTeX delimiters: use $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $).
   2. "overall_feedback": A summarized, precise, sanitized, and professional overall feedback/recommendation text for the teacher to apply directly. No conversational fillers or preambles. Max 3 sentences.
   3. "questions": An array of objects for each question:
    - "question_index": (integer, 0-indexed corresponding to the Questions array)
@@ -2018,6 +2023,7 @@ async function handleAnalyticsAI(payload, res) {
 
   systemPrompt += `
 Strict Feedback Quality Check:
+- Math Formatting: Ensure that any mathematical equations, formulas, percentages, statistical notations, or scientific notations generated are formatted strictly in standard LaTeX/KaTeX delimiters: use $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $).
 - Grammar and Sentence Structure: Use flawless grammar, correct spelling, precise punctuation, and clear sentence structure.
 - Teacher Feedback Style: Write feedback as an experienced teacher marking a student's work. Keep comments natural, supportive, specific, and educational rather than robotic or corporate.
 - Specificity Over Generic Comments: Always refer to the student's actual answer, identifying exact strengths, errors, missing concepts, incorrect terms, spelling mistakes, or grammar issues where applicable.
@@ -2084,7 +2090,7 @@ async function handleExtractPdfText(payload, res) {
               }
             },
             {
-              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
+              text: 'Extract and transcribe all plain text content, formulas, figures descriptions, and structured concepts from this PDF document. Render the text sequentially as clean, readable paragraphs. Ensure that any mathematical formulas, chemical equations, or scientific notations are strictly and consistently represented in standard LaTeX/KaTeX delimiters, using $$ for display block math and $ for inline math (e.g., use $H^+$, not $ H^+ $). Do not add any summary, explanation, or conversational preamble; only return the verbatim extracted document text.'
             }
           ]
         }
