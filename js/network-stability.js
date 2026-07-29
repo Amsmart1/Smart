@@ -30,6 +30,7 @@ class NetworkStabilityEngine {
         this.activeController = null;
         this.activeTimeoutId = null;
         this.nextProbeTimeoutId = null;
+        this.currentProbeId = null;
 
         this.initialized = false;
 
@@ -133,8 +134,12 @@ class NetworkStabilityEngine {
             this.nextProbeTimeoutId = null;
         }
 
+        const probeId = Symbol();
+        this.currentProbeId = probeId;
+
         // If navigator.onLine is false, don't even try to fetch
         if (navigator.onLine === false) {
+            if (this.currentProbeId !== probeId) return;
             this.recordProbeResult(null, false, false);
             this.scheduleNextProbe();
             return;
@@ -166,6 +171,8 @@ class NetworkStabilityEngine {
                 mode: 'same-origin'
             });
 
+            if (this.currentProbeId !== probeId) return;
+
             if (this.activeTimeoutId === timeoutId) {
                 clearTimeout(timeoutId);
                 this.activeTimeoutId = null;
@@ -181,6 +188,8 @@ class NetworkStabilityEngine {
             this.recordProbeResult(latency, response.ok || response.status < 400, wasOnline);
             this.scheduleNextProbe();
         } catch (error) {
+            if (this.currentProbeId !== probeId) return;
+
             if (this.activeTimeoutId === timeoutId) {
                 clearTimeout(timeoutId);
                 this.activeTimeoutId = null;
@@ -216,6 +225,8 @@ class NetworkStabilityEngine {
                     mode: 'same-origin'
                 });
 
+                if (this.currentProbeId !== probeId) return;
+
                 if (this.activeTimeoutId === altTimeoutId) {
                     clearTimeout(altTimeoutId);
                     this.activeTimeoutId = null;
@@ -236,6 +247,8 @@ class NetworkStabilityEngine {
                 this.recordProbeResult(latency, response.ok, wasOnline);
                 this.scheduleNextProbe();
             } catch (err) {
+                if (this.currentProbeId !== probeId) return;
+
                 if (this.activeTimeoutId === altTimeoutId) {
                     clearTimeout(altTimeoutId);
                     this.activeTimeoutId = null;
