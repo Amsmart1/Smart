@@ -4634,8 +4634,9 @@ async function viewQuizResults(quizId) {
 
 async function gradeQuizSubmission(submissionId, quizId) {
   const renderId = ++window.currentRenderId;
+  let quiz, submission;
   try {
-    const [quiz, submission] = await Promise.all([
+    [quiz, submission] = await Promise.all([
       SupabaseDB.getQuiz(quizId),
       SupabaseDB.getQuizSubmissionById(submissionId)
     ]);
@@ -4761,7 +4762,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
     quiz.questions.forEach((q, idx) => {
       totalPossible += q.points;
       const manual = manualScores.find(m => (q.id && m.qId === q.id) || m.idx === idx);
-      if (manual) {
+      if (manual && q.type === 'short') {
         earnedPoints += manual.points;
       } else {
         const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
@@ -4798,10 +4799,14 @@ async function gradeQuizSubmission(submissionId, quizId) {
         const idx = parseInt(input.dataset.qIdx);
         const qId = input.dataset.qId;
         const pts = parseInt(input.value) || 0;
-        if (qId) {
-          manualScoresMap[qId] = pts;
+
+        const q = quiz.questions.find((quest, qIdx) => (qId && quest.id === qId) || qIdx === idx);
+        if (q && q.type === 'short') {
+          if (qId) {
+            manualScoresMap[qId] = pts;
+          }
+          manualScoresMap[idx] = pts;
         }
-        manualScoresMap[idx] = pts;
       });
 
       // Re-calculate final score immediately before save to ensure integrity
@@ -4810,7 +4815,7 @@ async function gradeQuizSubmission(submissionId, quizId) {
       quiz.questions.forEach((q, idx) => {
         totalPossible += q.points;
         const manual = q.id ? manualScoresMap[q.id] : manualScoresMap[idx];
-        if (manual !== undefined) {
+        if (manual !== undefined && q.type === 'short') {
           earnedPoints += manual;
         } else {
           const studentAnswer = (q.id && submission.answers[q.id] !== undefined) ? submission.answers[q.id] : (submission.answers[idx] || '');
