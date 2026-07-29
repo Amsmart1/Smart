@@ -29,6 +29,8 @@ class NetworkStabilityEngine {
 
         this.activeController = null;
         this.activeTimeoutId = null;
+        this.nextProbeTimeoutId = null;
+        this.currentProbeId = null;
 
         this.initialized = false;
 
@@ -39,6 +41,12 @@ class NetworkStabilityEngine {
         this.boundVisibilityChangeHandler = () => {
             if (document.visibilityState === 'visible') {
                 this.runProbe();
+            } else if (document.visibilityState === 'hidden') {
+                if (this.nextProbeTimeoutId) {
+                    clearTimeout(this.nextProbeTimeoutId);
+                    this.nextProbeTimeoutId = null;
+                }
+                this.cancelActiveProbe();
             }
         };
 
@@ -54,9 +62,8 @@ class NetworkStabilityEngine {
         window.addEventListener('offline', this.boundOfflineHandler);
         document.addEventListener('visibilitychange', this.boundVisibilityChangeHandler);
 
-        // Start periodic active probing
+        // Start sequential probing
         this.runProbe();
-        this.probeInterval = setInterval(() => this.runProbe(), this.probeIntervalMs);
 
         // Inject UI
         if (document.readyState === 'loading') {
@@ -64,6 +71,34 @@ class NetworkStabilityEngine {
         } else {
             this.renderUI();
         }
+    }
+
+    cancelActiveProbe() {
+        if (this.activeController) {
+            try {
+                this.activeController.abort();
+            } catch (e) {}
+            this.activeController = null;
+        }
+        if (this.activeTimeoutId) {
+            clearTimeout(this.activeTimeoutId);
+            this.activeTimeoutId = null;
+        }
+    }
+
+    scheduleNextProbe(delay = this.probeIntervalMs) {
+        if (this.nextProbeTimeoutId) {
+            clearTimeout(this.nextProbeTimeoutId);
+            this.nextProbeTimeoutId = null;
+        }
+        if (!this.initialized || document.visibilityState === 'hidden') {
+            return;
+        }
+        this.nextProbeTimeoutId = setTimeout(async () => {
+            if (this.initialized && document.visibilityState !== 'hidden') {
+                await this.runProbe();
+            }
+        }, delay);
     }
 
     /**
@@ -74,13 +109,14 @@ class NetworkStabilityEngine {
             this.disconnects.push(Date.now());
             // Filter old disconnects out of the tracking window
             this.cleanDisconnectHistory();
+            this.evaluateStatus();
         } else {
             // Clears probes when transitioning back online to avoid misleading packet loss metrics from offline period
             this.probes = [];
+            this.evaluateStatus();
             // Trigger an immediate probe to refresh status without waiting up to 10 seconds
             this.runProbe();
         }
-        this.evaluateStatus();
     }
 
     cleanDisconnectHistory() {
@@ -92,23 +128,25 @@ class NetworkStabilityEngine {
      * Active favicon probe check to measure precise RTT/latency & packet loss.
      */
     async runProbe() {
+        // Clear any pending scheduled timeout so that runProbe acts as the exclusive orchestrator
+        if (this.nextProbeTimeoutId) {
+            clearTimeout(this.nextProbeTimeoutId);
+            this.nextProbeTimeoutId = null;
+        }
+
+        const probeId = Symbol();
+        this.currentProbeId = probeId;
+
         // If navigator.onLine is false, don't even try to fetch
         if (navigator.onLine === false) {
+            if (this.currentProbeId !== probeId) return;
             this.recordProbeResult(null, false, false);
+            this.scheduleNextProbe();
             return;
         }
 
         // Clean up previous active probe if any is running
-        if (this.activeController) {
-            try {
-                this.activeController.abort();
-            } catch (e) {}
-            this.activeController = null;
-        }
-        if (this.activeTimeoutId) {
-            clearTimeout(this.activeTimeoutId);
-            this.activeTimeoutId = null;
-        }
+        this.cancelActiveProbe();
 
         const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
         this.activeController = controller;
@@ -133,6 +171,8 @@ class NetworkStabilityEngine {
                 mode: 'same-origin'
             });
 
+            if (this.currentProbeId !== probeId) return;
+
             if (this.activeTimeoutId === timeoutId) {
                 clearTimeout(timeoutId);
                 this.activeTimeoutId = null;
@@ -146,7 +186,10 @@ class NetworkStabilityEngine {
             const latency = endTime - startTime;
 
             this.recordProbeResult(latency, response.ok || response.status < 400, wasOnline);
+            this.scheduleNextProbe();
         } catch (error) {
+            if (this.currentProbeId !== probeId) return;
+
             if (this.activeTimeoutId === timeoutId) {
                 clearTimeout(timeoutId);
                 this.activeTimeoutId = null;
@@ -154,14 +197,16 @@ class NetworkStabilityEngine {
             }
 
             // If we were destroyed or a newer probe started, stop executing
-            if (!this.boundOnlineHandler) return;
-            if (this.activeController !== controller) {
+            if (!this.initialized || !this.boundOnlineHandler) return;
+            if (this.activeController !== controller && controller !== null) {
+                this.scheduleNextProbe();
                 return;
             }
 
             let altTimeoutId;
+            let altController = null;
             try {
-                const altController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                altController = typeof AbortController !== 'undefined' ? new AbortController() : null;
                 this.activeController = altController;
                 altTimeoutId = setTimeout(() => {
                     if (altController) {
@@ -180,6 +225,8 @@ class NetworkStabilityEngine {
                     mode: 'same-origin'
                 });
 
+                if (this.currentProbeId !== probeId) return;
+
                 if (this.activeTimeoutId === altTimeoutId) {
                     clearTimeout(altTimeoutId);
                     this.activeTimeoutId = null;
@@ -187,15 +234,21 @@ class NetworkStabilityEngine {
                 }
 
                 // If we were destroyed or a newer probe took over during fetch, abort recording
-                if (!this.boundOnlineHandler) return;
-                if (this.activeController !== altController) return;
+                if (!this.initialized || !this.boundOnlineHandler) return;
+                if (this.activeController !== altController && altController !== null) {
+                    this.scheduleNextProbe();
+                    return;
+                }
 
                 const wasOnline = navigator.onLine;
                 const altEndTime = performance.now();
                 const latency = altEndTime - altStartTime;
 
                 this.recordProbeResult(latency, response.ok, wasOnline);
+                this.scheduleNextProbe();
             } catch (err) {
+                if (this.currentProbeId !== probeId) return;
+
                 if (this.activeTimeoutId === altTimeoutId) {
                     clearTimeout(altTimeoutId);
                     this.activeTimeoutId = null;
@@ -203,14 +256,16 @@ class NetworkStabilityEngine {
                 }
 
                 // If we were destroyed or a newer probe took over, stop executing
-                if (!this.boundOnlineHandler) return;
-                if (this.activeController !== altController) {
+                if (!this.initialized || !this.boundOnlineHandler) return;
+                if (this.activeController !== altController && altController !== null) {
+                    this.scheduleNextProbe();
                     return;
                 }
 
                 const wasOnline = navigator.onLine;
                 // Genuinely failed to reach server
                 this.recordProbeResult(null, false, wasOnline);
+                this.scheduleNextProbe();
             }
         }
     }
@@ -422,6 +477,37 @@ class NetworkStabilityEngine {
         };
     }
 
+    attachToHeader() {
+        if (!this.containerElement) return;
+
+        // Try to find the dashboard header or landing header container
+        // Priority 1: .dashboard-header .header-right (inside dashboard headers)
+        // Priority 2: .landing-header .nav-links (inside landing header)
+        // Priority 3: Fallback standard header tag or nav links
+        const targetHeader = document.querySelector(".dashboard-header .header-right") ||
+                             document.querySelector(".landing-header .nav-links") ||
+                             document.querySelector("header .nav-links") ||
+                             document.querySelector("header") ||
+                             document.querySelector(".header-right");
+
+        if (targetHeader) {
+            // Prepend or insert before first element so it integrates naturally without breaking existing components
+            if (this.containerElement.parentNode !== targetHeader) {
+                targetHeader.insertBefore(this.containerElement, targetHeader.firstChild);
+            }
+        } else {
+            // True fallback to document.body if absolutely no header layout elements exist
+            if (this.containerElement.parentNode !== document.body) {
+                document.body.appendChild(this.containerElement);
+                // Style fallback to keep it fixed if it sits in the body
+                this.containerElement.style.position = "fixed";
+                this.containerElement.style.bottom = "20px";
+                this.containerElement.style.left = "20px";
+                this.containerElement.style.zIndex = "10001";
+            }
+        }
+    }
+
     cacheUIElements() {
         if (!this.containerElement) return;
         this.uiElements = {
@@ -438,8 +524,6 @@ class NetworkStabilityEngine {
     }
 
     renderUI() {
-        if (this.containerElement) return;
-
         if (!document.body) {
             setTimeout(() => this.renderUI(), 100);
             return;
@@ -448,29 +532,27 @@ class NetworkStabilityEngine {
         // Injected Styles
         const styles = `
             .network-indicator-container {
-                position: fixed;
-                bottom: 20px;
-                left: 20px;
-                z-index: 10001;
-                display: flex;
+                position: relative;
+                display: inline-flex;
                 align-items: center;
                 gap: 8px;
                 background: rgba(255, 255, 255, 0.95);
                 border: 1px solid #e2e8f0;
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-                padding: 6px 14px;
-                border-radius: 30px;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+                padding: 4px 12px;
+                border-radius: 20px;
                 font-family: 'Inter', system-ui, -apple-system, sans-serif;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 600;
                 color: #1e293b;
                 cursor: pointer;
                 transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
                 user-select: none;
+                margin-right: 10px;
             }
             .network-indicator-container:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+                transform: translateY(-1px);
+                box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
                 border-color: #cbd5e1;
             }
             .network-indicator-dot {
@@ -509,8 +591,8 @@ class NetworkStabilityEngine {
 
             .network-tooltip {
                 position: absolute;
-                bottom: calc(100% + 10px);
-                left: 0;
+                top: calc(100% + 8px);
+                right: 0;
                 background: #0f172a;
                 color: #f8fafc;
                 border-radius: 12px;
@@ -520,7 +602,7 @@ class NetworkStabilityEngine {
                 opacity: 0;
                 visibility: hidden;
                 transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-                transform: translateY(10px);
+                transform: translateY(5px);
                 pointer-events: none;
                 z-index: 10002;
                 border: 1px solid #1e293b;
@@ -535,16 +617,15 @@ class NetworkStabilityEngine {
 
             @media (max-width: 640px) {
                 .network-indicator-container {
-                    bottom: 10px;
-                    left: 10px;
-                    padding: 4px 10px;
-                    font-size: 11px;
+                    padding: 3px 8px;
+                    font-size: 10px;
+                    margin-right: 5px;
                 }
                 .network-tooltip {
                     width: 200px;
                     padding: 10px;
-                    bottom: calc(100% + 8px);
-                    left: 0;
+                    top: calc(100% + 6px);
+                    right: 0;
                 }
             }
             .network-tooltip-title {
@@ -585,7 +666,7 @@ class NetworkStabilityEngine {
             document.head.appendChild(styleSheet);
         }
 
-        // Container element
+        // Find existing container or create a new one
         let existingContainer = document.querySelector(".network-indicator-container");
         if (existingContainer) {
             this.containerElement = existingContainer;
@@ -612,7 +693,17 @@ class NetworkStabilityEngine {
                     <div class="network-tooltip-desc" id="net-val-desc">Initializing network engine diagnostics...</div>
                 </div>
             `;
-            document.body.appendChild(this.containerElement);
+        }
+
+        // Attach safely into header
+        this.attachToHeader();
+
+        // Setup MutationObserver to watch for DOM updates and re-append container if header structure re-renders or switches (e.g., SPA route updates)
+        if (!this.headerObserver) {
+            this.headerObserver = new MutationObserver(() => {
+                this.attachToHeader();
+            });
+            this.headerObserver.observe(document.body, { childList: true, subtree: true });
         }
 
         // Setup Keyboard and Focus Accessibility
@@ -707,6 +798,10 @@ class NetworkStabilityEngine {
             clearInterval(this.probeInterval);
             this.probeInterval = null;
         }
+        if (this.nextProbeTimeoutId) {
+            clearTimeout(this.nextProbeTimeoutId);
+            this.nextProbeTimeoutId = null;
+        }
         if (this.activeTimeoutId) {
             clearTimeout(this.activeTimeoutId);
             this.activeTimeoutId = null;
@@ -716,6 +811,12 @@ class NetworkStabilityEngine {
                 this.activeController.abort();
             } catch (e) {}
             this.activeController = null;
+        }
+
+        // Disconnect header MutationObserver
+        if (this.headerObserver) {
+            this.headerObserver.disconnect();
+            this.headerObserver = null;
         }
 
         // 2. Remove window and document event listeners
@@ -758,6 +859,12 @@ class NetworkStabilityEngine {
         // Reset singleton references and initialization flag
         if (NetworkStabilityEngine.instance === this) {
             NetworkStabilityEngine.instance = null;
+        }
+        if (window.NetworkIndicator === this) {
+            window.NetworkIndicator = null;
+        }
+        if (window.NetworkStabilityEngine === this) {
+            window.NetworkStabilityEngine = null;
         }
         this.initialized = false;
     }
