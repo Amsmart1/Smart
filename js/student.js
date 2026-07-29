@@ -3634,16 +3634,24 @@ async function viewQuizResults(quizId, submissionId = null) {
           const isCorrect = q.type === 'short' ?
               (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase().replace(/\s+/g, ' ') === (q.correct || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')) :
               (studentAnswer !== null && studentAnswer !== undefined && studentAnswer.toString().trim().toLowerCase() === (q.correct || '').toString().trim().toLowerCase());
-          const statusColor = isCorrect ? 'var(--ok)' : 'var(--danger)';
+
+          const manualScore = (q.id && targetSub.analytics?.manual_scores?.[q.id] !== undefined)
+              ? targetSub.analytics?.manual_scores?.[q.id]
+              : targetSub.analytics?.manual_scores?.[idx];
+
+          const hasManualScore = manualScore !== undefined && q.type === 'short';
+          const displayPoints = hasManualScore ? manualScore : (isCorrect ? q.points : 0);
+          const statusColor = hasManualScore ? (displayPoints > 0 ? 'var(--ok)' : 'var(--danger)') : (isCorrect ? 'var(--ok)' : 'var(--danger)');
+          const badgeClass = hasManualScore ? (displayPoints > 0 ? 'badge-active' : 'badge-warn') : (isCorrect ? 'badge-active' : 'badge-warn');
 
           return `
             <div class="question" style="border-left: 5px solid ${statusColor}">
               <div class="flex-between">
                 <div class="bold">Q${idx + 1}: ${UI.renderRichText(q.text)}</div>
-                <div class="badge ${isCorrect ? 'badge-active' : 'badge-warn'}">${isCorrect ? q.points : 0} / ${q.points} pts</div>
+                <div class="badge ${badgeClass}">${displayPoints} / ${q.points} pts ${hasManualScore ? '(Manual)' : ''}</div>
               </div>
               <div class="small mt-10">Your Answer: <span class="bold">${UI.renderRichText(studentDisplay)}</span></div>
-              ${!isCorrect ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
+              ${(!isCorrect && !hasManualScore) ? `<div class="small success-text bold mt-5">Correct Answer: ${UI.renderRichText(correctDisplay)}</div>` : ''}
               ${q.explanation ? `<div class="small mt-10 p-10" style="background:var(--light); border-radius:4px; font-style:italic">📖 Explanation: ${UI.renderRichText(q.explanation)}</div>` : ''}
             </div>
           `;
