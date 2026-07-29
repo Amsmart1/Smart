@@ -1279,6 +1279,34 @@ class SupabaseDB {
     }
 
     static async saveQuizSubmission(submission) {
+        let isTeacherOrAdmin = false;
+        try {
+            const currentUserRaw = sessionStorage.getItem('currentUser');
+            if (currentUserRaw) {
+                const currentUser = JSON.parse(currentUserRaw);
+                isTeacherOrAdmin = currentUser.role === 'teacher' || currentUser.role === 'admin';
+            }
+        } catch (e) {}
+
+        if (!isTeacherOrAdmin) {
+            // Students are only allowed to save in-progress autosaves
+            if (submission.status !== 'in-progress') {
+                throw new Error("saveQuizSubmission can only be used for in-progress autosaves.");
+            }
+            // Strip any client-side computed metadata/scores and keep only answers & identifiers
+            const sanitizedSubmission = {
+                id: submission.id,
+                quiz_id: submission.quiz_id,
+                student_email: submission.student_email,
+                attempt_number: submission.attempt_number,
+                status: 'in-progress',
+                answers: submission.answers
+            };
+            const data = await this._update('quiz_submissions', sanitizedSubmission, { id: sanitizedSubmission.id });
+            _cache.invalidate('quiz_submissions');
+            return data?.[0] || null;
+        }
+
         let data;
         if (submission.id) {
             // Use _update instead of _upsert when id is present to avoid 401 errors

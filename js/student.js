@@ -3411,17 +3411,12 @@ async function autoSubmitQuiz() {
 async function submitQuiz(isAuto = false) {
   const renderId = window.currentRenderId;
   if (StudentState.isSubmittingQuiz) return;
-  StudentState.isSubmittingQuiz = true;
-
-  // Immediately update status in-memory to prevent autosave races even if StudentState.isSubmittingQuiz flag is bypassed
-  const previousStatus = StudentState.currentSubmission?.status;
-  if (StudentState.currentSubmission) StudentState.currentSubmission.status = 'submitted';
 
   if (!isAuto && !confirm('Are you sure you want to submit your quiz?')) {
-      if (StudentState.currentSubmission) StudentState.currentSubmission.status = previousStatus || 'in-progress';
-      StudentState.isSubmittingQuiz = false;
       return;
   }
+
+  StudentState.isSubmittingQuiz = true;
 
   await StudyTracker.stop();
 
@@ -3444,7 +3439,6 @@ async function submitQuiz(isAuto = false) {
           const course = quiz ? await SupabaseDB.getCourse(quiz.course_id) : null;
           if (course && course.status === 'archived') {
               UI.showNotification('This course has been archived. Submitting is not allowed.', 'danger');
-              if (StudentState.currentSubmission) StudentState.currentSubmission.status = previousStatus || 'in-progress';
               StudentState.isSubmittingQuiz = false;
               if (btn) { btn.disabled = false; btn.textContent = 'Submit Quiz'; }
               if (listBtn) { listBtn.disabled = false; listBtn.textContent = 'Start New Attempt'; }
@@ -3483,8 +3477,6 @@ async function submitQuiz(isAuto = false) {
     if (window.AntiCheat) await AntiCheat.destroy();
   } catch (err) {
       console.error('Quiz submission failed:', err);
-      // Revert status to allow retry and continued autosave
-      if (StudentState.currentSubmission) StudentState.currentSubmission.status = 'in-progress';
       UI.showNotification('Quiz Submission Failed: ' + (err.message || 'Unknown error'), 'error');
 
       if (window.AntiCheat) await AntiCheat.resumeProctoring();
