@@ -1,7 +1,7 @@
 // Supabase Configuration
 // Public anon key is safe to expose in client-side code.
-const SUPABASE_URL = 'https://hupssocmagotpaoyhezt.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh1cHNzb2NtYWdvdHBhb3loZXp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4NzA2MTAsImV4cCI6MjA5NDQ0NjYxMH0.DiGpIi-yb0YxafLTGPhk1kqH7maD4FtPiC4gvmpYqnA';
+const SUPABASE_URL = 'https://jqacjiaxikfimmmlfpus.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxYWNqaWF4aWtmaW1tbWxmcHVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNzQ4MTksImV4cCI6MjA5Nzk1MDgxOX0.kHP8MjeLvofmyy5wPZ4I1j1EzMXXDzlOBrPoNPoqD4A';
 
 // Initialize Supabase client
 if (!window.supabase) {
